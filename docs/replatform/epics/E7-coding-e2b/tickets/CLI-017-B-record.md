@@ -7,7 +7,23 @@
 **Graph node:** `program-design.md #### CLI-017`
 **Implementer:** `M1b CLI-017 build agent (Claude Opus 5)`
 **Start SHA:** `9ad5666df6` (program tip at start; rebased onto `6b468773f1` when the base moved)
-**Reviewed revision (implementation commit):** `6441fa9b63e73a1537484db7f227d830876d5ef8`
+**Reviewed revision (implementation commit):** `2aaeb1169b` (pre-merge branch head) / squash commit
+**`d9b25579d`** on `docs/replatform-program`.
+★ **Re-pointed 2026-09-24** by the M1 planning session, on the `changes_requested` of the
+independent review in PR #595. *Superseded citation, kept as written:*
+`6441fa9b63e73a1537484db7f227d830876d5ef8` - which was a genuine ancestor of the PR head but
+**predated rounds 1-3 of this slice's own product code** (`codec.ts`,
+`op-failure-classification.ts`, `server.ts`, `exportFailureReasonCode`, the M-B14 behavioural
+arm), so it cited a revision the code had moved past - the record-rot defect this program
+keeps paying for.
+
+★★★ **Why a squash commit is named too.** The review protocol asks for a revision that is an
+**ancestor of HEAD**, and squash-merging discards branch commits: `2aaeb1169b` is **not** an
+ancestor of the program branch, and neither is `6441fa9b63`. Post-merge the citation is therefore
+validated by **blob identity**, not ancestry. Verified:
+`packages/adapter-manager/src/op-failure-classification.ts` is
+`4e79e482845ce8b2c617db504afd8a6888f40051` at **both** `2aaeb1169b` and the tip. The general
+defect is filed as **`E0-F022`**.
 ★ *Re-pointed 2026-09-24 after the branch was rebased onto `6a3882f39` (the base moved twice during this ticket). The pre-rebase id was `91d56619a7392491bf443837dcc126b938c1a03e`, which is no longer an ancestor of the PR head — a reviewed revision that is not an ancestor is the record-rot failure this programme keeps paying for, so the id is re-pointed rather than left to read as authoritative. The tree of this commit is unchanged by the rebase; only its parent moved.*
 **Ruling:** `decisions.md` `E7-D11` §3 (ruling F7, under founder delegation F2) — SD-5 is **REQUIRED
 before `M1b`'s campaign**, not optional and not deferred
@@ -511,6 +527,133 @@ produced it.
 
 *(to be completed by a distinct reviewer — the implementer may not set `complete`)*
 
-**Reviewer:**
-**Date (UTC):**
-**Decision:**
+**Reviewer:** `M1b independent reviewer (Claude Opus 5)`
+**Date (UTC):** `2026-09-24`
+**Decision:** `changes_requested` on the cited revision; code approved; `Status` stays `gate_review` — see review attempt 1 below.
+
+### Review attempt 1 — independent reviewer
+
+**Reviewer:** `M1b independent reviewer (Claude Opus 5)` — distinct from the implementer.
+**Date (UTC):** `2026-09-24`
+**Revision I reviewed (40-hex):** `d9b25579d001515d24dfb1a84a9fa4758ffd31c3` (the squash of PR #592 onto
+`docs/replatform-program`, an ancestor of this review's HEAD), because it is the only revision that
+contains the code this record describes — see the finding immediately below.
+**Disposition:** `changes_requested` **on the record's cited revision**; the **code is approved** at
+`d9b25579d001515d24dfb1a84a9fa4758ffd31c3`. `Status` stays `gate_review` in any case (keyed items, §11).
+
+#### ★★★ The one blocking finding: the cited reviewed revision predates three rounds of this slice's own code
+
+`6441fa9b63e73a1537484db7f227d830876d5ef8` **is** a genuine ancestor of the PR head
+`2aaeb1169b6adbd37e3ac77ff7a230f68bb1b077`, so the rebase re-point itself is sound. But it is the
+**pre-round-1** implementation commit. Between it and the PR head, this slice's own product code moved:
+
+| moved after the cited revision | recorded in |
+|---|---|
+| `packages/provider-wire/src/codec.ts` (+ its new test) — the three refusals modelled in both directions | §11a |
+| `packages/adapter-manager/src/op-failure-classification.ts` (+ test) | §11a |
+| `packages/adapter-manager/src/server.ts` — classification computed BEFORE the `isModelledWireError` early return | §11b/§11c |
+| `packages/worker-daemon/src/lease/artifact-export.ts` — `exportFailureReasonCode` + the `fail("export", …)` call site | §11c |
+| `packages/worker-daemon/src/__tests__/artifact-export-sequencer.test.ts` — the behavioural arm that reds **M-B14** | §11c |
+| `server/src/__tests__/cli-006-seam-suppression.test.ts` — the moved source-pin window | §11a |
+
+So a reviewer who checked out the cited revision would find **none** of §11a–§11c, and **M-B10–M-B16
+would have nothing to mutate**. That is exactly the record-rot the re-point note above warns about —
+a record certifying a revision its code had moved past — and it is the defect class this milestone has
+already paid for twice. **Required change:** re-point the header to a revision that contains rounds
+1–3 (`656ed71ee…`, or the merge `d9b25579d001515d24dfb1a84a9fa4758ffd31c3`), keeping the superseded ids quoted as they are now.
+
+#### What I verified at source, at `d9b25579d001515d24dfb1a84a9fa4758ffd31c3` — and it is sound
+
+- **★ `E7-F039`'s canary-swap arm genuinely holds, and the FAIL condition never fires.** In
+  `cli-017-b-export-secret-refusal.test.ts`, both swap arms assert
+  `expect(store.puts).toEqual([])` **and** `expect(store.puts.join("")).not.toContain(SECRET_A)`
+  **before** `expect(outcome).toBeInstanceOf(SandboxExportScannerRefusedError)` — the store first, the
+  error kind second, exactly as `E7-D11` requires. The positive control (a swap to a secret-free
+  target still exports its bytes) is present, so "everything refuses" cannot masquerade as the
+  property. I swept **every** `store.puts` assertion in the file. Exactly two classes of arm let a
+  canary near the store, and neither is a swap arm: row 8's **characterisation** arms, which assert the
+  stored bytes are the **encoded/reversed/split** form with `not.toContain(SECRET_A)` on the literal
+  (`E7-F038`'s named open residual under `E7-D11`), and row 2's **deliberate hazard** arm
+  (`scanner: () => undefined`), which asserts the credential *does* land — that being the positive
+  control `E7-D11` demands in terms (*"a provider without the check exports it"*), with the check
+  disabled on purpose. **No arm of the shipped provider produced a stored artifact containing the
+  planted canary.** The record's claim survives a hard check.
+  ★ And its own honesty is correct and load-bearing: on this fixture the transport refuses a symlink
+  outright, so a swap cannot physically reach the scan. What is proven is that SD-5 **would** catch the
+  bytes a won race delivers. **The keyed real-run swap attempt is still owed**, and the record says so.
+- **★ `E7-F040`'s closure is EARNED, and on the harder arm.** `ExportScanInput` carries
+  `signal: AbortSignal`; the `E7-F040` block asserts the scanner **received** a real `AbortSignal`
+  **and** that it **fired**, with `store.puts` empty — plus the **in-deadline twin** asserting
+  `signal.aborted === false` while the bytes export, which is what stops the first arm passing for a
+  seam that hands over an already-aborted signal. `findings.md` reads
+  `Status: resolved (2026-09-24, CLI-017-B)` **and** the `"E7-F040"` key is **deleted** from
+  `scripts/finding-ownership.json` — I confirmed both are in the **same** commit
+  (`git show d9b25579d` shows the `-    "E7-F040": {` deletion beside the flipped Status). The entry's
+  *"closes as not-applicable"* arm was available for a pure in-process scanner and was **not** taken.
+- **★ `M-B3` is correctly disclosed and is counted as a control NOWHERE.** It is labelled at source
+  (`e2b-provider.ts`: *"Recorded as defence in depth, NOT as a proven control"*), §5 marks it
+  `NOT RED`, §7 explains the structural reason (`#registerRunSecrets` purges first, so a stale timer
+  for a live same-key entry cannot exist), and row 6b's control is **M-B2**, not M-B3. No acceptance
+  row rests on it.
+- **The classifier fix is at the call site, not only in a helper.** `server.ts` computes
+  `const classification = classifyOpFailure(op, err)` and calls `onOpFailure(classification)` in a
+  `try/catch` **before** `if (isModelledWireError(err)) { … return; }`, and the modelled arm's
+  response is unchanged — so round 1's property holds and round 1's branches are now reachable on the
+  production path. `exportFailureReasonCode(errorName)` in `artifact-export.ts` is a pure `switch` on
+  the **class name** with a `default: "export_failed"`, and the `fail("export", …)` site calls it.
+  **M-B14 now reds via a behavioural arm:** the new describe block drives a real refusal through
+  `multiFileSequencer`'s `refuseExportWith` map and reads the recorded per-file `reason` for each of
+  the three classes, for an unknown class, and for a no-refusal positive control, asserting
+  `h.digested === [A, B]` first so it is not "the loop stopped". Restoring the blanket
+  `"export_failed"` reds it; the helper-only arms would not. The author's account of catching their own
+  vacuous test is accurate.
+- **★ The `pat`/`PATH` collision is genuinely fixed, not narrowed by luck.**
+  `SECRET_ENV_KEY_PATTERN` anchors the three short fragments as `(^|_)(pat|dsn|jwt)(_|$)`, so `PATH`
+  cannot match (`^pat` must be followed by `_` or end) while `GITHUB_PAT`, `PAT` and `SENTRY_DSN_PROD`
+  do, and the sweep enumerated the whole fragment list to find exactly the three at or below three
+  characters. Both a negative and a positive arm exist per fragment, so the fix did not turn them off,
+  and `MIN_SCANNED_SECRET_LENGTH = 12` (mutant **M-B7**) is the anti-over-refusal floor with its limit
+  stated. Errs wide on the remaining fragments, which is the safe direction and is argued as such.
+- **Lifecycle:** `#runSecrets` is populated at `create` from `spec.env` (values only), purged first and
+  unconditionally through `#reclaim` on `destroy`/`reconcileCleanup`, purged on a TTL-bound expiry, and
+  **absent ⇒ refused before the read**. Rows 6/6b/7 have their own mutants (M-B1/M-B2/M-B6/M-B8).
+- **`E7-F038` stays open** and row 8 is carried as characterisation asserting the current pass-through,
+  with each arm saying a future boundary must flip it. Correct under `E7-D11`.
+- **CI:** `ci-required` **success** on `2aaeb1169b`, no non-success check on that head. ★ As with slice
+  A, the closing "verify (1) is RED on the final head" section is **stale as written** — it describes
+  `87005e7b0`; the diagnosis is filed as `E7-F045` and stands.
+- **Not re-executed:** no mutation was re-run here (no installed `node_modules` in this worktree). Every
+  mutant's **shape, target and reachability** is verified at source; the REDs are the implementer's.
+
+#### Why `Status` stays `gate_review` regardless
+
+`CLI-017`'s acceptance includes the plan's *"Real-run acceptance — it PAIRS WITH `CLI-012`"* and
+`E7-F039`'s *"run and recorded, never reasoned about"* symlink-swap attempt, plus the `E7-D11`
+`S-P0` + `A-neg` template precondition. **None has run**, keyed dispatch is the planning session's
+under F8, and §11 says so. Even with the revision re-pointed, this ticket cannot reach `complete`
+until the joint keyed case is recorded.
+
+#### ★ Addendum — the reviewer RERUN, and the canary arm's mutation re-executed
+
+*Appended 2026-09-24 by the same reviewer, for the two Codex findings on PR #595 (the abbreviated
+reviewed-revision id — corrected above — and the missing reviewer rerun).*
+
+Run at `d9b25579d001515d24dfb1a84a9fa4758ffd31c3`, checked out detached, dependencies installed:
+
+| command | result |
+|---|---|
+| `pnpm --filter @armyofagents/worker-daemon build` (the provider suite needs the daemon's `dist` for `grantPutHeaders`) | pass |
+| `pnpm --filter @armyofagents/sandbox-e2b-provider exec vitest run src/__tests__/cli-017-b-export-secret-refusal.test.ts` | **28 passed** |
+
+**★★★ THE CANARY ARM'S RED, RE-EXECUTED BY THE REVIEWER.** I defeated SD-5 in the real source —
+`scan({ bytes, sandboxId, secrets: [], signal })`, i.e. the scanner still runs but is given nothing
+to compare against, which is the `M-B4` class in situ — and both `E7-F039` arms went **RED**:
+*"/proc/self/environ bytes: the STORE receives NOTHING"* and *"the run's own STAGED PROMPT bytes …
+are refused too"*, while the **positive control** (*"a swap to a target with NO secret still
+exports"*) stayed **green**. So the arm is not passing because everything refuses, and it is not
+passing vacuously: it detects exactly the loss of the comparison. Reverted; baseline back to
+**28 passed**.
+
+**Disposition unchanged: `changes_requested`** on the header's cited revision (the substance of that
+finding is untouched by this rerun — `6441fa9b63` still predates rounds 1–3), **code approved** at
+`d9b25579d001515d24dfb1a84a9fa4758ffd31c3`, `Status` stays `gate_review`.

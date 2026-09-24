@@ -732,3 +732,122 @@ announcement landed. **The cost of this option is an attempt, never a deliverabl
   `kind` — the same fail-closed posture, for the same reason.
 - **This decision does NOT reopen** the `CLI-012` charge invariant ("the tenant is charged unless it
   is PROVEN that no bytes left the sandbox"), which converged separately and is untouched here.
+
+---
+
+## E7-D13 — ruling on `CLI-014`: the same-batch projection is CLOSED AS DELIVERED BY `JOB-017`, `detectedFiles.path` is DESCOPED for M1, and an unsubstantiated path is OMITTED, never invented
+
+**Date (UTC):** 2026-09-24
+**Status:** `locked` — decided by the M1 planning session on `CLI-014`'s owed design step, which
+the task section says is required before the ticket "is assignable as build".
+**Owner role:** M1 planning session (founder delegation F2) · **Affected:** `CLI-014` (the
+projector), `CLI-015` (the judge), any future protocol widening
+**Decided on:** source, read at `eb8458bb3538c99ee5cb54b6872202c5f268dd74` — `job-output-bridge.ts`,
+`job-accepted-output-projection.ts`, `job-accepted-event-seam.integration.test.ts`,
+`gate-clause-wiring.json`, `packages/worker-protocol/src/artifacts.ts`,
+`packages/worker-protocol/src/events.ts`, `packages/db/src/schema/job_artifacts.ts`,
+`packages/worker-daemon/src/lease/artifact-export.ts`,
+`packages/worker-daemon/src/supervisor/supervisor.ts`.
+
+### Decision
+
+**(a) `CLI-014`'s same-batch projection is CLOSED AS DELIVERED BY `JOB-017`.** The design the task
+section says is owed was already chosen and built: `projectAcceptedOutputCore`
+(`server/src/services/job-output-bridge.ts`) is the transaction-taking core, and
+`resolveAcceptedOutputProjector` / `applyAcceptedOutputEvent`
+(`server/src/services/job-accepted-output-projection.ts`) is the in-transaction registration that
+`createJobEventIngestService` runs inside `acceptEvent`'s savepoint while the fence is live.
+`scripts/gate-clause-wiring.json`'s `E3-17-output` is **`wired`**, and the owed integration case
+exists **verbatim** as `[acc 2] an output event and the terminal event in ONE batch yield ONE
+task_outputs row with its output_projection receipt, and no attempt_terminal throw`
+(`server/src/__tests__/job-accepted-event-seam.integration.test.ts`).
+
+★ **So no later reader should re-open this.** The framing the `CLI-014` task section quotes —
+*"task_outputs is still written by the legacy path"*, *"a second writer landing in M1 would make
+two mechanisms own one row"* — is the **PRIOR** reason preserved inside that same register entry,
+not its current one. Re-writing the owed test under the owed filename would be a **vacuous RED**:
+it passes at HEAD against no new code, which is the trap `CLI-013` caught in its own build.
+
+**(b) `detectedFiles.path` is DESCOPED for M1. Do not widen the wire.**
+
+**(c) The constraint that makes the descope honest: OMIT, NEVER INVENT.** The founder-facing
+surface must not display a path it cannot substantiate. Absent a durable relative path the field is
+**omitted** — not defaulted, not reconstructed from the object key, not filled with the digest.
+
+**(d) `E7-F046` stays OPEN**, re-pointed off `CLI-014` to the post-M1 protocol question.
+
+### Reason
+
+`M1b`'s criterion is *"an agent's output reaches the founder"*. **A displayed filename is fidelity,
+not capability** — that half of the reason stands, and (b) rests on it.
+
+★★★ **CORRECTED 2026-09-24, before merge, from Codex P1 on PR #596 and verified at source: the
+other half of this sentence was FALSE.** *Superseded text: "`M1b`'s criterion is "an agent's output
+reaches the founder", and `{artifactId, kind}` plus **retrievable bytes** satisfies it."* The bytes
+are **not** retrievable from the founder-facing task at HEAD. `applyAcceptedOutputEvent` leaves
+`artifactId`, `artifactVersionId`, `assetId` and `url` **all null**, and `OutputRefTabBody`
+dispatches on exactly those four fields, so every distributed artifact falls through to
+`OutputDetailCard` and renders *"No preview is available for this output."* Filed as **`E7-F047`**
+(HIGH). The ruling's **conclusions are unchanged** — (b) descope the path, do not widen the wire —
+because they never depended on retrievability; what was wrong was the premise offered for them, and
+a decision whose stated reason is false at source is the dominant record defect in this programme. Against that,
+widening costs a change to a `.strict()` v1 schema whose `protocolVersion` is `z.literal(1)`, plus
+re-minting the hash-pinned frozen consumer fixture (`check:frozen-worker-protocol-v1`, which pins
+the whole `packages/worker-protocol/src` tree at a recorded source sha). Changing a frozen protocol
+leaf in order to render a filename is the wrong trade inside a milestone. If the wire is ever
+widened it must be a deliberate **protocol** decision carrying its own compatibility analysis —
+never a side effect of adding a display field.
+
+★★★ **AND "WIDENING" IS NOT THE ONLY CHANNEL — CORRECTED 2026-09-24 (Codex P2, PR #596),
+verified at source.** The paragraph above, and `CLI-014-design.md`'s *"one of exactly two"* framing,
+presented a frozen-schema widening as the only way to carry a path. There is a third, and omitting it
+risked driving an unnecessary versioned wire change. `artifactManifestV1Schema` already carries a
+durable `objectKey`, and its validation is only `objectKeyHasPrefix` — a safe relative POSIX key,
+the exact `expectedAttemptObjectPrefix`, and a **non-empty suffix**. The `${prefix}${artifactId}`
+shape is a **convention** of `artifact-export.ts` and `job-input-staging.ts`, *not* a schema
+constraint, so a reversibly-encoded bounded relative path could ride that existing field and the
+projector could recover it from `job_artifacts.objectKey` — **no schema widening, no fixture
+re-mint, no new column.** It is not free: the convention is pinned by an equality check on both
+sides (`artifact-export.ts` fails `object_key_mismatch` when the store returns a different key), so
+it needs an **E5 convention ruling**, and it would put tenant-authored path bytes into the object key
+— a value that reaches logs and receipts — so it needs a **leak ruling** too. **(b) is unchanged:**
+this option is cheaper than widening but is still a deliberate decision, not a display-field side
+effect, and `M1` does not take it. Recorded on `E7-F046` as the preferred first option to evaluate.
+
+(c) is the real requirement behind the task section's design item 4 (*do not "mint a path the
+sandbox never reported"*), and it is what separates a descope from a quiet fabrication. It is
+enforced by test, not by prose: `server/src/__tests__/cli-014-output-path-omission.test.ts` pins
+that a fold over committed `artifact_prepared` events yields **no** file entry, that no folded
+value carries the artifact/job/attempt identity in a path position, that the founder's run summary
+renders no `Files:` line, and — the structural arm — that the frozen payload **refuses** a `path`
+field, so a silent widening reds here rather than shipping. Its positive controls and mutations are
+tabled in `tickets/CLI-014-result.md`.
+
+### Why the measurement is not re-derivable from the register
+
+No relative path is durable anywhere on the control plane, and each boundary drops it for its own
+good reason: `exportArtifactId` hashes `jobId:attempt:path` **one-way** into the artifact identity
+(so a retry presents the same id), the object key is that digest again, `artifactManifestV1Schema`
+is `.strict()` with **no** path field, `job_artifacts` has **no** path column, and
+`announcementsFor` holds `ref.path` in a local `Map` and deliberately emits only
+`{artifactId, kind}`. `E7-F046` carries the full measurement.
+
+### Consequences
+
+- **`CLI-014` is not a build ticket.** Its projection half is delivered; its path half is descoped;
+  what it leaves behind is the documented disposition plus the omission pin.
+- **The materialization residue** (`job_artifacts` → a product `artifacts` row, so
+  `task_outputs.artifactId` resolves rather than staying null) is **NOT** ruled here. It is
+  independent of the path question. ★★★ **CORRECTED 2026-09-24 (Codex P1, PR #596):**
+  *superseded text: "and remains available as separate work."* That wording left the one piece of
+  work that actually makes the bytes reach the founder unowned, unfiled and unscheduled, which would
+  have let `M1b` pass on a receipt rather than a deliverable. It is now filed as **`E7-F047`**
+  (HIGH, `unowned`), and **(a)'s closure of `CLI-014` is CONDITIONAL on that finding being given an
+  owner**: closing the projection half is correct (it *is* delivered by `JOB-017`), but it must not
+  be read as `M1b`'s output criterion being satisfied. The residue still needs a ticket, which is a
+  scheduling decision this ruling does not take.
+- **This decision does NOT reopen `E7-D12`** (the `artifact_prepared` contiguity posture) or the
+  `CLI-012` charge invariant. Neither is touched.
+- **`E7-D11`'s Observability clause** — which permits *"the declared relative path"* — describes a
+  value that does not exist today. Under this ruling that clause is dormant, not violated: nothing
+  declares a path, so nothing may render one.

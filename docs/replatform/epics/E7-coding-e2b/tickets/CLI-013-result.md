@@ -1,6 +1,6 @@
 # CLI-013 Result — the announcement: `EventSequencer.artifactPrepared`
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-24`
 **Epic:** `E7-coding-e2b`
 **Plan task:** `E7 implementation-plan ### CLI-013 — the announcement: EventSequencer.artifactPrepared (M1b)`
@@ -271,6 +271,145 @@ announcement path runs only when both export deps are present. Already recorded 
 
 *To be completed by a DISTINCT reviewer. `complete` requires EVERY acceptance item met.*
 
-**Reviewer:**
-**Reviewed revision (40-hex):**
-**Disposition:**
+**Reviewer:** `M1b independent reviewer (Claude Opus 5)`
+**Reviewed revision (40-hex):** `c3f71519eef55035ebc80a97e0e704b1055b01f8`
+**Disposition:** `approved` — see review attempts 1–3 below.
+
+### Review attempt 1 — independent reviewer
+
+**Reviewer:** `M1b independent reviewer (Claude Opus 5)` — distinct from the implementer; built none
+of this work.
+**Date (UTC):** `2026-09-24`
+**Reviewed revision (40-hex):** `c3f71519eef55035ebc80a97e0e704b1055b01f8` — the implementation
+revision the record itself cites. ★ *Corrected at attempt 3 (Codex round 2, PR #595): attempts 1 and
+2 declared `a88966c23d306cf52b1c4b2cd6cff7def45432ce`, the squash of PR #589, while the rerun was
+performed at `c3f71519ee` — the protocol asks for the exact revision checked out, so the field now
+names that one. Both are genuine ancestors of this review's HEAD and the superseded id is kept here
+as written.* `c3f71519eef55035ebc80a97e0e704b1055b01f8` is a genuine ancestor of the PR head
+`7d187de1e4`, and **the code has not moved since it**: `events.ts`, `supervisor.ts` and
+`events-artifact-prepared.test.ts` are **blob-identical** at `c3f71519ee` and at the current program
+tip `eb8458bb35` (checked by `git rev-parse <rev>:<path>`), and the only delta from `c3f71519ee` to
+the PR head is this record's own §10. So the certified revision describes the code as it now stands.
+**Disposition:** `approved`
+
+#### What I verified at source, not from the record
+
+- **The emitter.** `EventSequencer.artifactPrepared` (`supervisor/events.ts`) is one line:
+  `#emit("artifact_prepared", { artifactId: input.artifactId, kind: input.kind })` — the projection
+  is in the emitter, so a path handed in cannot ride along. Sibling-shaped, no frozen-package edit;
+  `check:frozen-worker-protocol-v1` runs in `policy` and I ran
+  `check-frozen-worker-protocol-consumer.mjs --source-sha b7a8428…` locally: **OK**.
+- **The placement.** `runLifecycle` emits `for (const announcement of prepared) await
+  events.artifactPrepared(announcement)` **after** `runExportWindow` returns and **before**
+  `events.terminal`, outside the window's catch. `announcementsFor(raced.exported, requests)` is the
+  window's **last** statement, after both `report` arms and outside the `try`, so its fail-closed
+  throw escapes — the §8a P2 fix is really there and is not a comment.
+- **The `kind`.** `announcementsFor` joins on `r.path` from `requests` and throws when a committed
+  path has no request; the payload is `artifactPreparedPayloadV1Schema.parse(…)`, not a cast.
+  `E7-D08`'s `other` is the request's, never invented.
+- **The 8 mutations** (re-executed in part at attempt 2 below). Each is a real inversion of a distinct decision in the diff (the emit loop, the
+  partial-exit return, the swallow, the kind, the ordering, the `requests`/`exported` source, the
+  projection, the catch boundary), and each expected red maps onto a test that asserts exactly that
+  property. I could not re-execute them — this worktree has no installed `node_modules` — so the
+  mutants' **shape and reachability** are verified at source and their REDs are taken from the
+  implementer's recorded runs.
+- **★ The anti-vacuity claim is TRUE at GREEN, and M6 does establish it.** `nothing committed ⇒ NO
+  announcement` sets `resolveExportArtifacts: async () => [REQ_A]` — **a request is present** — while
+  `exportArtifacts` returns `exported: []`, and asserts the **exact** stream
+  `["attempt_started","terminal"]`. So M6 (build announcements from `requests` instead of `exported`)
+  makes that case emit one `artifact_prepared` and reds the equality. The author's honesty about the
+  RED being vacuous is correct, and the GREEN non-vacuity is proven rather than asserted.
+- **The three contradictions of the task section.** (a) The undecided contiguity decision is recorded
+  as `E7-D12` (option 1, FATAL) with its reasons measured at source — confirmed against
+  `decisions.md`. (b) *"fails the attempt"* is **not** a rejection out of `accept()`: `createSupervisor`
+  catches everything out of `runLifecycle` by design, so the test asserts abort + no-terminal-past-the-hole
+  + escalated cleanup, which is what the mechanism has. Correct, and correctly carried into `E7-D12`.
+  (c) ★ **Partly unrecorded, and I say so rather than let it pass.** The task's *Files* line names only
+  `events.ts`, the new test and `findings.md`, while its placement clause mandates the supervisor path —
+  so `supervisor.ts` is required by the task and absent from its file list. The record declares
+  `supervisor.ts` in §2 but does **not** flag the omission as a contradiction. A documentation gap, not
+  a defect, and not a bar to approval: the placement taken is the one the task directs.
+- **`E7-F043` and `E7-F044` are correctly scoped, and neither is unfixed work wearing a finding's
+  name.** `E7-F043` (`observeRun`'s three emits under one swallowing catch, terminal below) is a
+  DECLARED contract (`CLI-003` D3/D5, `WRK-018` 1(b)) whose reversal needs a decision at `E7-D12`'s
+  level and touches every run — out of an `S` ticket, `unowned` with that reason. `E7-F044` (a
+  timed-out window loses announcements for files it had already committed) is real and is confirmed at
+  source: the `raced === TIMEOUT` arm `return []`s, and the accumulated `exported` is unreachable
+  because the sequencer only surfaces it on resolve — closing it needs an incremental-progress signal
+  on the **E5-owned** seam. Both carry a closure route in `findings.md` and an ownership entry.
+- **Register hygiene.** `E7-F024`'s disposition is added and the finding stays open against the `log`
+  route; `E7-F043`/`E7-F044` exist in `findings.md` and in `scripts/finding-ownership.json`.
+
+#### Why `complete`, and what it does not certify
+
+`CLI-013`'s acceptance list carries **no keyed item** — it is the emitter, its placement, the
+contiguity decision, the frozen-consumer check and the typecheck/build, all of which are met, and
+`ci-required` is `success` on the PR head `7d187de1e4`. So unlike `CLI-012`/`CLI-016`/`CLI-017`, this
+ticket has nothing pending that a keyed run must supply, and I set `Status: complete` in a separate
+commit.
+
+**Not certified by this approval:** anything about supply or about `capabilityProven` — the record is
+right that this flips no counter; `E7-F043`, `E7-F044` and `E7-F024` all stay open; the
+`supervisor-hung-stage-input` flake is pre-existing and unrelated (I confirmed the announcement path
+is unreachable without both export deps); and the mutation REDs are the implementer's recorded runs,
+not re-executed here.
+
+#### ★ Review attempt 2 — the reviewer RERUN the protocol owes, and two mutations re-executed
+
+*Appended 2026-09-24 by the same reviewer after Codex raised it on PR #595 (P1). The finding is
+**real**: E7 `implementation-plan.md` step 4 says the distinct reviewer **"checks out the reviewed
+40-hex revision, reruns the focused command there"**, and attempt 1 recorded source inspection plus
+the implementer's runs while saying this worktree had no installed dependencies. That is the
+`check-that-nothing-runs` class pointed at a review rather than at a guard, so the status flip was
+**reverted** and the rerun was done. Attempt 1's text is kept exactly as written.*
+
+Dependencies installed in the review worktree
+(`pnpm install --frozen-lockfile --virtual-store-dir=C:/pn/rv8`), at the **reviewed revision**
+`c3f71519eef55035ebc80a97e0e704b1055b01f8` checked out detached:
+
+| command, at `c3f71519ee` | result |
+|---|---|
+| `pnpm --filter @armyofagents/worker-protocol build` | pass |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts` | **1 file, 9 tests passed** (vitest 3.2.6, 846 ms, win32) |
+| `node scripts/check-frozen-worker-protocol-consumer.mjs --source-sha b7a842870ce7509d8baa75409e0ab19da375c88a` | `OK (zod 3.24.2, esbuild 0.28.1)` |
+
+**And two mutations re-executed by the reviewer, not taken from the record:**
+
+- **M6-class (the anti-vacuity claim I certified).** Replacing the window's tail with
+  `announcementsFor(requests.map(…) as never, requests)` — announcements built from `requests`
+  instead of `exported` — gives `3 failed | 6 passed`, and **`nothing committed ⇒ NO announcement`
+  is one of the three reds**. So that control is non-vacuous at GREEN, measured here and not argued.
+  Reverted; baseline back to `9 passed`.
+- The mutant also reds `a PARTIAL window still announces what COMMITTED` and the fail-closed-join
+  case, which is consistent with the record's M6 row (it reports a wider red set for its own exact
+  mutant shape; mine differs in how the fake refs are minted).
+
+**Disposition after the rerun: `approved`, unchanged.** The rerun and the mutation both pass at the
+reviewed revision, so nothing in attempt 1's reasoning moves — the defect was the missing evidence,
+not the conclusion.
+
+#### ★ Review attempt 3 — the COMPLETE five-command ledger, at the declared revision
+
+*Appended 2026-09-24 by the same reviewer. Codex round 2 on PR #595 raised two things and both are
+**real**, verified against `implementation-plan.md` before acting: the `CLI-013` focused command
+(`implementation-plan.md`, §"Focused command" table row `CLI-013`) is **five** commands and attempt 2
+recorded three of them; and the review's declared reviewed revision (`a88966c23…`) was not the
+revision the rerun was performed at (`c3f71519ee`). The status flip was reverted a second time
+(`cc6e2c51e`), the field is corrected above, and the full sequence is below. Attempts 1 and 2 keep
+their text.*
+
+All five run at `c3f71519eef55035ebc80a97e0e704b1055b01f8`, checked out detached in the review
+worktree with dependencies installed, in the order the ledger gives them:
+
+| # | command | result |
+|---|---|---|
+| 1 | `pnpm --filter @armyofagents/worker-protocol build` | **pass** (`tsc`, no diagnostics) |
+| 2 | `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts` | **1 file, 9 tests passed** |
+| 3 | `pnpm check:frozen-worker-protocol-v1` | **`OK`** (`sourceSha b7a842870ce7509d8baa75409e0ab19da375c88a`, zod 3.24.2, esbuild 0.28.1) |
+| 4 | `pnpm --filter @armyofagents/worker-daemon typecheck` | **pass** (`tsc --noEmit`, no diagnostics) |
+| 5 | `pnpm --filter @armyofagents/worker-daemon build` | **pass** (`tsc`, no diagnostics) |
+
+Shell exit status for the chained sequence: `0`. Platform win32, vitest 3.2.6.
+
+**Disposition after the complete ledger: `approved`, unchanged.** Attempt 2's mutation re-execution
+(the M6-class anti-vacuity red) stands and is not repeated here.
