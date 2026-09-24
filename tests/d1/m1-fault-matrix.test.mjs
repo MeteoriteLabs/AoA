@@ -1686,7 +1686,12 @@ test("fault-matrix: restarting the control plane leaves the durable lease state 
 
   if (!SUPPRESS_INJECTION) {
     const restarted = restartComposeService("control-plane");
-    assert.equal(restarted.ok, true, `restart: ${truncate(restarted.stderr)}`);
+    // DEP-021 self-audit, family 1 — the STATUS, never the STREAMS. `docker compose` is not the
+    // dexec chokepoint and has no `secrets` scrubber on its path, while the lane generates a
+    // per-run secrets master key and control-plane keypair into the environment compose reads.
+    // A compose error that echoed a rendered value would land in a PUBLIC CI job log. The exit
+    // status is the diagnostic that matters; compose's own output is already in the step output.
+    assert.equal(restarted.ok, true, `restart: exit status ${restarted.status}`);
   }
 
   const healthy = waitFor(
@@ -2200,7 +2205,7 @@ test("fault-matrix: restarting the deployed worker mid-run makes its startup rec
   if (!SUPPRESS_INJECTION) {
     assert.equal(inFlight.ok, true, `the run must be IN FLIGHT before the restart, else nothing is interrupted: ${truncate(inFlight.last)}`);
     assert.equal(leaseWasLive, true, `the lease must be live at restart time, else the probe has no live candidate: ${truncate(leaseBefore)}`);
-    assert.equal(restarted.ok, true, `the worker-b restart must succeed — it IS the injection: status=${restarted.status} ${truncate(restarted.stderr, 1000)}`);
+    assert.equal(restarted.ok, true, `the worker-b restart must succeed — it IS the injection: exit status ${restarted.status}`);
     assert.equal(cameBack.ok, true, `worker-b must come back on a NEW container start: ${truncate(cameBack.last)}`);
     assert.ok((logsAfter?.bytes ?? 0) > 0, "the worker log is empty after the restart, so the fence assertion is not a measurement");
     assert.equal(
