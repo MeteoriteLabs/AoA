@@ -2362,3 +2362,129 @@ surface.
 default in the same overlay (currently pullable, and source-building PostgreSQL is an unruled
 widening — the residual risk, recorded for a ruling) and `docker-compose.staging.yml`'s `ghcr.io`
 defaults (staging's own, overridden by the overlay's required digests on this lane).
+
+---
+
+## E6-F031 — the `activity_log` same-tenant positive control reded because the case's only own event was `usage`, which `E3-D-AUDIT-SET` deliberately does NOT audit
+
+**Status:** resolved · **Owner:** `DEP-022` · **Severity:** HIGH
+
+Class: HARNESS. Found 2026-09-25, probing runs `36047740323` / `36051455003`. It blocked M1a's
+critical path: the keyed step 2 is gated on a green keyless step 1.
+
+The `cross-tenant` step reded byte-identically on two independent keyless runs with
+
+```
+DEP-015 cross-tenant: activity_log: the owner's own read must return its row:
+{"own":0,"foreign":0,"unscoped":0,"ownActions":[]}
+```
+
+### The measured chain
+
+Every link below was read at source; the one inference is marked as such.
+
+1. **The read predicate.** `probeLegacyTableIsolation`'s `activity_log` arm
+   (`tests/d1/lib/e6f-harness.mjs`) reads
+   `activityService.list({ companyId, entityType: "job", entityId: jobId })`, and its anti-vacuity
+   arm runs the SAME predicate minus the Company, as raw SQL **on the owner pool**.
+2. **`unscoped === 0` rules out the visibility hypotheses outright.** A predicate-removed read on the
+   owner pool returning zero means no such row exists **for any tenant**. RLS/GRANT (`E2-D03`) and
+   company-scoping can only produce `own: 0` with `unscoped > 0`, so both are eliminated by
+   measurement rather than by argument. This is a WRITER question, not a reader question.
+3. **Every production writer of `entity_type='job'`, enumerated** (`grep` on `JOB_AUDIT_ENTITY_TYPE`
+   and `entityType: "job"` across `server/src` and `packages`) — **four** sites, each with its
+   trigger read:
+   * `recordJobSubmitActivity` ← `submitJobWithinTenant`, gated `if (tx && auditSink)`. The lane's
+     fixture never uses it: `bringUp` calls `seedSpineJob`, which `INSERT`s `issues`, `jobs` and
+     `job_attempts` by raw SQL.
+   * `recordJobDrainActivity` ← the drain route / `job-reconciliation` / the drain-trigger store.
+     No drain is issued against the victim job before this arm.
+   * the staged-input bundle audit (`job-input-staging.ts`), gated `if (pending.length > 0)`. The
+     lane stages no input files.
+   * `createAcceptedActivityAuditProjector` (JOB-017) ← the `acceptEvent` seam. **Registered on
+     every ingest** (`job-events.ts`, `acceptedEventProjectors`), so the product path is wired.
+4. **`E3-D-AUDIT-SET` is CLOSED at `attempt_started` and `terminal`**
+   (`ACCEPTED_ACTIVITY_AUDIT_ACTIONS`, `job-accepted-activity-audit.ts`). `usage` is **deliberately
+   excluded** — it has its own durable record, the `cost_events` row plus its `authoritative_cost`
+   receipt.
+5. **The case uploaded exactly ONE own event, `eventType: "usage"`** (`cross-tenant.mjs` §2). So the
+   projector correctly never fired, and no `activity_log` row was ever written.
+
+★ **The observed payload is explained down to its last field, including why the SIBLING arm passed.**
+The same `usage` batch is what gives `cost_events` its charge — and in `mode: keyless` the enabled
+tenants' journey is never dispatched, so that charge can only have come from this case's own batch.
+The ingest therefore demonstrably accepted, fenced and priced the batch: the *only* remaining
+variable is the event TYPE. `ownActions: []` is the projector reporting, correctly, that nothing in
+the audited set arrived.
+
+The single INFERRED link, marked as such: that no other lane phase submits an `attempt_started` or
+`terminal` event against *this fixture job*. It is read rather than dumped from the database — the
+fixture's `jobId` is minted inside `runCrossTenantCases` by `newScenarioIds()`, so no phase outside
+that function can name it — but it is a reading, not a row count.
+
+### HARNESS, not product
+
+Every production writer is correctly gated and the JOB-017 projector is registered on every ingest.
+Nothing in the product declines to write a row it owes. The driver asserted a row that no path it
+exercised writes.
+
+★ **The second source that settles it** (`E.2.1`): the D1 twin
+(`tests/d1/m1-fault-matrix.test.mjs`) passes `journeyA.ids.jobId` — the **real journey's** job, whose
+attempt ran `attempt_started` through the ingest — and says so in an assertion of its own:
+*"tenant A's journey must have run — it is what wrote the cost and audit rows"*. The shipped-boot
+port substituted its own raw-SQL fixture job, and the lane never retains the journey's job id in
+`state`, which is almost certainly why. The D1 twin is therefore **not** affected by this finding.
+
+### The fix, and why it is stronger than the D1 shape
+
+The case now submits the audited `attempt_started` event on the fence it already owns, so the arm
+**earns** its row instead of borrowing one another phase happened to leave. That certifies the live
+JOB-017 audit write rather than depending on journey ordering. `terminal` is deliberately not used —
+it would end the attempt, and every later arm needs this fence live. Sequence numbers shift (usage
+1→2, hostile 2→3) and must stay distinct: a duplicate seq is rejected as a replay, which would make
+the hostile refusal indistinguishable from a tenant denial (the DEP-016 lesson).
+
+★ **No control was weakened.** Both `own > 0` and the `unscoped > 0` anti-vacuity arm are untouched,
+and the `foreign === 0` classification is unchanged. Relaxing a same-tenant positive control to
+unblock the lane would have re-created precisely the `resolveExecutionSecretHttp` defect this control
+exists to catch.
+
+### Class sweep
+
+**The class:** *a probe arm that asserts a row exists without the case producing it — it depends on a
+row some other phase is assumed to have written.* Enumerated over all four arms of
+`probeLegacyTableIsolation`: **4 checked, 1 found, 1 fixed.** `task_outputs` plants through the
+production writer (`upsertForIssue`); `provider_credentials` plants by owner SQL; `cost_events` is
+produced by the case's own `usage` event; `activity_log` planted nothing.
+
+**The dual** (`E.1(b)`), searched for and **found**: *an arm that can PASS wrongly on a row another
+phase wrote.* Filed as `E6-F032`.
+
+---
+
+## E6-F032 — the `cost_events` arm can pass on the JOURNEY's charge, so it would stay green if the case's own pricing regressed
+
+**Status:** open · **Owner:** `unowned` · **Severity:** MEDIUM
+
+Class: HARNESS. Found 2026-09-25, as the DUAL half of `E6-F031`'s class sweep. A latent vacuity in a
+certifying control: it cannot produce a false denial, only a false pass.
+
+`probeLegacyTableIsolation`'s `cost_events` arm reads `costService.byAgent(companyId)` filtered to
+`agentId`, and `cross-tenant.mjs` asserts `cost.ownCents > 0`. That predicate is **Company- and
+agent-scoped, not job-scoped**, and the lane's fixture agent is the tenant's own agent — the same one
+the real journey charges. So in `mode: keyed`, where the enabled tenants' journey does run, `own > 0`
+and `ownCents > 0` are satisfied by the journey's charge **whether or not the case's own `usage`
+event was priced at all**.
+
+This is the exact polarity `E6-F031` lacked: `E6-F031` was a control that **failed wrongly**; this is
+a control that can **pass wrongly**.
+
+★ It is not a false-denial risk, which is why it is Medium rather than High: the arm cannot claim
+isolation it does not have, it can only fail to notice that its own charge went missing. But it means
+the `d2m.tenant.cross.cost_rows` row's `positiveControlPassed` is weaker in `keyed` than in `keyless`
+— and `keyless` is the mode in which it is currently sound, which is the wrong way round for a gate.
+
+**Deliberately NOT fixed here, with the reason** (`E` rule 4): a sound fix reads the agent's total
+before the case's own upload and asserts the delta, which changes the arm's shape and its recorded
+evidence fields. Doing that inside a probe PR whose purpose is to establish `E6-F031`'s cause would
+mix a measured diagnosis with an unrelated control redesign. Owner is `DEP-022`, which owns the arm.
