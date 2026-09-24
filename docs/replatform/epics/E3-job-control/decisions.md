@@ -605,10 +605,23 @@ record is NOT a safe mechanism**, for two measured reasons:
    revocation record for a successful device ROTATION would bump the generation a SECOND time and
    **disable the target** — converting a rotation into a revocation, which is precisely the outcome
    the fix exists to avoid.
-2. **It CANCELS rather than re-places.** The fanout's Phase-1b terminalises stranded attempts to
-   `cancelled`. That is correct for a revoked target, where the work cannot run anywhere on it. For
-   a rotation the target is still serving, so cancelling is a heavier remedy than the defect
-   warrants; re-placement onto the current generation is the outcome an operator would expect.
+2. **It CANCELS rather than re-places, and says so as a NON-GOAL.** The fanout's own header
+   (`execution-target-revocation-fanout.ts`) states it *"never re-homes or re-places work — the
+   placement is pinned to the revoked target and fallback beyond the immutable placement policy is a
+   non-goal, so revoked work is cancelled, not re-woken."* That is correct for a REVOKED target,
+   where the work cannot run anywhere on it. For a ROTATION the target is still serving, so
+   cancelling is a heavier remedy than the defect warrants and re-placement onto the current
+   generation is what an operator would expect.
+
+   ★ **And the same header names the half that DOES transfer:** it *"marks matching old-generation
+   leases `revoked`, releases their capacity claim, and requests attempt cancellation."* So the
+   capacity-release machinery — the second binding condition — genuinely exists and is reusable. It
+   is the RE-PLACEMENT half that the file declares out of scope. An owning ticket taking the
+   fanout-branch route therefore has to either accept cancellation semantics for a rotation or add
+   re-placement against a stated non-goal; an owning ticket taking the distinct-record route inherits
+   neither constraint but builds the capacity release itself. **Both routes stay open** — which is
+   correct, because choosing between them needs exactly the end-to-end measurement this amendment
+   exists to prove is required, and that belongs to the ticket that builds it.
 
 **What the decision now requires instead.** A path that is NOT the revocation record: either a
 **distinct convergence record kind** for a generation advance, or a **branch in the existing fanout
@@ -622,9 +635,14 @@ is part of the fix) applies to it unchanged.
 still refused** for the reason originally given. Both binding conditions stand. The equality pin is
 still not relitigated.
 
-★ **How this was got wrong, recorded because it is the same error as the rest of this ticket.** The
-"reuse the existing fanout" mechanism was reasoned from the fanout's own Phase-1b COMMENT — which
-does describe exactly the right outcome — without measuring what `ensureExecutionTargetCutoff`
-actually does when invoked. **The chain, not the link**, for the fourth time in this ticket, and this
-time inside a recommendation handed up for ratification. It is the strongest argument yet that a
-mechanism named in a decision must be measured end to end before it is locked, not only motivated.
+★ **How this was got wrong, recorded factually rather than apportioned.** The mechanism was
+PROPOSED in `E3-F041`'s "shape of the fix" and RATIFIED here, and **neither step measured it end to
+end**. It was reasoned from the fanout's own comments — which do describe exactly the right outcome —
+without measuring what `ensureExecutionTargetCutoff` actually does when invoked. **The chain, not the
+link**, at both the proposing and the ratifying end.
+
+★★★ **THE RULE THIS PRODUCED, and it is the most useful thing in this decision:** *a mechanism named
+in a decision must be measured end to end BEFORE the decision locks.* A decision is harder to correct
+than a commit — it is cited, inherited and built against — so the measurement bar for a decision is
+**higher** than for code, not lower. **"Reuses X" is a claim about X's behaviour** and must be
+verified like any other claim. This amendment exists because that was not done.
