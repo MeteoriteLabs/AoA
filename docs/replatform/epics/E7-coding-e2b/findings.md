@@ -4628,3 +4628,171 @@ any of them would be invented ownership.
 committed file IS announced (non-vacuity — assert the announcement exists and names that artifact,
 not merely that the run survived) and that the hung file is not. A test asserting only that the
 window reports `timed_out` passes against the defect verbatim.
+
+---
+
+## E7-F046 — a committed export artifact's relative path is durable NOWHERE on the control plane, so `CLI-014`'s `detectedFiles` outcome is unsatisfiable without a frozen-v1 widening
+
+**Status:** open · **Owner:** `unowned` — re-pointed off `CLI-014` by `E7-D13` (d) · **Severity:** MEDIUM
+
+★ *Owner line at filing: `CLI-014`. `E7-D13` descoped `detectedFiles.path` for M1 and closed `CLI-014`'s projection half as delivered by `JOB-017`, so this finding is no longer that ticket's. It is `unowned` rather than re-pointed at a named ticket because the post-M1 protocol question has none yet, and an invented owner is what this manifest exists to prevent.*
+
+**Filed** 2026-09-24 by `CLI-014`'s owed design step (`tickets/CLI-014-design.md`), measured at
+`eb8458bb3538c99ee5cb54b6872202c5f268dd74`. MEDIUM because it blocks a chartered ticket's headline
+Outcome and leaves a founder-visible product gap (a committed artifact the founder cannot identify
+by name), while weakening no guarantee and admitting no attacker: everything below is a deliberate
+`.strict()` refusal working as designed.
+
+**What it is.** `CLI-014`'s Outcome is that *"`detectedFiles` is folded from the `artifact_prepared`
+events rather than hard-coded"*, and its design item 1 requires *"a durable relative path, scoped by
+tenant, job, attempt and status"* whose *"provenance must be durable at commit time, not
+reconstructed at projection time"*. The task section already knows the announcement carries no path.
+**It also is not durable at commit time, and this is the measurement the task section does not
+have:** the path is dropped at every boundary between the sandbox listing and the `job_artifacts`
+row, and no column, payload or object key preserves it.
+
+**Verified at source.**
+
+- `createExportRequestProducer` (`packages/worker-daemon/src/lease/export-request-producer.ts`)
+  produces `ArtifactExportRequest.path` — the absolute in-sandbox path under the ruled output root.
+- `exportArtifactId` (`packages/worker-daemon/src/lease/artifact-export.ts`) derives the artifact
+  identity as `deterministicUuid("artifact-export:<jobId>:<attempt>:<path>")`. That is a **one-way**
+  digest: the identity is stable under retry, which is its purpose, and the path is unrecoverable
+  from it.
+- The object key is the attempt prefix plus that same `artifactId` (same file) — the digest again.
+- The commit manifest is `artifactManifestV1Schema`
+  (`packages/worker-protocol/src/artifacts.ts`): `.strict()`, with
+  `protocolVersion, organizationId, companyId, jobId, attempt, artifactId, kind, sensitivity,
+  retention, objectKey, sizeBytes, sha256, contentType, createdAt`. **There is no path field, and
+  `.strict()` refuses one.**
+- `jobArtifacts` (`packages/db/src/schema/job_artifacts.ts`) has `identifier` (the opaque digest id),
+  `objectKey`, `sha256`, `sizeBytes`, `contentType`, `kind`, `versionNumber`, `attempt`, `status` and
+  the DAT-003/DAT-006/DAT-009 dispositions. **No path column.**
+- `announcementsFor` (`packages/worker-daemon/src/supervisor/supervisor.ts`) is the one place that
+  still holds both halves — it joins `exported` back to the requests **by `ref.path`** — and emits
+  `artifactPreparedPayloadV1Schema.parse({ artifactId: ref.artifactId, kind })`. The path is in
+  scope, in a local `Map`, and deliberately not sent.
+
+**Why it cannot be worked around at the projector.** `detectedFiles` is
+`ReadonlyArray<{ path: string; type?: string }>` (`server/src/services/canary-run-projector.ts`) and
+`formatRunSummary` (`server/src/services/run-summary.ts`) renders those `path` values into the
+founder-visible run-summary comment. `foldAttemptEvidence`'s hard-coded `detectedFiles: []`
+(`server/src/services/canary-terminal-projection.ts`) is annotated with this exact reason. Any
+value the projector could put there — the `artifactId`, the object key, a `kind`-derived label — is
+**a path the sandbox never reported**, rendered to the founder in a file-list position, which
+`CLI-014`'s own design item 4 forbids in those words.
+
+★★★ **THE CHEAPEST OPTION IS NOT A WIDENING AT ALL — added 2026-09-24 (Codex P2, PR #596),
+verified at source, and it is the one to evaluate FIRST.** `artifactManifestV1Schema` already carries
+a durable `objectKey`, and its only structural rule is `objectKeyHasPrefix`: a safe relative POSIX
+key, the exact `expectedAttemptObjectPrefix`, and a non-empty suffix. The `${prefix}${artifactId}`
+shape is a **convention** of `artifact-export.ts` and `job-input-staging.ts`, not a schema
+constraint. So a worker could place a reversibly-encoded, bounded relative path in that existing
+field and the projector could recover it from `job_artifacts.objectKey` — **no frozen-schema
+widening, no fixture re-mint, no new DB column.** What it does cost: the convention is pinned by an
+equality check on both sides (`artifact-export.ts` fails `object_key_mismatch` if the store returns a
+different key), so it needs an **E5 convention ruling**; and it routes tenant-authored path bytes
+into an object key that reaches logs and receipts, so it needs a **leak ruling**. Also note the key
+is bounded at 1024 chars while a path is not, so an encoding needs its own bound and a refusal.
+★ *The paragraph below, retained as filed, said the two widenings were "the two fixes"; that framing
+was wrong and would have driven an unnecessary versioned wire change.*
+
+**Why `CLI-014` owns it but cannot close it.** The two fixes both widen a frozen v1 schema:
+(1) carry the relative path on `artifactPreparedPayloadV1Schema`, or (2) carry it on
+`artifactManifestV1Schema` and add a `job_artifacts` column. Either re-mints the hash-pinned frozen
+consumer fixture (`check:frozen-worker-protocol-v1`, which pins the whole
+`packages/worker-protocol/src` tree at a recorded source sha), and (2) also contradicts `CLI-014`'s
+own *"additive; no schema change"* migration note. The commit path is `CLI-012`/`DAT-009`'s, and
+`E7-D11` (ruling F7) declined to move the protocol axis. So the disposition is a **ruling**, not a
+build: descope `detectedFiles` and keep the materialization residue, widen the wire, or close
+`CLI-014` as delivered-by-`JOB-017` and re-file the residue. `tickets/CLI-014-design.md` lays the
+three out and rules none.
+
+**What would close it.** ★ *Ruled 2026-09-24 by `E7-D13`: disposition (b) — descope
+`detectedFiles.path` for M1, do NOT widen the wire, because `M1b`'s criterion is "an agent's output
+reaches the founder" and a displayed filename is fidelity, not capability. The descope is made
+honest by `E7-D13` (c), OMIT NEVER INVENT, pinned by
+`server/src/__tests__/cli-014-output-path-omission.test.ts`. This finding therefore stays OPEN as
+the post-M1 **protocol** question: resolving it means widening a frozen v1 schema, which is a
+protocol decision above any ticket and needs its own compatibility analysis — never a side effect
+of adding a display field.* The original text follows.
+
+Whichever of the three the ruling picks, plus — for the widening arm — a
+leak review of the new field, because the path is tenant-authored: `ArtifactExportFailedError`'s
+outcome channel is path-free *on purpose* (*"only the stage and the path are reported"*, and only
+`stage` plus the normalised `reason` cross into the outcome), and `E7-D11`'s Observability clause
+permits only *"the declared relative path"* — which is precisely the value that does not exist
+today. A test asserting merely that `detectedFiles` is non-empty passes against a fabricated path
+and proves nothing; the arm that matters asserts the rendered entry equals the path the sandbox
+listing reported, end to end.
+
+---
+
+## E7-F047 — a distributed run's committed bytes are NOT retrievable from the founder-facing task: the projected `task_outputs` row leaves `artifactId`, `artifactVersionId`, `assetId` and `url` all null, so the viewer renders "No preview is available"
+
+**Status:** open · **Owner:** `unowned` · **Severity:** HIGH
+
+**Filed** 2026-09-24, from Codex P1 on PR #596, **verified at source before filing** (not accepted on
+the reviewer's word). It is filed against a claim this very PR was making: `E7-D13`'s reason said
+*"`{artifactId, kind}` plus retrievable bytes satisfies"* `M1b`'s criterion. **The second half is
+false at HEAD**, and that correction is annotated on `E7-D13` itself.
+
+**What it is.** `applyAcceptedOutputEvent`
+(`server/src/services/job-accepted-output-projection.ts`) is the sole distributed-output mapping. For
+every projection it sets `type: "artifact"`, `provider: DISTRIBUTED_JOB_ARTIFACT_PROVIDER`,
+`externalId` (the committed `job_artifacts` id) and a metadata block — and **nothing else**. Its own
+comment says so: *"`artifactId` stays null because promoting a `job_artifacts` row into a product
+`artifacts` row is `CLI-014`'s."* No `artifactVersionId`, no `assetId`, no `url`.
+
+`OutputRefTabBody` (`ui/src/components/viewers/refBodies.tsx`) dispatches on exactly those four
+fields, in order: `output.artifactId` → `ArtifactTabBody`; else `output.assetId` →
+`AssetRefTabBody`; else `output.url` → `OutputLinkCard`; else `OutputDetailCard`. With all four
+null **every** distributed artifact falls through to the last branch, which renders
+*"No preview is available for this output."*
+
+**So the bytes are durable and unreachable.** They are in object storage, the `task_outputs` row
+proves they exist, and the founder looking at the task has no path to them — no viewer, no download,
+not even a filename (`E7-F046`). The row is a receipt, not a deliverable.
+
+**Why HIGH.** `M1b`'s exit criterion is *"an agent's output reaches the founder."* On the measured
+evidence it does not. This is the difference between a milestone that passes on a receipt and one
+that passes on a deliverable, and the gap was one ruling away from being declared delivered: the
+first revision of `E7-D13` closed `CLI-014` while calling materialization *"available as separate
+work"* — unowned, unfiled and unscheduled. That is the *"a check that nothing runs"* shape applied
+to a milestone criterion. Not a security issue and no attacker; the severity is entirely about the
+false-delivery risk.
+
+**Distinct from `E7-F046`, and independent of it.** `E7-F046` is the missing *path* (a display
+name), needs a protocol or object-key-convention decision, and is descoped for M1 by `E7-D13` (b)
+because a filename is fidelity, not capability. **This** finding is the missing *content link*, is
+capability, and needs **no** wire change at all: everything it requires
+(`objectKey`, `sha256`, `sizeBytes`, `contentType`, `kind`, `versionNumber`) is already durable on
+the committed `job_artifacts` row. Fixing `E7-F046` would not fix this; fixing this would not fix
+`E7-F046`.
+
+**Why `unowned`.** The work is the materialization residue that `CLI-014`'s task section named
+(*"promoting a `job_artifacts` row into a product `artifacts` row"*), but `E7-D13` (a) closes
+`CLI-014`'s projection half as delivered by `JOB-017` and leaves this residue explicitly unruled, so
+`CLI-014` is not its owner. `JOB-017` is shipped; `CLI-012` and `DAT-009` own the export and commit
+path, not the product-artifact model; `CLI-015` is the judge. Naming any of them would be the
+invented ownership this manifest exists to prevent. **It needs a ticket, and that is a scheduling
+decision above this finding.**
+
+**What would close it.** Promote the committed `job_artifacts` row into a product `artifacts` row
+plus an `artifact_versions` row, **idempotently** under retry and re-projection, inside the
+transaction the `JOB-017` seam already holds, and set `artifactId`/`artifactVersionId` on the
+projected `task_outputs` row so `OutputRefTabBody` enters `ArtifactTabBody`. Constraints a closing
+change must satisfy, each already measured:
+
+- **Idempotency is not optional** — the seam re-drives pending receipts
+  (`redrivePendingProjection`), so a second pass must find the existing product artifact rather than
+  mint a second version.
+- **`artifacts` is company-scoped with no `organizationId` and no RLS** (`E2-D03` is LOCKED), so the
+  tenant check is the caller's, exactly as `projectAcceptedOutputCore` already does it.
+- **`artifacts.createdById` is `NOT NULL`** and a worker has no user, so the promotion must decide
+  what identity a machine-authored product artifact carries — a real question, not a cast.
+- **F10:** the closing test needs a cross-tenant arm (a second Organization's committed row is not
+  promoted onto the first's task) with a same-tenant positive control.
+- **Anti-vacuity:** an assertion that a `task_outputs` row exists passes today, against the defect.
+  The arm that matters asserts `artifactId` is non-null **and** that the viewer's dispatch reaches
+  the artifact branch — i.e. that a founder can open the bytes.
