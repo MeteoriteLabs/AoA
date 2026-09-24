@@ -2067,6 +2067,34 @@ construction.
 
 All three were repaired in PR #603. They are filed as one finding because they are one defect.
 
+### A fourth instance, of the METHOD rather than the environment
+
+The three above are defects the *lanes* cannot see. This one is a defect in the **sweep that was
+supposed to find them**, and it is recorded here because it has the identical signature: a clean
+result about a set that was never examined.
+
+`E6-F021`'s class sweep enumerated with:
+
+```
+grep -rn "image:" docker-compose*.yml
+```
+
+**That is not recursive.** The **shell** expands `docker-compose*.yml` before `grep` ever runs, and
+it expands only to the **five root-level** files — so `-r` recursed into nothing and two nested
+compose files were never inspected. `find . -name "docker-compose*.yml"` returns **seven**. One of
+the two missed files, `docker/m1-boot/docker-compose.m1-boot.yml:91`, carried the same withdrawn
+image; it is [[E6-F030]].
+
+★★★ **A sweep that silently covers five of seven reads exactly like one that covers all seven.** That
+is `E.2.1` landing on a sweep: the enumeration's own output was the only evidence about its domain,
+so it could report *"4 checked, 1 found"* with complete confidence and be wrong about the
+denominator. **A count is a claim about a domain, and the domain needs a second source** — here,
+`find`, which does the walking itself instead of handing the walk to the shell.
+
+Practical rule, since this will recur: **never hand a recursive search its own file list via a
+glob.** Use `find`, or `grep -r` with a DIRECTORY operand and `--include=`, and quote the pattern so
+the shell cannot expand it. And when reporting *"N checked"*, say how N was obtained.
+
 ★★★ **A GREEN CI RUN IS NOT EVIDENCE ABOUT ANY OF THEM, and that misreading is what let #3 survive.**
 Three `d1-merge-train` runs (`36022608037` bring-up, `36025567413`, `36027175548`) went green — the
 last two fully, 47/47 + 9/9 executed — *while instance #3 was live in the tree*. They are not in
@@ -2106,6 +2134,19 @@ Either of these closes it; the first is stronger.
 Whichever is built needs a positive control: reintroduce a stale override, or an amd64-only mirror,
 and show the check goes red. A check adopted on the strength of the fixes it post-dates has not been
 shown to detect anything.
+
+### Related, and downgraded on purpose: GHCR package visibility
+
+`ghcr.io/meteoritelabs/aoa-d1-minio` is repo-scoped and private, so the documented local bring-up
+needs a `docker login ghcr.io` with `read:packages` (stated as a requirement in
+`docker/d1/README.md`). Making it anonymously readable is an **org-admin** action — `GITHUB_TOKEN`
+cannot set package visibility.
+
+★ It was filed as [[E6-F030]]'s route 1 and was briefly a **blocker**. The route-2 ruling removed
+that: the shipped-boot lane will build MinIO from source rather than pull the mirror, so nothing
+gates on this any more. It is now a **convenience for D1's local operators only** — if it flips, the
+login prerequisite and its README paragraph retire. Instance #2 above is what it would close, and
+CI is unaffected either way because CI logs in with its own run token.
 
 ### Not claimed
 
@@ -2160,33 +2201,60 @@ well-formed, never that it is complete — landing on the sweep itself. The repa
 sound and proven; the CLAIM that the class was fixed was false, and it was false because of the
 enumeration, which is the more dangerous of the two failure modes.
 
-### ★ The one-line fix does not work, and this is the part that needs a ruling
+### RULED: route 2 — the lane builds MinIO from source
 
-Pointing the overlay at `ghcr.io/meteoritelabs/aoa-d1-minio@sha256:187391a6…` fails, because that
-package is **repo-scoped and private**, and `scripts/lib/m1-shipped-boot-shape.mjs:215` fails the
-lane on `/\bdocker (pull|login)\b/`:
+**Ruled by the planning session, 2026-09-24.** The reasoning is recorded here in full so whoever
+builds it inherits the argument rather than re-deriving it.
 
-> *"the lane must never `docker pull`/`docker login` — images are built from the candidate's source"*
+★ **First, a correction to this finding's own filing, because it was imprecise about the guard.**
+The filing said the one-line fix "does not work" because
+`scripts/lib/m1-shipped-boot-shape.mjs:215` forbids `docker pull`/`docker login`. Re-measured at
+source: **that guard reads the WORKFLOW text and nothing else** —
+`scripts/check-m1-shipped-boot-shape.mjs:28` is
+`readFileSync(path.join(repoRoot, SHIPPED_BOOT_WORKFLOW))`, and `SHIPPED_BOOT_WORKFLOW` is
+`.github/workflows/m1-shipped-boot.yml`. So line 216's registry ban never sees
+`docker/m1-boot/docker-compose.m1-boot.yml`, and a *public* GHCR reference placed in that compose
+file would **not** have tripped anything. Route 1 would have passed. What is true is narrower: a
+**private** mirror needs a `docker login` in the workflow, and *that* reds line 215.
 
-That guard runs on every PR and is the thing that defines the lane's shape. So the lane cannot
-authenticate to a private mirror without redding it.
+**And that is exactly why route 2 is ruled rather than route 1.** Look at what the guard is for. It
+requires `build.sh` / `sbom.sh` / `sign.sh` / `admit.sh`, forbids `docker pull` / `docker login`, and
+forbids registry references, under the stated reason *"images are built from the source"*. That is
+founder ruling **F3**'s definition of a shipped CI boot: the lane builds the artefacts under test
+from the frozen candidate and boots them. **A lane whose object store arrives pre-baked from a
+registry is a weaker claim than the one F3 asks for.**
 
-Three routes. **None is a build agent's call**, which is why this is filed rather than fixed:
+So route 1 would have satisfied the guard's **letter** while quietly weakening the property the guard
+exists to protect — which is the defect class this programme keeps paying for, and it is worse when
+the guard would have stayed green. Route 2 is not the fallback; **it is what this lane was designed
+to do**, and `docker/d1/minio.Dockerfile` already performs exactly that build, fail-closed on the
+release tag's peeled commit, so it is reuse rather than new work. A Go compile per run is a fair
+price on a lane that runs rarely and deliberately.
 
-1. **Make the GHCR package anonymously readable** (org-admin; `GITHUB_TOKEN` cannot set package
-   visibility). Then no login is required, the shape guard is untouched, and the fix genuinely is one
-   line. It also retires the login prerequisite `E6-F021` added to `docker/d1/README.md`.
-2. **Have the lane build MinIO from source itself**, as it builds everything else.
-   `docker/d1/minio.Dockerfile` already performs exactly that build, fail-closed on the release tag's
-   peeled commit, so this is reuse rather than new work. **This is the option most consistent with
-   the guard's stated intent** — *images are built from the candidate's source*. Cost: a Go compile
-   in the lane.
-3. **Amend the shape guard and its owning decision** to permit a `ghcr.io` login specifically.
-   Recorded for completeness and **recommended against**: it edits a guard to accommodate the need it
-   was written to forbid, which is the "make the failure quieter" shape this programme keeps paying
-   for.
+★★ **The asymmetry is the interesting part, and it is not an inconsistency.** `docker-compose.d1.yml`
+and `docker/m1-boot/docker-compose.m1-boot.yml` get **different fixes for the same broken image, on
+principle**:
 
-Recommendation: **(1) if the organisation will do it, otherwise (2).**
+| lane | what it is | the right fix |
+|---|---|---|
+| D1 (`docker-compose.d1.yml`) | a **test harness** — pulling a pinned third-party image is entirely normal, and a registry mirror is the natural repair | pull the GHCR mirror, pinned by digest (`E6-F021`, shipped) |
+| `m1-boot` (`docker/m1-boot/…`) | the **shipped-boot evidence lane** — building from source **is the claim** (F3) | build MinIO from source in the lane (this finding) |
+
+Two different fixes for principled reasons, not two attempts at one fix.
+
+**Route 3 — amending the shape guard to permit a `ghcr.io` login — is rejected.** It would edit a
+guard to accommodate the need it was written to forbid.
+
+**Consequence: GHCR package visibility is no longer a blocker.** It was route 1's prerequisite; with
+route 1 rejected it becomes a **convenience for D1's local operators only**, and it is recorded that
+way on [[E6-F029]] rather than here.
+
+### Scope of the ruling
+
+Route 2 is deliberately **not** started in PR #603: that PR's D1 half is proven and lands as it
+stands, with this finding open. Whoever picks this up inherits the pin-down above — the site, the
+four measured links, the guard's true scope, and the reason route 2 beats a route that would also
+have gone green.
 
 ### Not claimed
 
