@@ -100,16 +100,18 @@ jobs:
           tags: ${{ steps.target.outputs.repo }}:${{ inputs.tag }}
 
       - name: Print the digest to pin
+        env:
+          IMAGE_REPO: ${{ steps.target.outputs.repo }}
+          IMAGE_TAG: ${{ inputs.tag }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          echo "Pushed: ${{ steps.target.outputs.repo }}:${{ inputs.tag }}"
-          echo "Digest: ${{ steps.push.outputs.digest }}"
+          echo "Pushed: ${IMAGE_REPO}:${IMAGE_TAG}"
+          echo "Digest: ${IMAGE_DIGEST}"
           {
             echo "### D1 MinIO mirror"
             echo ""
-            echo 'Pin this into `AOA_D1_MINIO_IMAGE`'"'"'s default in `docker-compose.d1.yml`:"
+            echo "Pin this digest into the AOA_D1_MINIO_IMAGE default in docker-compose.d1.yml:"
             echo ""
-            echo '```'
-            echo "${{ steps.target.outputs.repo }}@${{ steps.push.outputs.digest }}"
-            echo '```'
+            echo "    ${IMAGE_REPO}@${IMAGE_DIGEST}"
           } >> "$GITHUB_STEP_SUMMARY"

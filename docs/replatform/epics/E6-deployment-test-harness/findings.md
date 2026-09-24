@@ -1469,6 +1469,49 @@ Either way, flip this Status and DELETE the `scripts/finding-ownership.json` key
 in the filing commit)
 **Filed:** 2026-09-20, by the re-platform reconciliation/grooming pass, measured at `4df71dada`.
 
+★★★ **AMENDED 2026-09-24 — the quay.io row in the table below is now FALSE, and the repair
+it justified has failed the same way a second time.** The table records
+`quay.io/v2/minio/minio/manifests/RELEASE.2025-09-07T16-13-09Z` returning **200** on 2026-09-20.
+That measurement was true when made and is left in place unedited. Re-measured 2026-09-24, with
+controls on both registries:
+
+| registry | request | result |
+|---|---|---|
+| quay.io | `GET /v2/minio/minio/manifests/RELEASE.2025-09-07T16-13-09Z`, pull-scoped token (801 chars, acquired OK) | **401** |
+| quay.io | `GET /v2/minio/minio/manifests/latest`, same token flow | **401** |
+| quay.io | the repository API | `"Requires authentication"` |
+| quay.io | **control** `GET /v2/prometheus/busybox/manifests/latest`, anonymous | **200** |
+| Docker Hub | `GET /v2/minio/minio/manifests/{that tag, latest}` | **401**, **401** |
+| Docker Hub | **control** `GET /v2/library/busybox/manifests/latest` | **200** |
+| mirror.gcr.io | `GET /v2/minio/minio/manifests/{that tag, latest}` | **404**, **404** |
+| dl.min.io | `HEAD /server/minio/release/linux-amd64/minio` | **410 Gone** |
+| GitHub releases | `minio/minio` latest release | tag exists, **0 binary assets** |
+
+The controls are what make this a REPOSITORY closure rather than a registry outage: both
+registries are up and both anonymous token flows work. **Both documented sources for this image
+are unavailable, and there is no public route left to the upstream image.** Nine D1 dispatches over
+~2.5 hours died at *Bring up the D1 stack* before a single test ran, blocking every D1 campaign and
+therefore M1a.
+
+★ **The lesson is not "pick a better registry".** The original repair replaced one third party's
+registry policy with another's, and bought nine days. The class is *a gate lane whose bring-up
+depends on a third party's decision to keep serving an image*, and it is now fixed at the class:
+`docker/d1/minio.Dockerfile` + `.github/workflows/d1-image-mirror.yml` MIRROR the image into this
+organisation's own GHCR, and `docker-compose.d1.yml` pins
+`ghcr.io/meteoritelabs/aoa-d1-minio` **BY DIGEST** — because a tag we own is still a tag. The mirror
+takes the real MinIO server binary from a build that is public and re-homes it on Debian, so the
+compose service is byte-for-byte unchanged: root (for the `/root/.minio/certs` DAT-002 slice-7
+bind), `curl` (for the healthcheck), ENTRYPOINT the binary (for the existing `command:`). The
+sibling third-party refs were swept and are all still anonymously pullable
+(`pgvector/pgvector:pg18`, `ghcr.io/shopify/toxiproxy:2.9.0`, `node:lts-trixie-slim` — 200 each);
+the outage class is MinIO-only.
+
+★ **Nothing was made quieter.** No service was dropped, no pull failure was made non-fatal, and no
+healthcheck was relaxed. A lane that skipped MinIO would have converted a loud blocker into a
+silent hole.
+
+Evidence: `docs/replatform/epics/E6-deployment-test-harness/tickets/E6-F021-mirror-result.md`.
+
 ### The lane
 
 `d1-merge-train.yml@docs/replatform-program` — the lane that CONSTITUTES the `E6-D1-FOUNDATION`

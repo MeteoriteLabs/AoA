@@ -91,7 +91,7 @@ function validCompose() {
         networks: ["data-net"],
       },
       minio: {
-        image: "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
+        image: "ghcr.io/meteoritelabs/aoa-d1-minio@sha256:e22381966a3256a05c7f2b8dbedd0498b22ff8eafc8d3bc5040604fb57f8f35e",
         healthcheck: { test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live"] },
         volumes: ["d1-minio-data:/data"],
         networks: ["data-net", "control-net", "worker-net"],
