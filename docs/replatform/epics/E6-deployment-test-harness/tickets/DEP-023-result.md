@@ -1,0 +1,215 @@
+# DEP-023 — Clause 5's floor: restoring the safe half of the run-output observation surface — result
+
+**Status:** `gate_review`
+**Epic:** E6 · **Plan task:** `M1a` critical path (planning session under F2, 2026-09-24) · **Milestone:** `M1a`
+**Date (UTC):** `2026-09-24`
+**Implementer:** Claude Opus 5 (M1 build agent)
+**Start SHA:** `3966a01f9f` (`origin/docs/replatform-program`)
+**PR:** #602, base `docs/replatform-program`
+
+> `Status` is `gate_review` and may be set to `complete` only by a DISTINCT reviewer, never by this
+> author.
+
+---
+
+## 0. What this ticket is, and what it reverses
+
+Clause 5 of the frozen E5 audit matrix (redaction) had **no floor on either lane**, failing audit
+rule R4 and therefore `M1a` exit criterion 7. `DEP-021` (D1) and `DEP-022` (keyed) each measured the
+reason link by link and each concluded, correctly, that the case was blocked **one layer deeper than
+a flag or a keyed run**:
+
+> *"the log that WOULD have carried it was built and then DROPPED by the M1 planning session under
+> ruling F2, 2026-09-23, filed `E4-F019` … unblocking this is a DECISION to revisit F2, not a build
+> task."*
+
+This ticket is that decision's **safe half**, built. Redaction on this path always worked and is
+applied twice; what was missing was a surface to observe it on, and the F2 drop removed the only
+candidate. DEP-023 restores a surface that is **not** the one F2 dropped, and the difference is the
+whole ticket:
+
+| The dropped surface (WRK-018 1(b)) | This surface |
+|---|---|
+| Carried DATA that had to SURVIVE redaction (four counts) | Carries only the marker-bearing line the scrubber already rewrote; nothing has to survive |
+| Written through `createWorkerLogger`, whose sink adds `msg`/`time`/`level` BELOW any caller-side scrub (`E4-F019`) | Written below a scrubber at the **transport boundary** on both destinations |
+| Unconditional | OFF unless `AOA_WORKER_RUN_OUTPUT_PROBE=1`, which only the D1 fault-matrix override sets |
+| Unbounded in principle | ONE tagged line, truncated to 512 chars |
+
+---
+
+## 1. The chain, re-measured at source at this revision (not inherited)
+
+Every link below was read in this session, at `3966a01f9f`, and two of them **correct** the
+pendingReason this ticket supersedes. E.3.1 — the whole chain, not the link I happened to open.
+
+| # | Link | Measured |
+|---|---|---|
+| 1 | An echo's only channel out of a sandbox | `ExecuteInput.onStdout` (`packages/worker-daemon/src/supervisor/provider.ts`) — confirmed |
+| 2 | On the networked lane that callback is the adapter-manager's capture | `executeRelayingStdout` → `createRunOutputCapture({canaries: Object.values(env)})`, returns only `stdoutTail` (`packages/adapter-manager/src/server.ts`) — confirmed |
+| 2b | How the tail re-enters the daemon | `WireSandboxProviderDriver.execute` replays the returned tail into the caller's `onStdout` (`packages/provider-wire/src/driver.ts`) — **not previously stated**; it is what makes the daemon's own capture the second scrub |
+| 3 | "the daemon scrubs that tail again (`supervisor.ts`, the `observeRun` call site)" | ★ **IMPRECISE, corrected.** There is **no** scrub at the `observeRun` call site. The daemon's second scrub is `createRunOutputCapture`'s own `close()` (composed at `supervisor.ts` around `execute`), and the *third* is `scrubEventStrings` inside `EventSequencer.#emit`. The conclusion ("scrubbed twice before the observer sees it") is unchanged and if anything stronger |
+| 4 | The tail's only consumer | `createUsageObserver` returns `{usage}` and never populated `obs.logs` — confirmed |
+| 5 | The log that would have carried it | dropped under F2, filed `E4-F019` — confirmed, in `usage-observer.ts`'s and `supervisor.ts`'s own words |
+| 6 | The `DEP-017` probe is no alternative | `envProbeLogMessage` serialises names and digests, never values — confirmed |
+
+---
+
+## 2. What was built
+
+| Change | File |
+|---|---|
+| `--aoa-fake-echo-env=<NAME>` — the planted leak, one tagged line, FIRST (never last, or it would displace the result line and suppress usage), fail-closed on an absent/empty variable, env-NAME grammar enforced | `packages/sandbox-fake-provider/src/scripted-command.ts` |
+| `selectRunOutputProbeLines` + the tag, bounds and log message | `packages/worker-daemon/src/supervisor/run-output-probe.ts` (new) |
+| The opt-in probe path on the observer (both halves: `obs.logs` → a `log` EVENT, and one worker log line) | `packages/worker-daemon/src/supervisor/usage-observer.ts` |
+| `createRedactingDestination` — **`E4-F019`'s own closure route 2** | `packages/worker-daemon/src/logging/redacting-destination.ts` (new) |
+| `redactionCanaries` / `onRedactionRefused` on the logger | `packages/worker-daemon/src/logging/logger.ts` |
+| `RunCanaryCoordinator.snapshot()`, injected so the logger (built first) and the dispatch runtime (composed later) share ONE coordinator | `run-canaries.ts`, `dispatch-runtime.ts`, `bin/worker-daemon.ts` |
+| `AOA_WORKER_RUN_OUTPUT_PROBE`, same strict grammar as the other three switches — written as a shared `parseStrictSwitch` rather than a fourth hand-copy | `packages/worker-daemon/src/config/config.ts` |
+| The probe armed on the D1 fault-matrix worker ONLY | `docker/d1/m1-spine.override.yml` |
+| The case driver, replacing the `pendingReason`'s blocker proof | `tests/d1/m1-fault-matrix.test.mjs` |
+| `d1.redaction.planted_canary_scrubbed` → `required`; `d2m` reason superseded in place | `tests/d1/fault-matrix.json` |
+
+---
+
+## 3. THE SAFETY ARGUMENT — proven, not inherited
+
+The brief's condition is that no unscrubbed value can reach this surface, **including the
+`E4-F019` sink-collision class**. Both halves are argued from code read in this session.
+
+### 3.1 Nothing unscrubbed can be in the input
+
+`selectRunOutputProbeLines`'s input is `RunOutputObservation.stdoutTail`, which is
+`createRunOutputCapture.close()`'s return and nothing else (`supervisor.ts` builds it from
+`captured?.stdoutTail ?? ""`). `close()` returns `scrubOutputText(kept, canaries)` and, when that
+returns `null`, `{ stdoutTail: "" }` with a counted drop. `scrubOutputText` returns `null` whenever
+**any** needle survives — including one re-formed by the marker and its neighbours. So a tail
+carrying a live canary **cannot exist**; the failure mode is an empty tail, not a leaky one. On the
+networked lane this has already happened once upstream, in the adapter-manager, with the same
+fail-closed implementation (deliberately the same module, not a copy).
+
+### 3.2 The `E4-F019` collision class is not reachable
+
+That finding is precisely about keys added **below** a caller-side scrubber. Both destinations of
+this surface put their scrubber **below every key**:
+
+- **`events`** — `EventSequencer.#emit` assembles the COMPLETE envelope (`protocolVersion`,
+  `eventId`, `organizationId`, `jobId`, `leaseId`, `seq`, `occurredAt`, `eventType`, `payload`) and
+  only then runs `scrubEventStrings` over every string leaf of it, before the digest and the schema
+  parse. The single thing added afterwards is `eventDigest`, a hex digest **of the scrubbed bytes**.
+- **`logs`** — `createRedactingDestination` scrubs the fully-serialized pino record, after the sink
+  has added `msg`/`time`/`level`. This is `E4-F019`'s own route 2, quoted in its text.
+
+★ **A version of this surface without §3.2's second bullet would have re-created the defect the F2
+drop was protecting against, and it is the reason this ticket is not smaller.** The brief is right
+that a surface inheriting the raw sink is the wrong design; the answer was to fix the sink, which
+also closes the class for every other worker log line (§6).
+
+### 3.3 The direction the design errs
+
+Over-redaction, deliberately. A pathologically short canary (`"30"`, `"msg"`) rewrites structure as
+well as content at the log transport and can leave a line that no longer parses as JSON. That is
+stated in the module rather than hidden; the alternative is the verbatim emission the finding
+describes. The log-canary snapshot is likewise **wider than one run** (every live lease), because a
+serialized log record carries no run attribution — scrubbing run A's canary out of run B's line
+over-redacts, which is the safe direction. Events keep their strict per-run scoping.
+
+---
+
+## 4. RED → GREEN, and the mutation table
+
+`packages/worker-daemon/src/__tests__/run-output-probe.test.ts` (14 tests) and
+`packages/sandbox-fake-provider/src/__tests__/echo-env.test.ts` (5 tests), both GREEN, plus the
+untouched neighbours: worker-daemon 168 files / 1301 tests, sandbox-fake-provider 11 / 107,
+adapter-manager 21 / 217, provider-wire 8 / 98.
+
+Two assertions in the new file were **wrong when first written and were corrected by measurement,
+not by reasoning**: a needle containing the marker is not a residual, and needles are applied
+LONGEST FIRST, so a re-formed residual requires the re-forming needle to be the *longer* one. Both
+reds are recorded here rather than silently fixed.
+
+| Mutation (product code, reverted) | Tests that went RED |
+|---|---|
+| **M1** — `redactString`'s substitution removed | "carries the SCRUBBED line to both halves"; "scrubs a secret that equals a STRUCTURAL token" |
+| **M2** — the transport-boundary scrubber removed from `createWorkerLogger` | "scrubs a secret that equals a STRUCTURAL token"; "scrubs a digit run occurring inside the epoch `time`" |
+| **M3** — `scrubOutputText`'s fail-closed residual refusal removed | "★ POSITIVE CONTROL — BOTH arms flip"; "REFUSES a record it cannot scrub" |
+
+A **standing positive control** ships in the file: *"WITHOUT the transport scrubber the structural
+token IS emitted verbatim"* drives the unwrapped production logger and asserts `"msg"` is present.
+That is `E4-F019` itself, kept executable so §6's closure cannot go stale unnoticed.
+
+---
+
+## 5. The live D1 run, and the suppressed-injection red
+
+_(filled in below from run `35996740740`, `d1-merge-train` / `m1-fault-matrix`, on this branch)_
+
+**F10 — MULTI-TENANT.** The case plants a **per-tenant** canary for **both** enabled Organizations,
+asserts each tenant's own event stream clean-and-marked (the same-tenant positive control), and
+requires each tenant's canary **absent from the other tenant's** event stream. One tenant proving it
+would be a single-Organization claim, which ruling F10 forbids.
+
+**The suppressed arm.** With `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION=1` the echo flag is withheld;
+everything else runs and the case still records. `injectionFired` is decided by the **marker**, not
+by the harness's intent, so the suppressed run reports `injectionFired: false` and the lane's
+existing grep for `injection_did_not_fire` sees it. The case therefore cannot pass vacuously.
+
+---
+
+## 6. `E4-F019` — closed, and the class swept
+
+**The class, in one sentence:** *a scrubber that runs above a layer that afterwards adds its own
+keys or bytes to the record.*
+
+**Its dual (E.1b):** *a scrubber that runs below everything but whose refusal is swallowed, so an
+unscrubbable record is written anyway.* Searched for and handled: every refusal path in
+`createRedactingDestination` writes the constant refusal line or nothing, and a throwing canary
+source refuses rather than defaulting to "no secrets".
+
+**Enumeration, quoted rather than remembered.** `git grep -n "createWorkerLogger(" -- packages apps`
+returns **21** hits: **18 in `__tests__`**, the definition itself (`logging/logger.ts:115`), one
+prose mention in a comment (`packages/worker-keystore/src/control-paths.ts:41`), and **zero**
+production call sites — because the one production construction goes through an injectable alias,
+`const makeLogger = deps.createLogger ?? createWorkerLogger` (`bin/worker-daemon.ts:222`), which the
+grep for the function name does not see. ★ That is the sweep nearly missing its own target: a
+name-grep found no production caller and the correct answer is one. `git grep -n "makeLogger("`
+confirms the single site. **1 production site, 1 fixed.** The 18 test sites are deliberately left
+unwrapped — two of them (`usage-stream-redaction.test.ts`) are the standing measurement of the raw
+sink, i.e. the positive control for this closure.
+
+The scrub sites: `git grep -n "scrubEventStrings\|scrubLogRecord\|scrubOutputText" -- packages`
+→ the event path (already below every key, in `EventSequencer.#emit`), `scrubLogRecord` (still
+caller-side, still with no production caller, and its own doc already says it cannot close the
+finding alone), and the two `createRunOutputCapture` sites. None is in the class.
+
+**My own diff is in the class (E.1a).** The probe line I added is written through
+`deps.logger?.info(...)` — i.e. through the very sink the finding describes. That is exactly the
+instance this ticket would have shipped had it not fixed the sink first, and it is named here rather
+than discovered in review.
+
+`E4-F019` moves to `resolved` in `findings.md` and its `scripts/finding-ownership.json` key is
+deleted **in the same commit** (E.2 rule 5).
+
+---
+
+## 7. What this ticket did NOT do, and why
+
+- **`d2m.redaction.planted_canary_scrubbed` stays `pending`.** The same product code serves it, and
+  its `pendingReason` is superseded in place to say so — the blocker is no longer structural and no
+  longer a decision. But flipping it to `required` requires a **keyed** run showing it fired, and
+  this session is forbidden from dispatching one (M1-AGENT-RULES hard limits; ruling F8 owns the
+  keyed envelope). Flipping it on the strength of the D1 twin would be declaring coverage nobody
+  measured — the failure class this matrix exists to stop. `pendingKind` therefore moves
+  `structural → keyed` and the owner is re-pointed from F2 (discharged) to F8.
+- **No new output mechanism.** WRK-018 1(c) and the open **F7** ruling are untouched: the surface
+  forwards only lines a workload explicitly tagged, one of them, truncated, and only under a flag no
+  production manifest sets.
+- **`expectedClassification` keeps its stale-sounding token** (`canary_scrubbed_while_unseeded_twin_leaks`).
+  The "unseeded twin" design was replaced by the marker before this ticket; renaming the token
+  across three profiles is churn this ticket declines, and the evaluator's own comment already
+  records why the marker superseded the twin.
+
+---
+
+## 8. Register deltas (two-sided, against the merge ref)
+
+_(filled in below: `origin/docs/replatform-program` key set vs HEAD, ADDED and DROPPED)_

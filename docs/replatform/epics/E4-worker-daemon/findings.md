@@ -663,11 +663,13 @@ verdict changed** — `wiredCount` 9, dormant 11, exit 0 in both states.
 
 ## E4-F019 — Canary redaction has no defence when a redeemed secret collides with a STRUCTURAL token: the logger itself emits `msg`/`time`/`level` below every caller-side scrubber
 
-**Status:** open
+**Status:** resolved
 **Severity:** MEDIUM (a known-secret can reach a worker log line verbatim; bounded by how improbable
 such a secret is, unbounded in the sense that nothing DETECTS it)
 **Filed:** 2026-09-23 (WRK-018 1(b), M1a), measured at `daf4396ba` on `claude/m1-wrk-018-usage-log`.
-**Owner:** `unowned` — see `scripts/finding-ownership.json`.
+**Resolved:** 2026-09-24 by `DEP-023` (`tickets/../E6-deployment-test-harness/tickets/DEP-023-result.md`),
+via **closure route 2 below** — see "How it was closed".
+**Owner:** was `unowned`; the manifest key is deleted in the resolving commit.
 **NOT introduced by WRK-018, and NOT blocking M1a** — see "Scope" below.
 
 **What.** The worker's redaction model scrubs per-run canaries out of everything a CALLER hands the
@@ -706,7 +708,25 @@ token. That is improbable in practice (provider API keys are long and prefixed) 
 `PROVIDER_AUTH_ENV_TARGETS`, but it is NOT detected: no guard, test or runtime check would notice,
 and the H-04 posture this programme states is zero-tolerance rather than probabilistic.
 
-**Two closure routes, neither taken here:**
+**How it was closed (DEP-023, 2026-09-24).** Route 2, built:
+`createRedactingDestination` (`packages/worker-daemon/src/logging/redacting-destination.ts`) wraps
+the pino destination and scrubs the FULLY-SERIALIZED record with the run's live canaries — after the
+sink has added `msg`/`time`/`level`, which is the layer no caller could reach. It is wired at the
+ONE production construction site (`bin/worker-daemon.ts`, `makeLogger`), reading
+`RunCanaryCoordinator.snapshot()` so the canaries are live rather than captured at construction, and
+it FAILS CLOSED: a record carrying a residual is replaced by a constant refusal line, and a canary
+source that throws refuses rather than defaulting to "no secrets". Route 1 (constraining what may be
+redeemed) remains untaken and is still a decision, not a repair; it is no longer needed for this
+finding. Two limits, stated rather than left to be found: the scrub is a substring replacement over
+the serialized record, so a pathologically short canary can leave a line that no longer parses as
+JSON (over-redaction, the safe direction); and the canary snapshot is process-wide rather than
+per-run, because a log record carries no run attribution. Proof: `run-output-probe.test.ts` drives
+the production logger with a canary equal to each of `msg`/`time`/`level` and with a digit run inside
+a pinned epoch `time`, and a standing positive control in the same file shows the UNWRAPPED logger
+still emitting `"msg"` — so this closure cannot go stale unnoticed. The measurement in this finding
+is unchanged and is NOT rewritten; what changed is the code.
+
+**Two closure routes, ONE now taken (route 2 — see above):**
 1. **Constrain what may be redeemed as a secret** — reject a resolved value that is shorter than
    some bound, or that matches a structural-token denylist, at `synthesiseRunSecrets`. Cheap and
    local; changes a contract about tenant secrets, so it is a decision, not a repair.
