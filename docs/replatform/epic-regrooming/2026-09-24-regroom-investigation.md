@@ -61,8 +61,28 @@ assumes a channel, and the channel is what gets dropped — because dropping it 
 
 | Criterion | Surface its evidence must come from | Class | Evidence |
 |---|---|---|---|
-| 4 — useful-agent capability: attributable reviewable output reaching the founder | a founder-available readback route for a committed job artifact | **DOES NOT EXIST** | already measured by the planning session at `c6107c760c` as `E7-F047` (HIGH) and ticketed `CLI-018`. Re-confirmed here at this tip: `server/src/routes/worker-control.ts` is the only route reading `job_artifacts`, and its download path (`createArtifactTransferGrantService`) requires device-proof headers plus a signed raw body — **a founder/board session cannot satisfy it**. The projected `task_outputs` metadata carries `jobArtifactId` and **not** `objectKey`. |
+| 4 — useful-agent capability: attributable reviewable output reaching the founder | a founder-available readback route for a committed job artifact | **DOES NOT EXIST** | already measured by the planning session at `c6107c760c` as `E7-F047` (HIGH) and ticketed `CLI-018`. Re-confirmed here at this tip, **and with one correction to the route census** — see below. |
 | 1–3, 5–9 | as `M1a` | — | in flight under the M1a required-result set |
+
+★★★ **THE CRITERION IS UNMET, AND "the only route reading `job_artifacts`" WAS WRONG.**
+*Corrected 2026-09-24 (Codex P2, third round), verified at source.* **Superseded text:**
+*"`server/src/routes/worker-control.ts` is the only route reading `job_artifacts`, and its download
+path (`createArtifactTransferGrantService`) requires device-proof headers plus a signed raw body — a
+founder/board session cannot satisfy it. The projected `task_outputs` metadata carries
+`jobArtifactId` and not `objectKey`."* Every clause there is true except *only*. There is a second,
+**board-reachable** reader: `server/src/routes/job-control.ts` serves an org-admin job-detail
+`GET .../jobs/:jobId` behind `assertOrgAdmin`, backed by `getJobDetail`
+(`server/src/services/job-operations.ts`), which selects from `jobArtifacts` — and **deliberately
+drops `objectKey`**, its own comment calling it *"a storage-internal path"*.
+
+★ **The verdict does not change: the founder still cannot retrieve the bytes, so criterion 4 stays
+unmet.** What changes is the *shape of the fix*, which is why this matters more than a word. A
+reader of my superseded sentence would conclude no board surface touches the table and build
+`CLI-018` as a **new** route; the measured position is that an authorized operator detail surface
+already exists and returns these rows, so the cheaper and more reviewable fix is to **extend that
+flow with a download** rather than mint a duplicate. ★ And note the class: an enumeration that says
+*only* is a much stronger claim than the audit it summarises — the seven-route audit behind
+`E7-F047` enumerated what it enumerated, and I promoted it to exhaustive.
 
 ★ Criterion 4 is the *existing* worked example of this defect at `M1b`, and it was found the same
 way the four in §1.1 were: at the gate. Everything below §1.3 is the attempt to find the rest
@@ -137,12 +157,31 @@ handoff exists (RTF-07). Surface-wise:
 | D4-05 health never extends lease | the health projection path in `job-control.ts`, with `lease-truth.ts` deliberately refusing to consult the expiry deadline | **EXISTS+EXERCISED** | named test `★ T6 — a health projection does not extend the lease` in `service-health-projection.integration.test.ts`. This is the best-instrumented clause in D4 and shows the standard is reachable. |
 
 ★★★ **The SLI void is the single most consequential finding in this document.** A whole-tree search
-over `*.ts`/`*.mjs`/`*.js`/`*.sql`/`*.py`/`*.sh` for `schedule.?manifest`, `scheduledTimestamp`,
-`scheduled_timestamp`, `availabilitySli`, `sliSample`, `syntheticProbe`, `perMinuteSample` returns
-**zero hits**, and `scripts/` contains no `probe-*`, `sample-*`, `sli-*` or `availability-*` script.
-The availability SLI contract exists **only as prose in `test-gates.md`**. It is normative for
+over `*.ts`/`*.mjs`/`*.js`/`*.sql`/`*.py`/`*.sh` for `scheduledTimestamp`, `scheduled_timestamp`,
+`availabilitySli`, `sliSample`, `syntheticProbe` and `perMinuteSample` returns **zero hits**. The
+availability SLI contract exists as a **producer** nowhere. It is normative for
 **D4-06 (M3)** and **D6-02/SLI-02 (M5)**, so one missing surface gates two milestones — and it is
 the class the M1a precedents taught: a criterion phrased as an observation, with no channel.
+
+★★★ **TWO EXCLUSIONS THE SEARCH MUST NAME, AND THE FIRST STRENGTHENS THE FINDING RATHER THAN
+WEAKENING IT.** *Added 2026-09-24 (Codex P2, third round), verified at source. **Superseded text:**
+the same paragraph with `schedule.?manifest` in the term list, "returns **zero hits**" covering it,
+the phrase "exists **only as prose in `test-gates.md`**", and the claim that "`scripts/` contains no
+`probe-*` … script".*
+
+- **`schedule.?manifest` does NOT return zero.** It matches `"Schedule manifest SHA-256"` — a
+  **required fragment of the QA record template**, enforced by
+  `scripts/check-distributed-execution-foundation.mjs` with its own red fixture
+  (`check-distributed-execution-foundation.test.mjs`: *"dropping the D4/D6 schedule-manifest hash
+  field fails"*). ★ **So the record FIELD is built and guarded, and the thing that would compute its
+  value does not exist.** That is a sharper statement of the defect than the one I wrote: a gate
+  owner reaching D4 or D6 finds a template demanding a hash, a guard refusing the record without it,
+  and **nothing in the tree able to produce one**. A field with no producer is a criterion with no
+  channel, one layer further along — and the guard makes it fail *late*, at record-writing time,
+  which is the worst moment to discover it.
+- **`scripts/probe-os-vault.mjs` exists** and is an OS-keychain probe, unrelated to campaign
+  sampling. The claim is narrowed to what was measured: `scripts/` contains no availability-sampling
+  script, and no `sample-*`, `sli-*` or `availability-*` file at all.
 
 ### 1.6 `M4` — full D5
 
@@ -261,10 +300,14 @@ counts):
 |---|---|---|
 | **(a) genuinely complete but pre-discipline** | **42** | asserts completion with concrete, still-checkable evidence and disclaims nothing. *A claim about code that can still be checked.* |
 | **(b) genuinely incomplete / self-disclaiming** | **46** | the record itself says partial, inert, unwired, shadow-only, blocked, "stays OPEN", "not an end-to-end cutover" |
-| **(c) unknowable without re-measurement** | **12** | asserts something but pins no verifiable anchor, or its evidence is an expiring CI artifact or a transient environment. *No longer verifiable from the record.* |
+| **(c) unknowable without re-measurement** | **11** ★ | asserts something but pins no verifiable anchor, or its evidence is an expiring CI artifact or a transient environment. *No longer verifiable from the record.* |
 
 Per epic — (a) / (b) / (c): E3 7/4/0 · E4 3/8/0 · E5 4/7/5 · E6 3/4/3 · E7 5/7/1 ·
-E8 8/1/2 · E9 3/5/0 · E10-desktop 3/4/0 · E10-mig-realtime 1/4/1 · E11 5/2/0.
+E8 **9/1/1** ★ · E9 3/5/0 · E10-desktop 3/4/0 · E10-mig-realtime 1/4/1 · E11 5/2/0.
+
+★ *Corrected 2026-09-24 (Codex P2, third round): `W10B-egress-enforcement` moved (c)→(a) on its
+preserved §15 measurement — see §2.2's expiring-evidence bullet. **Superseded text:** the totals
+**42 / 46 / 12** and E8 **8/1/2**.*
 
 ★★★ **The headline is that (b) is the largest class, and it is good news.** 46 of the 100 records
 are *honest about being incomplete* — `SVC-003a`: "**SVC-003 stays OPEN**"; `DAT-007`:
@@ -297,6 +340,19 @@ the register now reads `wired`).
   ground alone — a live provider network tier is not re-derivable whatever the artifact retention —
   and **the window to retrieve the raw evidence is open now and closes in December**, which makes
   them a deadline rather than a loss.
+  ★★★ **AND `W10B` IS NOT (c) AT ALL — it is (a), and I misread it twice.** *Corrected 2026-09-24
+  (Codex P2, third round), verified at source.* Its **§15** records run
+  [`34528397309`](https://github.com/MeteoriteLabs/AoA/actions/runs/34528397309) from 2026-09-10
+  with commit, template, policy read-back, per-row results and a measured verdict, and says in terms
+  that it *"supersedes §14's `UNRUN` status by measuring the arm, and keeps §14 as history"*. The
+  measurement is **preserved in the record**, so it is verifiable as a historical measurement
+  without reproducing the provider environment — which is precisely what the record was written to
+  achieve under `E7-F025`. **My "transient tier" rule was too coarse:** what makes a record
+  unverifiable is that its verdict lives only outside it, not that the tier it measured was live.
+  `W10B` moves to class **(a)**, making the census **43 / 46 / 11**, and Job C must not mark it
+  `unverifiable`. ★ I read §14's `UNRUN` and stopped; §15 was the section that superseded it. That
+  is the same error as reading `MIG-009-drain-result.md` and not `MIG-009-wiring-result.md` — twice
+  in one document, **a frozen earlier section misread as the record's final word**.
   `BRW-003d-5` says *"End SHA: see the `feat(BRW-003d-5)` commit"* and does not identify it.
 
 ★ Recorded uncertainty: E3's (a) records all rest on **local Windows embedded-PG** runs and defer
@@ -422,12 +478,24 @@ that defaults to *not complete* when the files disagree and no index entry resol
 fail-closed direction — then let Job B's entries lift the ids that a reviewer has adjudicated.
 
 Positive controls, and it needs **two**, because the rule can now fail in either direction: (i)
-assert the guard goes red for `DAT-007` **while `DAT-007-S3-result.md` still carries its honest
-`complete`** — a control that only exercises a missing token would pass against the per-file rule
-too, and so would not distinguish the fix from the thing it replaces; and (ii) assert `MIG-009`
+assert **`findCompletedTicketIds` does not contain `DAT-007`**, while `DAT-007-S3-result.md` still
+carries its honest `complete`; and (ii) assert `MIG-009`
 **stays green** with `MIG-009-drain-result.md`'s `unwired` on disk and its index entry naming
 `MIG-009-wiring-result.md` as current. Without (ii) the guard trades a false-complete class for a
 false-incomplete one and nobody notices until a milestone cannot exit.
+
+★★★ **Control (i) must assert the SET, not the guard's verdict** — *corrected 2026-09-24 (Codex P1,
+third round).* **Superseded text:** *"assert the guard goes red for `DAT-007` while
+`DAT-007-S3-result.md` still carries its honest `complete` — a control that only exercises a missing
+token would pass against the per-file rule too, and so would not distinguish the fix from the thing
+it replaces."* The reasoning was right and the assertion did not implement it: **`DAT-007` already
+makes the guard red today**, via `owner_ticket_already_complete` on the open finding it owns — which
+is the bug, not the fix. A red-only control therefore passes against the *current* implementation,
+so Job A could ship with the false-completion behaviour intact and a green control attesting it.
+**This is the same defect one layer down from the one the control was written to catch**, and it is
+the third round in a row in which a remedy of mine was invalidated rather than a wording: a check
+that cannot fail for the reason it names is not a check. Assert the set membership (or a new
+ambiguity-specific diagnostic) so the control names a state only the aggregate can produce.
 
 It must land **before any token work**: a backfill landing first would re-mint the same false
 completions through the new tokens. It is nevertheless **not complete without Job B's index** — see
@@ -464,7 +532,7 @@ The judgements are transcription, not new assessment — §2.2 found that (a) an
 state their own status. ★ Where an index entry disagrees with its record, **the record wins and the
 index cites it**; the index is a machine-readable view of the ledger, never a second source of truth.
 
-**Job C — the 12 records in class (c). 1 ticket, ~1 agent-day, and it is a filing job.**
+**Job C — the 11 records in class (c). 1 ticket, ~1 agent-day, and it is a filing job.**
 Do **not** re-measure them. Mark each `unverifiable` with its named cause (§2.2's three causes) and,
 where the claim still matters to a milestone, file the re-measurement as its own ticket against that
 milestone.
@@ -474,8 +542,10 @@ milestone.
 (`W7U1-output-probe`, `W10B-egress-enforcement`) rest on 90-day artifacts that are already gone;
 pretending otherwise is the more expensive option."* Both runs are dated **2026-09-07** and the
 retention window **runs to about 2026-12-06** (§2.2). So the cheap action is the opposite of the one
-I proposed: **pull those two artifacts into the repo now**, while they exist, rather than filing
-them as lost. That is hours, not a ticket, and it expires. ★ Writing off recoverable evidence on an
+I proposed: **pull the remaining artifact into the repo now**, while it exists, rather than filing
+it as lost. ★ *Further corrected (third round): `W10B` needs nothing — its §15 already preserves the
+measurement in the record, which is exactly the discipline being proposed, and it leaves **`W7U1`
+alone** on this deadline.* That is hours, not a ticket, and it expires. ★ Writing off recoverable evidence on an
 unchecked assumption is the same error as claiming evidence that was never taken — and it is the
 one I was least likely to catch, because it only looks conservative.
 
@@ -549,3 +619,8 @@ Stated explicitly, because a negative audit is only as good as the set it enumer
     by counter-example, not by a sweep. I did not measure how many ticket ledgers contain a later
     result that completes an earlier partial one, so I cannot size Job B's adjudication load — only
     say that it is not zero and that Job A is unsound without it.
+12. **Whether other "only"-shaped claims in §1 survive the same scrutiny.** The criterion-4 route
+    census failed on the word *only* (§1.2), and I did not re-audit my other enumerations for the
+    same promotion of a bounded search into an exhaustive claim. Where §1 says a symbol has "zero
+    importers" or "exactly three call sites", those were measured; where it says "the only", treat
+    it as "the only one I found".
