@@ -301,8 +301,8 @@ export function evaluateFaultMatrixDeclaration(matrix) {
           if (rc.plantedCanary !== true) {
             v("declaration:redaction_without_planted_canary", `${where}: a redaction case must declare \`plantedCanary: true\` — a scan of whatever a run happened to emit is not a redaction proof`);
           }
-          if (rc.unseededControl !== true) {
-            v("declaration:redaction_without_unseeded_control", `${where}: a redaction case must declare \`unseededControl: true\` — without a run that leaks the value VERBATIM, a clean stream is not shown to be the scrubber's work`);
+          if (rc.scrubberMarkerControl !== true) {
+            v("declaration:redaction_without_marker_control", `${where}: a redaction case must declare \`scrubberMarkerControl: true\` — without a POSITIVE observation that the scrubber acted on this run, a clean stream is not shown to be its work rather than a run that emitted nothing`);
           }
           const streams = Array.isArray(rc.streams) ? rc.streams.map(String) : [];
           for (const stream of REQUIRED_REDACTION_STREAMS) {
@@ -492,16 +492,28 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
       v("evidence:credential_positive_control_missing", `case ${id}: no passing same-tenant live-lease positive control (positiveControlPassed=${JSON.stringify(row.positiveControlPassed ?? null)}) — a refusal with no control is not a refusal`);
     }
     // CLAUSE 5 — BOTH arms are required on the row, and they are separate facts: the seeded run
-    // must be observed CLEAN on every declared stream, and the unseeded control must be observed
-    // LEAKING. Either alone proves nothing — a clean stream with no control may be a run that
-    // emitted nothing, and a leaking control with no clean arm is just a leak.
+    // must be observed CLEAN on every declared stream, AND the scrubber's own replacement marker
+    // must be observed ON those streams. Either alone proves nothing — a clean stream with no
+    // marker may be a run that emitted the value nowhere, and a marker with a canary still present
+    // is a partial scrub.
+    //
+    // ★ WHY THE MARKER AND NOT A "TWIN THAT LEAKS VERBATIM" (2026-09-24, measured). The first
+    // design carried an unregistered twin of identical shape on the same run through the workload
+    // args, and required it PRESENT while the canary was ABSENT. Run 35936498467 measured that the
+    // twin reaches NEITHER stream: workload args are not echoed into `job_events` or the worker's
+    // container log, so the arm could never pass and the case would have been permanently red for a
+    // reason that says nothing about redaction. The scrubber's own marker
+    // (`REDACTION_MARKER = "«redacted»"`, packages/worker-daemon/src/supervisor/redaction.ts, which
+    // `scrubEventStrings` substitutes FOR the canary) is a strictly stronger attribution: its
+    // presence proves the canary reached the scrubber and was REPLACED, not merely never emitted.
+    // Remove the redaction and BOTH arms flip — the marker disappears and the canary appears.
     if (c.family === "redaction") {
       const rc = isPlainObject(c.redactionCase) ? c.redactionCase : null;
       if (row.redactedOnAllStreams !== true) {
         v("evidence:redaction_not_clean", `case ${id}: redactedOnAllStreams=${JSON.stringify(row.redactedOnAllStreams ?? null)} — the planted canary was NOT scrubbed from every declared stream`);
       }
-      if (row.unseededControlLeaked !== true) {
-        v("evidence:redaction_control_did_not_leak", `case ${id}: unseededControlLeaked=${JSON.stringify(row.unseededControlLeaked ?? null)} — the unseeded control did not emit the value verbatim, so the clean arm above is not shown to be the scrubber's work (a probe that cannot go red is not a probe)`);
+      if (row.scrubberMarkerObserved !== true) {
+        v("evidence:redaction_marker_not_observed", `case ${id}: scrubberMarkerObserved=${JSON.stringify(row.scrubberMarkerObserved ?? null)} — the scrubber's own replacement marker was NOT observed on the run's streams, so the clean arm above is not shown to be its work (a probe that cannot go red is not a probe)`);
       }
       // Non-vacuity, as its own row fact: a scan over ZERO bytes is "clean" and proves nothing.
       const observed = isPlainObject(row.streamBytesObserved) ? row.streamBytesObserved : null;

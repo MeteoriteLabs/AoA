@@ -102,6 +102,7 @@ import {
   queryJobEventPayloadText,
   seedSpineWorkerDrivenJob,
   awaitSpineWorkerDrivenTerminal,
+  REDACTION_MARKER,
   queryDeployedWorker,
   SPINE_DEPLOYED_TARGET_ID,
 } from "./lib/e6f-harness.mjs";
@@ -1097,18 +1098,29 @@ test("fault-matrix: redemption on a DIFFERENT lease is refused — with an own-l
 // (`packages/worker-daemon/src/lease/secret-redemption.ts`) redeems it and registers the value as
 // a redaction canary. The canary is high-entropy and unique to this run.
 //
-// ★★★ THE UNSEEDED CONTROL, and why it is a second MARKER rather than a second RUN. "A control
-// that passes because it read zero rows proves nothing." A run whose streams are clean of the
-// canary is indistinguishable from a run that emitted nothing at all — so the same run also
-// carries a TWIN marker of identical shape and entropy that is NEVER registered as a canary. The
-// case requires, on the same streams, in the same run:
+// ★★★ THE CONTROL, and why it is the SCRUBBER'S OWN MARKER. "A control that passes because it read
+// zero rows proves nothing." A run whose streams are clean of the canary is indistinguishable from
+// a run that emitted the value nowhere — so the case also requires a POSITIVE observation that the
+// scrubber acted. `scrubEventStrings` (`packages/worker-daemon/src/supervisor/redaction.ts`)
+// replaces each canary with `REDACTION_MARKER`, so the marker's presence proves the canary reached
+// the scrubber and was REPLACED. The case requires, on the same streams, in the same run:
 //
-//     canary ABSENT        (the scrubber did its work)
-//   AND twin PRESENT verbatim   (the streams demonstrably carry markers of this shape)
-//   AND bytes > 0 on each stream (the scan was not over nothing)
+//     canary ABSENT               (the scrubber did its work)
+//   AND the REDACTION MARKER PRESENT (it demonstrably acted ON THIS RUN)
+//   AND bytes > 0 on each stream  (the scan was not over nothing)
 //
-// Remove the redaction and the canary appears beside its twin. Emit nothing and the twin is
-// missing and the case reds. Neither arm can pass alone.
+// Remove the redaction and BOTH arms flip: the marker disappears and the canary appears. Neither
+// arm can pass alone.
+//
+// ★ THE FIRST DESIGN WAS MEASURED AND ABANDONED, recorded rather than quietly replaced. It carried
+// an unregistered TWIN of identical shape on the same run through the workload args and required it
+// PRESENT verbatim — the E5 audit's literal phrasing, *"an unseeded control that leaks the value
+// verbatim"*. Run **35936498467** measured that the twin reaches NEITHER stream: workload args are
+// not echoed into `job_events` or the worker's container log. That arm could therefore never pass,
+// and a permanently red case whose redness says nothing about redaction is worse than no case. The
+// marker is a STRICTLY STRONGER attribution than a twin — a twin shows the streams can carry such a
+// string, the marker shows the scrubber handled this run's canary — and it is substituted here as a
+// judgement, flagged for the audit author rather than presented as the same thing.
 //
 // ★ BOTH STREAMS. A scrubbed event stream beside an unscrubbed container log is still a leak, so
 // the case asserts the same pair on `job_events` AND on the worker's container log, and the
@@ -1124,15 +1136,14 @@ test("fault-matrix: a planted redemption canary is scrubbed from the run's event
   assert.ok(deployed.workerId, "clause 5 needs the DEPLOYED worker — it is the only thing that runs synthesiseRunSecrets");
 
   const canary = `m1fmcanary${randomBytes(20).toString("hex")}`;
-  const twin = `m1fmtwin${randomBytes(20).toString("hex")}`;
   const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
 
   const seeded = step(seedSpineWorkerDrivenJob({
     tenant: A, ...ids, target: deployed.target,
-    // The twin rides the workload args — a channel the run's own streams carry — while the canary
-    // rides the SECRET path. Suppressed, no canary is planted at all (the secret keeps the lane's
-    // ordinary reference value), so the case cannot report a scrub that never had anything to do.
-    workloadArgs: [`--aoa-echo=${twin}`],
+    // Suppressed, no canary is planted at all (the secret keeps the lane's ordinary reference
+    // value), so the case cannot report a scrub that never had anything to do and the lane's
+    // suppression control reds it.
+    workloadArgs: [],
     ...(SUPPRESS_INJECTION ? {} : { secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`, secretValue: canary }),
   }), "canary worker-driven seed");
   assert.equal(seeded.ok, true, `canary job seed: ${truncate(seeded)}`);
@@ -1147,29 +1158,29 @@ test("fault-matrix: a planted redemption canary is scrubbed from the run's event
   const streamBytesObserved = { events: events.bytes ?? 0, logs: logs.bytes ?? 0 };
   const canaryInEvents = events.text.includes(canary);
   const canaryInLogs = logs.text.includes(canary);
-  const twinInEvents = events.text.includes(twin);
-  const twinInLogs = logs.text.includes(twin);
+  const markerInEvents = events.text.includes(REDACTION_MARKER);
+  const markerInLogs = logs.text.includes(REDACTION_MARKER);
   const redactedOnAllStreams = !SUPPRESS_INJECTION && !canaryInEvents && !canaryInLogs;
-  const unseededControlLeaked = twinInEvents || twinInLogs;
+  const scrubberMarkerObserved = markerInEvents || markerInLogs;
 
   record("d1.redaction.planted_canary_scrubbed", {
     injectionFired: !SUPPRESS_INJECTION && seeded.ok === true,
-    observedClassification: redactedOnAllStreams && unseededControlLeaked
-      ? "canary_scrubbed_while_unseeded_twin_leaks"
+    observedClassification: redactedOnAllStreams && scrubberMarkerObserved
+      ? "canary_scrubbed_and_scrubber_marker_observed"
       : "not_redacted",
     redactedOnAllStreams,
-    unseededControlLeaked,
+    scrubberMarkerObserved,
     streamBytesObserved,
     detail: {
-      // Presence flags only. The values themselves never leave this function.
-      canaryInEvents, canaryInLogs, twinInEvents, twinInLogs,
+      // Presence flags only. The canary itself never leaves this function.
+      canaryInEvents, canaryInLogs, markerInEvents, markerInLogs,
       attemptStatus: observation.attemptStatus ?? null,
       events: events.events ?? 0,
       deployedWorkerId: deployed.workerId,
       deployedTargetId: SPINE_DEPLOYED_TARGET_ID,
     },
   });
-  assert.equal(unseededControlLeaked, true, "the unseeded twin must appear VERBATIM on at least one stream, else a clean canary proves nothing");
+  assert.equal(scrubberMarkerObserved, true, "the scrubber's own replacement marker must appear on at least one stream, else a clean canary proves nothing about redaction");
   assert.equal(canaryInEvents, false, "the planted canary must not appear in the run's event stream");
   assert.equal(canaryInLogs, false, "the planted canary must not appear in the worker's container log");
 });

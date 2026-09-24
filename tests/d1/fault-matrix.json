@@ -441,16 +441,16 @@
           "family": "redaction",
           "redactionCase": {
             "plantedCanary": true,
-            "unseededControl": true,
             "streams": [
               "events",
               "logs"
             ],
-            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets"
+            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets",
+            "scrubberMarkerControl": true
           },
           "injection": {
             "mechanism": "secret.plant_high_entropy_canary_as_the_redeemed_value",
-            "observedBy": "the run's event stream and the worker's container log are scanned for BOTH markers: the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary) must be ABSENT, and an UNSEEDED TWIN of identical shape and entropy, carried on the same run through the workload args and never registered, must be PRESENT VERBATIM. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no twin is indistinguishable from a run that emitted nothing, and a twin with no clean arm is just a leak."
+            "observedBy": "the run's event stream and the worker's container log are scanned for the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary), which must be ABSENT, and for the scrubber's OWN replacement marker REDACTION_MARKER = « redacted » (packages/worker-daemon/src/supervisor/redaction.ts, substituted FOR the canary by scrubEventStrings), which must be PRESENT. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no marker may be a run that emitted the value nowhere, and a marker with the canary still present is a partial scrub. Remove the redaction and BOTH arms flip."
           },
           "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
           "evidence": "required"
@@ -897,16 +897,16 @@
           "family": "redaction",
           "redactionCase": {
             "plantedCanary": true,
-            "unseededControl": true,
             "streams": [
               "events",
               "logs"
             ],
-            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets"
+            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets",
+            "scrubberMarkerControl": true
           },
           "injection": {
             "mechanism": "secret.plant_high_entropy_canary_as_the_redeemed_value",
-            "observedBy": "the run's event stream and the worker's container log are scanned for BOTH markers: the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary) must be ABSENT, and an UNSEEDED TWIN of identical shape and entropy, carried on the same run through the workload args and never registered, must be PRESENT VERBATIM. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no twin is indistinguishable from a run that emitted nothing, and a twin with no clean arm is just a leak."
+            "observedBy": "the run's event stream and the worker's container log are scanned for the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary), which must be ABSENT, and for the scrubber's OWN replacement marker REDACTION_MARKER = « redacted » (packages/worker-daemon/src/supervisor/redaction.ts, substituted FOR the canary by scrubEventStrings), which must be PRESENT. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no marker may be a run that emitted the value nowhere, and a marker with the canary still present is a partial scrub. Remove the redaction and BOTH arms flip."
           },
           "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
           "evidence": "pending",
@@ -1365,16 +1365,16 @@
           "family": "redaction",
           "redactionCase": {
             "plantedCanary": true,
-            "unseededControl": true,
             "streams": [
               "events",
               "logs"
             ],
-            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets"
+            "producer": "packages/worker-daemon/src/lease/secret-redemption.ts synthesiseRunSecrets",
+            "scrubberMarkerControl": true
           },
           "injection": {
             "mechanism": "secret.plant_high_entropy_canary_as_the_redeemed_value",
-            "observedBy": "the run's event stream and the worker's container log are scanned for BOTH markers: the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary) must be ABSENT, and an UNSEEDED TWIN of identical shape and entropy, carried on the same run through the workload args and never registered, must be PRESENT VERBATIM. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no twin is indistinguishable from a run that emitted nothing, and a twin with no clean arm is just a leak."
+            "observedBy": "the run's event stream and the worker's container log are scanned for the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary), which must be ABSENT, and for the scrubber's OWN replacement marker REDACTION_MARKER = « redacted » (packages/worker-daemon/src/supervisor/redaction.ts, substituted FOR the canary by scrubEventStrings), which must be PRESENT. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no marker may be a run that emitted the value nowhere, and a marker with the canary still present is a partial scrub. Remove the redaction and BOTH arms flip."
           },
           "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
           "evidence": "pending",

@@ -3527,6 +3527,14 @@ try {
   return dexecModule("control-plane", script);
 }
 
+/** The scrubber's own replacement marker, mirrored from
+ * `packages/worker-daemon/src/supervisor/redaction.ts`'s `REDACTION_MARKER` rather than re-derived.
+ * The clause-5 case classifies on its PRESENCE: `scrubEventStrings` substitutes it FOR a run
+ * canary, so seeing it proves the canary reached the scrubber and was replaced — not merely that
+ * the run emitted the value nowhere. Mirrored (not imported) because this harness runs from source
+ * against built images and must not take a build-time dependency on the worker package. */
+export const REDACTION_MARKER = "«redacted»";
+
 /** One compose service's container log, from the HOST docker daemon — the LOG half of clause 5's
  * two streams. Returned as raw text plus its byte length, because a scan over an empty stream is
  * vacuously clean and the case has to be able to say the stream was non-empty. */

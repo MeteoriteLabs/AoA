@@ -61,7 +61,7 @@ function completeProfile(profile) {
       push("redaction.canary", "redaction", {
         redactionCase: {
           plantedCanary: true,
-          unseededControl: true,
+          scrubberMarkerControl: true,
           streams: [...REQUIRED_REDACTION_STREAMS],
           producer: "server/src/services/x.ts synthesiseRunSecrets",
         },
@@ -300,7 +300,7 @@ function completeBundle(profile) {
         ...(c.family === "redaction"
           ? {
             redactedOnAllStreams: true,
-            unseededControlLeaked: true,
+            scrubberMarkerObserved: true,
             streamBytesObserved: Object.fromEntries(c.redactionCase.streams.map((k) => [k, 1024])),
           }
           : {}),
@@ -445,7 +445,7 @@ test("DEP-018 declaration: DROPPING the redaction case reds (E5 clause 5's floor
 test("DEP-018 declaration: a redaction case without a planted canary, without the unseeded control, missing a stream, or with no producer, each reds", () => {
   const rc = (fn) => evaluateFaultMatrixDeclaration(mutate((m, at) => { fn(at.caseIn(GATE_PROFILES[0], "redaction.canary").redactionCase); }));
   assert.ok(has(rc((r) => { r.plantedCanary = false; }), "declaration:redaction_without_planted_canary"));
-  assert.ok(has(rc((r) => { r.unseededControl = false; }), "declaration:redaction_without_unseeded_control"));
+  assert.ok(has(rc((r) => { r.scrubberMarkerControl = false; }), "declaration:redaction_without_marker_control"));
   assert.ok(has(rc((r) => { r.producer = ""; }), "declaration:redaction_without_producer"));
   for (const stream of REQUIRED_REDACTION_STREAMS) {
     const violations = rc((r) => { r.streams = r.streams.filter((x) => x !== stream); });
@@ -490,22 +490,38 @@ test("DEP-018 evidence: a refusal row without its same-tenant control reds", () 
   }
 });
 
-test("DEP-018 evidence: a redaction row reds when the canary was not scrubbed, when the UNSEEDED CONTROL did not leak, or when a stream was empty", () => {
+test("DEP-018 evidence: a redaction row reds when the canary was not scrubbed, when the SCRUBBER MARKER was not observed, or when a stream was empty", () => {
   const row = (fn) => {
     const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
     fn(bundle.cases.find((r) => r.case.includes("redaction.canary")));
     return evaluateFaultMatrixEvidence(matrix, bundle).violations;
   };
   assert.ok(has(row((r) => { r.redactedOnAllStreams = false; }), "evidence:redaction_not_clean"));
-  // ★ THE CONTROL'S OWN CONTROL. A seeded run reported clean while the unseeded control did NOT
-  // leak is the vacuous arm the E5 audit named: nothing shows the clean stream is the scrubber's
-  // work rather than a run that emitted nothing interesting.
-  assert.ok(has(row((r) => { r.unseededControlLeaked = false; }), "evidence:redaction_control_did_not_leak"));
+  // ★ THE CONTROL'S OWN CONTROL. A seeded run reported clean while the scrubber's marker was NOT
+  // observed is the vacuous arm the E5 audit named: nothing shows the clean stream is the
+  // scrubber's work rather than a run that emitted the value nowhere.
+  assert.ok(has(row((r) => { r.scrubberMarkerObserved = false; }), "evidence:redaction_marker_not_observed"));
   for (const stream of REQUIRED_REDACTION_STREAMS) {
     assert.ok(has(row((r) => { r.streamBytesObserved[stream] = 0; }), "evidence:redaction_stream_vacuous"), stream);
     assert.ok(has(row((r) => { delete r.streamBytesObserved[stream]; }), "evidence:redaction_stream_vacuous"), `${stream} absent`);
   }
   assert.ok(has(row((r) => { delete r.streamBytesObserved; }), "evidence:redaction_stream_vacuous"));
+});
+
+test("E5 clause 5: the harness's mirrored REDACTION_MARKER still equals the worker daemon's own", async () => {
+  // ★ A MIRROR CAN ROT, and this one decides a gate case. `tests/d1/lib/e6f-harness.mjs` mirrors
+  // `REDACTION_MARKER` rather than importing it (the harness runs from source against built images
+  // and must not take a build-time dependency on the worker package). If the daemon ever changes
+  // its marker, the clause-5 case would look for a string nothing emits and red for a reason that
+  // says nothing about redaction — so the two are pinned together HERE, in a pure-node test that
+  // runs in `policy` on every PR.
+  const harness = await import("../tests/d1/lib/e6f-harness.mjs");
+  const source = readFileSync(path.join(repoRoot, "packages/worker-daemon/src/supervisor/redaction.ts"), "utf8");
+  const match = /export const REDACTION_MARKER = "([^"]+)"/.exec(source);
+  assert.ok(match, "REDACTION_MARKER is no longer declared as a plain string literal in redaction.ts — re-point this test");
+  assert.equal(harness.REDACTION_MARKER, match[1], "the harness's mirrored REDACTION_MARKER has drifted from the worker daemon's");
+  // Non-vacuity: an empty or whitespace marker would make `text.includes(marker)` trivially true.
+  assert.ok(match[1].trim().length > 0, "the marker must be a non-empty token, else the clause-5 control is vacuous");
 });
 
 test("DEP-018: the committed tests/d1/fault-matrix.json satisfies every declaration invariant", () => {
