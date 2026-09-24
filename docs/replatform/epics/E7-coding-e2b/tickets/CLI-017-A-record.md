@@ -196,12 +196,15 @@ the "different test each run" pattern.
 import is involved; a boot break would fail every server suite, and 662 of 663 test files pass. The
 base branch's own `verify (1)` is **success** on the same shard.
 
-**Not fixed here, deliberately.** It is a pre-existing port-allocation race in a harness file this
-ticket does not own, and this PR is already at `M1-BUILD-RULES.md` §C's two-round cap. Reported to
-the planning session with the diagnosis above; the fix is to have the probe read the server's actual
-bound port (the banner already reports it) or to allocate the port with the
-`allocateEmbeddedPgPort`-style helper the other integration suites use rather than assuming a
-requested port is free.
+**Not fixed here, and FILED with the diagnosis so nobody re-derives it: `E7-F043`** (`findings.md`,
+LOW, open, declared `unowned` in `scripts/finding-ownership.json`, carrying both port numbers). It is
+a harness defect in a file no chartered ticket owns; naming `CLI-017` would be the invented
+ownership `check-finding-ownership` exists to prevent. The closure route is written into the entry:
+preferably have the probe read the server's **actual** bound port (the banner already reports it and
+the helper already accumulates that stdout), otherwise allocate with the `allocateEmbeddedPgPort`-style
+helper the other integration suites use — with a positive control that a deliberately **pre-bound**
+requested port still boots and is still detected, or the fix is unproven against the very case that
+produced it.
 
 ---
 

@@ -11,8 +11,9 @@
 **Ruling:** `decisions.md` `E7-D11` §3 (ruling F7, under founder delegation F2) — SD-5 is **REQUIRED
 before `M1b`'s campaign**, not optional and not deferred
 **Acceptance rows carried:** **2, 6, 6b, 7, 8** and the **export half of 5**
-**Findings touched:** `E7-F039` (SD-5 arm, outcome (ii)), `E7-F040` (**closed by fixing**),
-`E7-F038` (**stays open**, and this slice does not close it)
+**Findings touched:** `E7-F039` (SD-5 arm, outcome (ii)), `E7-F040` (**resolved** — flip + ownership
+key deleted in one commit), `E7-F038` (**stays open**, and this slice does not close it),
+`E7-F043` (**filed `unowned`** — the harness port collision)
 
 ★★★ **A RECORD, NOT A RESULT.** See `CLI-017-A-record.md` §preamble. The aggregate
 `tickets/CLI-017-result.md` is written only after **both** slice records are approved by a distinct
@@ -246,8 +247,12 @@ and the decision is to **take the signal**:
 
 Cost: one field. It removes the class from this surface permanently, so a future scanner doing
 remote or streaming work inherits cancellation instead of re-filing the finding.
-**Recommendation to the reviewer: `E7-F040` may be closed as `resolved` by `CLI-017-B`.** This
-record does not flip it; the finding's status is the reviewer's to move.
+★ **CLOSED, on the planning session's ruling.** `findings.md` reads
+`Status: resolved (2026-09-24, CLI-017-B)` and the `scripts/finding-ownership.json` key is
+**deleted in the same commit**, per the register rule. ★ Note which arm was taken: the entry offered
+*"closes as not-applicable"* for a pure in-process scan, which is what this scanner is — that arm was
+available and was **not** taken, because the signal costs one field and removes the class from this
+surface permanently.
 
 ## 10. `E7-F038` — NOT closed, and row 8 says so in the suite
 
@@ -325,7 +330,7 @@ by PC-12. The `heartbeat.ts` source-pin class was then swept:
 (`cli-006-seam-suppression`) was affected and is fixed; the other three do not window the
 `buildTaskRunBatchWorkload` call and are green unedited.
 
-## 11b. Codex round 2 (PR #592, P2) — OPEN, verified, and NOT fixed: the two-round cap
+## 11b. Codex round 2 (PR #592, P2) — verified, and FIXED under an authorized third round
 
 ★★★ **THIS RECORD'S §11a OVERCLAIMED, AND THE CORRECTION IS HERE RATHER THAN QUIETLY IN THE PROSE
 ABOVE.** §11a says the classifier covers the refusal causes on the production path. **It does not.**
@@ -347,12 +352,13 @@ this:
    a file refused because the store was unreachable still record the **same** reason on the
    sequencer's per-file result, which is the surface `E5-D07`'s per-file policy is read from.
 
-**It is NOT fixed, and that is a rule, not a judgement.** `M1-BUILD-RULES.md` §C caps a PR at **two
-Codex rounds**: *"After two rounds on a PR, STOP and report — do not attempt a third fix … A ticket
-is not the place to converge on a property that keeps regenerating."* This is round 2. The finding
-goes to the planning session to rule on: fix it, file it as a finding, or descope.
+**It was reported rather than fixed at the time**, under `M1-BUILD-RULES.md` §C's two-round cap, and
+**the planning session ruled: fix it, authorizing a third round for this finding and nothing else.**
+The reason given is the one that matters: *a false claim of enforcement is worse than a missing
+check* — a reader sees classification code and assumes classification happens, and an operator gets
+one flattened reason for several different failures. **Both halves are now fixed** (§11c).
 
-**The proposed fix, for whoever rules on it** — recorded so the ruling has something concrete:
+**The fix, as proposed and as built:**
 
 - **`artifact-export.ts`:** map the three refusal class names to distinct reason codes
   (`export_secret_refused`, `export_secret_set_unavailable`, `export_scanner_unavailable`) at the
@@ -374,6 +380,61 @@ pinned with mutants M-B10/M-B11. A consumer that reads `err.name` — which is t
 conformance suite and the duck-typed callers use — gets the real classification today. What remains
 open is the **sequencer's per-file `reason` code** and the **AM's operator log** for these classes.
 
+## 11c. Round 3 — both halves fixed, and the mutation that caught my own vacuous test
+
+**Half 1 — `packages/adapter-manager/src/server.ts`.** The classification is now computed and
+handed to `onOpFailure` **before** the `isModelledWireError` early return, for **every** failure
+including the modelled ones. The modelled arm's **response is unchanged** — it still returns the
+coded envelope, so the driver reconstructs the authoritative class and round 1's property holds —
+but the adapter-manager's own operator log now names a cause either way. The fence is untouched:
+the classification is drawn from a **closed** vocabulary and never from message text, so logging it
+for a modelled error cannot carry anything that error was not already allowed to carry.
+
+**Half 2 — `packages/worker-daemon/src/lease/artifact-export.ts`.** A new pure
+`exportFailureReasonCode(errorName)` maps the three refusal class names to
+`export_secret_refused` / `export_secret_set_unavailable` / `export_scanner_unavailable`, and the
+`fail("export", …)` site uses it instead of the hard-coded `"export_failed"`. It maps from the
+**class name**, never from message text (the names are the stable contract the round-1 codec fix
+preserves across the hop), and an **unknown** class falls back to the generic `export_failed` so a
+future provider error is never mis-attributed to a secret refusal.
+
+### RED
+
+```
+ FAIL  packages/adapter-manager src/__tests__/server-artifact-export.test.ts (2 failures)
+   → expected [] to deeply equal [ { op: 'export_artifact', …(2) } ]
+ Tests  2 failed | 32 passed (34)
+
+ FAIL  packages/worker-daemon src/__tests__/artifact-export-sequencer.test.ts (5 failures)
+ Tests  5 failed | 34 passed (39)
+```
+
+The first is the defect itself: the operator log receives **nothing** for a refusal.
+
+### GREEN
+
+`server-artifact-export.test.ts` **34 passed**; `artifact-export-sequencer.test.ts` **39 passed**.
+
+### Mutations
+
+| id | mutant | observed |
+|---|---|---|
+| **M-B13** | Restore the early return **before** the classification (the round-2 defect, exactly) | **RED** — `2 failed | 32 passed` |
+| **M-B14** | Restore the blanket `"export_failed"` at the `fail("export", …)` call site | ★ **GREEN at first — see below.** **RED** after the call-site arm was added: `3 failed | 36 passed` |
+| **M-B15** | Collapse two of the three refusal reasons into one another | **RED** — `2 failed | 32 passed` |
+| **M-B16** | Mis-attribute an **unknown** class to `export_secret_refused` | **RED** — `5 failed | 29 passed` |
+
+★★★ **M-B14 IS THE ONE WORTH READING, AND IT CAUGHT MY OWN VACUOUS TEST.** The first
+`exportFailureReasonCode` arms proved the **helper** and not the **call site**: restoring the
+blanket `"export_failed"` at `fail("export", …)` left **every one of them green**. A helper with
+perfect unit tests that nothing calls is the same defect as the dead classifier branches this whole
+round exists to fix — one level down, and written by the person fixing it. The remedy is a
+**behavioural** arm: `multiFileSequencer` gained a `refuseExportWith` map so a real export refusal
+can be driven through the sequencer, and the new describe block reads the **recorded per-file
+`reason`** for each of the three classes, for an unknown class, and for the no-refusal positive
+control, with the non-vacuity check that both files were really attempted. M-B14 reds against that.
+**It is the same lesson as PC-12's call-site pin in slice A**, which is why slice A had one.
+
 ## 12. Files
 
 | file | change |
@@ -393,6 +454,10 @@ open is the **sequencer's per-file `reason` code** and the **AM's operator log**
 | `packages/adapter-manager/src/__tests__/op-failure-classification.test.ts` | the classifier arms |
 | `packages/adapter-manager/src/__tests__/server-artifact-export.test.ts` | an injectable scanner + the refusal driven over the real transport path |
 | `server/src/__tests__/cli-006-seam-suppression.test.ts` | the moved source-pin window widened 8 -> 40 lines; its claim unchanged |
+| `packages/adapter-manager/src/server.ts` | the classification computed + logged BEFORE the modelled early return (round 3) |
+| `packages/worker-daemon/src/lease/artifact-export.ts` | `exportFailureReasonCode`, and the `fail("export", …)` site uses it (round 3) |
+| `packages/worker-daemon/src/__tests__/artifact-export-sequencer.test.ts` | the helper arms **and** the call-site behavioural arm that reds M-B14 |
+| `docs/replatform/epics/E7-coding-e2b/findings.md`, `scripts/finding-ownership.json` | `E7-F040` resolved (key deleted in the same commit); `E7-F043` filed `unowned` |
 | `scripts/test-inventory.json` | pins bumped for the new test files |
 | `docs/architecture/distributed-execution-threat-controls.json` | `e2b-provider.ts` citation re-pointed by symbol; census stays **397** |
 
@@ -429,12 +494,15 @@ the "different test each run" pattern.
 import is involved; a boot break would fail every server suite, and 662 of 663 test files pass. The
 base branch's own `verify (1)` is **success** on the same shard.
 
-**Not fixed here, deliberately.** It is a pre-existing port-allocation race in a harness file this
-ticket does not own, and this PR is already at `M1-BUILD-RULES.md` §C's two-round cap. Reported to
-the planning session with the diagnosis above; the fix is to have the probe read the server's actual
-bound port (the banner already reports it) or to allocate the port with the
-`allocateEmbeddedPgPort`-style helper the other integration suites use rather than assuming a
-requested port is free.
+**Not fixed here, and FILED with the diagnosis so nobody re-derives it: `E7-F043`** (`findings.md`,
+LOW, open, declared `unowned` in `scripts/finding-ownership.json`, carrying both port numbers). It is
+a harness defect in a file no chartered ticket owns; naming `CLI-017` would be the invented
+ownership `check-finding-ownership` exists to prevent. The closure route is written into the entry:
+preferably have the probe read the server's **actual** bound port (the banner already reports it and
+the helper already accumulates that stdout), otherwise allocate with the `allocateEmbeddedPgPort`-style
+helper the other integration suites use — with a positive control that a deliberately **pre-bound**
+requested port still boots and is still detected, or the fix is unproven against the very case that
+produced it.
 
 ---
 

@@ -448,15 +448,36 @@ export function createProviderServer(options: CreateProviderServerOptions): Serv
           // vocabulary only — op, a known error class, a coarse cause, a known error code, an
           // HTTP status — never message text, so the fence still holds. It is logged here and
           // carried in the fixed message for the worker to log.
-          if (isModelledWireError(err)) {
-            sendJson(res, 200, encodeErrResponse(err));
-            return;
-          }
+          //
+          // CLI-017-B, round 3 (Codex round 2 on PR #592, ruled by the planning session) — THE
+          // CLASSIFICATION IS COMPUTED AND LOGGED FOR **EVERY** FAILURE, INCLUDING THE MODELLED
+          // ONES, AND THAT ORDERING IS THE WHOLE FIX.
+          //
+          // Round 1 added the three SD-5 export refusals to `isModelledWireError` so their CLASS
+          // would survive the hop. Correct, and it had a side effect nobody would see by reading
+          // the diff: the early return below then fired for exactly those errors, so
+          // `classifyOpFailure`'s new refusal branches became UNREACHABLE on the production path.
+          // That is worse than never having added them — a reader sees classification code and
+          // assumes classification happens, while the operator log holds nothing at all for the
+          // one class of failure they most need to tell apart (a file refused for carrying a
+          // credential vs. a store the adapter-manager could not reach). A FALSE CLAIM OF
+          // ENFORCEMENT IS WORSE THAN A MISSING CHECK.
+          //
+          // So the classification is computed FIRST and logged for every failure. The modelled
+          // arm's RESPONSE is unchanged — it still returns the coded envelope so the driver
+          // reconstructs the authoritative class — but the adapter-manager's own operator log now
+          // names a cause either way. The fence is untouched: the classification is drawn from a
+          // CLOSED vocabulary and never from message text, so logging it for a modelled error
+          // cannot carry anything a modelled error was not already allowed to carry.
           const classification = classifyOpFailure(op, err);
           try {
             onOpFailure(classification);
           } catch {
             // A logging sink must never turn a coded failure into a crash or a hang.
+          }
+          if (isModelledWireError(err)) {
+            sendJson(res, 200, encodeErrResponse(err));
+            return;
           }
           sendJson(
             res,

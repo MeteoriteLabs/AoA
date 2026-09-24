@@ -198,6 +198,44 @@ export function exportReasonCode(value: string | null | undefined): string {
   return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value) ? value : "unknown";
 }
 
+/**
+ * CLI-017-B, round 3 (Codex round 2 on PR #592, ruled by the planning session) — MAP AN EXPORT
+ * FAILURE'S CLASS NAME TO A DISTINCT REASON CODE.
+ *
+ * ★★★ WHY THIS EXISTS. The export arm used to record the hard-coded `"export_failed"` for EVERY
+ * thrown error, putting the class name in `detail` only. `detail` is not what the sequencer's
+ * per-file result carries — `reason` is, and `reason` is the surface `E5-D07`'s per-file policy is
+ * read from. So a file refused because it carried a tenant credential and a file refused because
+ * the object store was unreachable recorded the SAME reason, which destroys the one distinction
+ * `SD-5`'s classified refusal exists to draw (`E7-D11` section 3). Only a NAMED cause tells an
+ * operator what to do: one means "the agent wrote a secret into the output root", the other means
+ * "fix the store". Round 1 made the class survive the wire; this stops it being flattened one
+ * layer above the wire.
+ *
+ * ★ IT MAPS FROM THE CLASS NAME, NEVER FROM MESSAGE TEXT. These classes' messages are fixed
+ * vocabulary that the wire is free to truncate, and matching them by pattern would couple this
+ * module to wording it does not own. The names are the stable contract (`provider-wire`'s codec
+ * preserves `.name` across the hop, which is exactly what round 1 delivered).
+ *
+ * ★ IT LEAKS NOTHING. The output is one of four fixed snake_case tokens. No path, byte offset, env
+ * key, matched value or grant can reach it.
+ *
+ * ★ UNKNOWN NAMES FALL BACK to the generic `export_failed`, so a new provider error is reported
+ * honestly as an unclassified export failure rather than mis-attributed to a secret refusal.
+ */
+export function exportFailureReasonCode(errorName: string | null | undefined): string {
+  switch (errorName) {
+    case "SandboxExportScannerRefusedError":
+      return "export_secret_refused";
+    case "SandboxExportSecretSetUnavailableError":
+      return "export_secret_set_unavailable";
+    case "SandboxExportScannerUnavailableError":
+      return "export_scanner_unavailable";
+    default:
+      return "export_failed";
+  }
+}
+
 export interface CreateArtifactExportSequencerDeps {
   readonly client: Pick<
     ControlPlaneClient,
@@ -519,7 +557,14 @@ export function createArtifactExportSequencer(deps: CreateArtifactExportSequence
           // Deliberately NOT interpolating the error into anything that could carry the grant:
           // the message is the implementation's, and an implementation that put the signed url in
           // its own error would leak it here. Only the stage and the path are reported.
-          fail("export", error instanceof Error ? error.name : "export failed", "export_failed");
+          // CLI-017-B round 3 — the REASON is derived from the class, not fixed. See
+          // `exportFailureReasonCode`: `detail` was already carrying the class name, but `detail`
+          // is not what the per-file result records.
+          fail(
+            "export",
+            error instanceof Error ? error.name : "export failed",
+            exportFailureReasonCode(error instanceof Error ? error.name : null),
+          );
         }
         if (reference.objectKey !== objectKey) fail("export", "exported a different object key", "object_key_mismatch");
 
