@@ -9,7 +9,10 @@ name: D1 Image Mirror
 #
 # This lane is the PUBLISH path and the REFRESH story for `docker/d1/minio.Dockerfile`.
 # It is dispatch-only: it is not a gate, it spends no E2B money, and it is expected to
-# run roughly never — only when the mirrored MinIO needs re-cutting.
+# run roughly never — only when the mirrored MinIO needs re-cutting. It BUILDS MinIO
+# FROM UPSTREAM SOURCE at a pinned release tag, because every built image of that release
+# has been withdrawn while the source has not, and because the lane's presign behaviour
+# is version-sensitive (see the Dockerfile's "WHY FROM SOURCE" block).
 #
 # AFTER RUNNING IT: take the index digest this prints and pin it into the
 # `AOA_D1_MINIO_IMAGE` default in `docker-compose.d1.yml`. Pinning by DIGEST rather
@@ -30,12 +33,20 @@ name: D1 Image Mirror
 on:
   workflow_dispatch:
     inputs:
-      minio_source_image:
+      minio_version:
         description: >-
-          Source image to lift the MinIO server binary from. Leave empty to use the
-          digest pinned in docker/d1/minio.Dockerfile. Chainguard's free tier serves
-          `:latest` only and garbage-collects older digests, so a refresh whose pinned
-          source digest has aged out overrides this with `cgr.dev/chainguard/minio:latest`.
+          MinIO release tag to BUILD FROM SOURCE. Empty keeps the tag pinned in
+          docker/d1/minio.Dockerfile, which is the release the D1 lane's presign
+          behaviour (E6F-05, E6F-14) was proven against. Overriding it REQUIRES
+          minio_commit too, and requires re-running the D1 campaign.
+        required: false
+        default: ""
+        type: string
+      minio_commit:
+        description: >-
+          The 40-hex commit that minio_version's tag PEELS to
+          (`git ls-remote https://github.com/minio/minio 'refs/tags/<tag>^{}'` -- NOT the
+          annotated-tag object id). The build fails closed if the checkout is not this.
         required: false
         default: ""
         type: string
@@ -86,6 +97,15 @@ jobs:
           owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           echo "repo=ghcr.io/${owner}/aoa-d1-minio" >> "$GITHUB_OUTPUT"
 
+      # A version without its commit would silently fall back to the pinned commit and
+      # fail closed in the builder with a confusing mismatch; a commit without its version
+      # would check the OLD tag against a NEW commit. Refuse both, here, with the reason.
+      - name: Refuse a half-specified version override
+        if: ${{ (inputs.minio_version != '') != (inputs.minio_commit != '') }}
+        run: |
+          echo "minio_version and minio_commit must be given together (or neither)." >&2
+          exit 1
+
       - name: Build and push the mirrored MinIO image
         id: push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -96,7 +116,8 @@ jobs:
           push: true
           provenance: false
           build-args: |
-            ${{ inputs.minio_source_image != '' && format('MINIO_SOURCE_IMAGE={0}', inputs.minio_source_image) || '' }}
+            ${{ inputs.minio_version != '' && format('MINIO_VERSION={0}', inputs.minio_version) || '' }}
+            ${{ inputs.minio_commit != '' && format('MINIO_SOURCE_COMMIT={0}', inputs.minio_commit) || '' }}
           tags: ${{ steps.target.outputs.repo }}:${{ inputs.tag }}
 
       - name: Print the digest to pin
