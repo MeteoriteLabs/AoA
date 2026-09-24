@@ -2438,8 +2438,16 @@ The "pins an org slot forever" half applies here too whenever the stranded attem
 `capacityClaimState: 'held'`, so the blast radius is not limited to the stuck job: it degrades the
 whole Organization's admission.
 
-**Shape of the fix -- NOT built here, because it is a placement-authority decision above this ticket.**
-Two candidates, and they are not equivalent:
+**RULED: `E3-D-GEN-INVALIDATION` (2026-09-24, founder delegation F2).** Explicit invalidation
+enqueued from `advanceTargetGeneration`; the generation FLOOR is **refused**, because it would trade a
+correctness guarantee (work runs on the device it was placed for) for an availability one, and this
+defect is availability-only. **Two binding conditions carried by that decision:** (1) it is
+CONDITIONAL ON LIVE CONFIRMATION -- no fix may be built until the defect is reproduced by re-enrolling
+a bound worker while one of its jobs sits `pending` and placed, with the reproduction recorded HERE
+first; and (2) the invalidation MUST also release the pinned Organization capacity slot, so the owning
+ticket cannot close on half the defect. Read the decision for the full reasoning.
+
+The two candidates, as filed, and why they are not equivalent:
 
 - **A floor rather than an equality** (`>=`, or "generation at or after placement"). Cheapest, but it
   would let an attempt placed under an OLDER device generation lease onto a ROTATED device -- which
@@ -2451,13 +2459,14 @@ Two candidates, and they are not equivalent:
   existing fanout re-place or terminalise the affected attempts. This reuses machinery that already
   exists and already handles the capacity-slot release, and it keeps the generation pin intact.
 
-The second looks safer, but which is correct is a ruling for the placement authority, so it is filed
-rather than chosen.
+The second was chosen: see `E3-D-GEN-INVALIDATION` in this epic's `decisions.md`.
 
 **Honest limits of this measurement.** This is a SOURCE-level measurement -- the predicate, the bump
 site, and the ABSENCE of any convergence trigger for it -- and it has **not been observed live**. What
 would confirm it: re-enrol an already-bound worker while one of its jobs sits `pending` and placed,
-then assert the attempt is never offered and never terminalises. `DEP-021` did not run that, because
+then assert the attempt is never offered, never terminalises, and that nothing is logged. **That
+reproduction is a GATING CONDITION of `E3-D-GEN-INVALIDATION`** -- the ruling does not authorise a
+fix until it is recorded here. `DEP-021` did not run that, because
 its own test failures turned out NOT to be this defect (see below) and manufacturing a re-enrolment
 was outside its brief.
 

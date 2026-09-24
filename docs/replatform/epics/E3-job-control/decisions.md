@@ -527,3 +527,61 @@ ways:
 
 No duplicate summary writer is created: the JOB-017 registrations write no `issue_comments` row and
 no `task_terminal` receipt. The real-ingest test asserts both.
+
+
+## E3-D-GEN-INVALIDATION — a target-generation advance INVALIDATES the attempts placed under the old one; the candidate predicate keeps its equality
+
+**Status:** `accepted`, **decided under founder delegation F2**, 2026-09-24, on `E3-F041` as filed by
+`DEP-021` (E6 `tickets/DEP-021-result.md` §5b).
+
+**The question.** `E3-F041` measures that the lease-candidate predicate pins
+`placement_target_generation` by EQUALITY against the polling worker's current target generation
+(`packages/db/src/repositories/tenant/job-control.ts`, at each of its four candidate/claim sites),
+that `advanceTargetGeneration` bumps `execution_targets.device_generation` on re-enrolment of an
+already-bound worker while the target stays ACTIVE
+(`server/src/services/worker-enrollment.ts`), and that the only convergence path
+(`server/src/services/execution-target-revocation-fanout.ts`) is driven solely off
+`execution_target_revocations` rows, which only `revokeExecutionTarget` inserts. So a device rotation
+strands every already-placed `pending` attempt permanently and silently. Two fixes were offered: relax
+the predicate to a FLOOR, or INVALIDATE the affected attempts on any generation advance.
+
+**Decision: explicit invalidation, enqueued from `advanceTargetGeneration`. The floor is REFUSED.**
+
+**Why the floor is refused.** It would let an attempt placed under an OLDER device generation lease
+onto a ROTATED device — plausibly the precise property the equality pin exists to enforce. That trades
+a CORRECTNESS guarantee (work runs on the device it was placed for) for an AVAILABILITY one, and the
+defect is availability-only. Fixing a silent stall by weakening the guarantee that work runs where it
+was placed is the wrong direction, and a weakened guarantee is very hard to restore later.
+
+**Why invalidation is right.** It reuses machinery that already exists and already does the harder
+half: the revocation fanout terminalises stranded lease-less attempts AND releases the held
+Organization capacity slot with the same helper its lease pass uses. It keeps the generation pin
+intact. And the codebase argues for it against itself — the fanout's own Phase-1b comment records that
+a generation-pinned successor *"can never lease"*, that `guardActiveFence`'s `target_revoked`
+*"never fires"*, that `countHeldAttemptsForOrg` *"pins an org slot forever"*, and that *"nothing else
+reaps a lease-less nonterminal attempt."* Revocation was given a fanout for exactly this reason;
+re-enrolment advances the same column on a live target and was given none. **That is an omission, not
+a design**, and the fix is to make re-enrolment converge the way revocation already does.
+
+### Two binding conditions on this ruling
+
+1. **CONDITIONAL ON LIVE CONFIRMATION. No fix may be built against an unobserved defect.** `E3-F041`
+   is a SOURCE-level measurement — the predicate, the bump site, and the absence of any convergence
+   trigger — and has not been reproduced. Before the fix is implemented the defect must be observed:
+   **re-enrol an already-bound worker while one of its jobs sits `pending` and placed, then assert the
+   attempt is never offered, never terminalises, and that nothing is logged.** That reproduction is
+   recorded in `E3-F041` before the owning ticket starts. A plausible chain is not a licence to change
+   placement authority.
+2. **THE CAPACITY LEAK IS PART OF THE FIX, NOT A FOLLOW-UP.** Whatever invalidates the attempt MUST
+   also release the pinned Organization capacity slot. An invalidation that cures the stall and leaves
+   `countHeldAttemptsForOrg` pinning a slot has fixed half the defect, and the owning ticket may not
+   close on that half. The revocation fanout's existing release helper is the precedent and the
+   expected mechanism.
+
+**Severity is unchanged at HIGH** and the calibration in `E3-F041` stands: an ordinary supported
+trigger, a permanent and silent effect, plus a capacity leak — but availability-only and
+operator-initiated rather than tenant- or attacker-reachable, which is why it is not CRITICAL.
+
+**Not relitigated by this decision:** the equality pin itself stays. Nothing here authorises relaxing
+`placement_target_generation`, `placement_profile_hash` or `placement_provider_constraint_hash` at any
+candidate site.
