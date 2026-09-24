@@ -640,6 +640,92 @@ test("inbound: the allowance map is CLOSED and is the whole policy surface", asy
   assert.equal(FAKE_PROVIDER_INBOUND_ALLOWANCES["@armyofagents/sandbox-provider-contract"], "devDependencies");
 });
 
+// --- Codex P2s: the two holes the inbound arm had, each with the branch EXECUTED ------------
+
+test("inbound RED: a CommonJS require() of the fake is caught, in every extension the scan admits", async (t) => {
+  // ★ `extractModuleSpecifiers` is ESM-only and returns [] for `require("…")` — measured. The scan
+  // admits .js/.cjs/.mjs, so without the require arm a CommonJS load passed the check entirely.
+  for (const file of ["src/index.js", "src/legacy.cjs", "src/tool.mjs", "src/mod.ts"]) {
+    for (const src of [
+      `const x = require("${FAKE_PROVIDER_PACKAGE}");\nmodule.exports = x;\n`,
+      `const { f } = require('${FAKE_PROVIDER_PACKAGE}/dist/hostile-driver.js');\nmodule.exports = f;\n`,
+    ]) {
+      const root = inboundSetup(t, cleanPackages({ serverSources: { [file]: src } }));
+      const { policyErrors } = await runInbound(root);
+      assert.ok(
+        hasSubstr(policyErrors, `server/${file}: shipped source must not import ${FAKE_PROVIDER_PACKAGE}`),
+        `${file}: ${policyErrors.join(" | ")}`,
+      );
+    }
+  }
+});
+
+test("inbound: a require() DECOY in a comment or a string never trips the arm", async (t) => {
+  // The require scan is built on `tokenizeSource`, not a regex, so comment and string bodies are
+  // consumed rather than matched. Without that, every one of these would be a false red.
+  const decoys = [
+    `// const x = require("${FAKE_PROVIDER_PACKAGE}");\nexport const ok = 1;\n`,
+    `/* require("${FAKE_PROVIDER_PACKAGE}") */\nexport const ok = 1;\n`,
+    `export const doc = 'call require("${FAKE_PROVIDER_PACKAGE}") to load it';\n`,
+    `export const doc = \`require("${FAKE_PROVIDER_PACKAGE}")\`;\n`,
+  ];
+  for (const src of decoys) {
+    const root = inboundSetup(t, cleanPackages({ serverSources: { "src/index.ts": src } }));
+    const { policyErrors } = await runInbound(root);
+    assert.deepEqual(policyErrors, [], `decoy tripped: ${policyErrors.join(" | ")}`);
+  }
+  // …and the extractor itself, directly: the real call is seen, the decoys are not.
+  const { extractRequireSpecifiers } = await import("./lib/sandbox-fake-provider-boundary.mjs");
+  assert.deepEqual(extractRequireSpecifiers('const a = require("pkg-a");'), ["pkg-a"]);
+  assert.deepEqual(extractRequireSpecifiers('// require("pkg-a")'), []);
+  assert.deepEqual(extractRequireSpecifiers('const s = "require(\\"pkg-a\\")";'), []);
+});
+
+test("inbound RED: a workspace-source SYMLINK is REFUSED, not skipped — the branch is executed", async (t) => {
+  // ★ This host cannot create symlinks without elevation, so the branch is driven through the
+  // runner's injectable `readdir` instead. That is not a weaker control: it executes the exact
+  // line, and it does so on every platform rather than only where symlinks are permitted.
+  //
+  // It also caught a real defect in the fix itself — the first version pushed onto the CALLER's
+  // `policyErrors`, which is not in scope inside the walker, so it would have thrown
+  // `ReferenceError` on the one path it was written for. The guard still said PASS because the
+  // branch was never taken. An untaken branch is not a control.
+  const root = inboundSetup(t, cleanPackages());
+  const target = path.join(root, "server", "src");
+  const readdir = async (p, opts) => {
+    const entries = await fs.promises.readdir(p, opts);
+    if (path.resolve(p) !== path.resolve(target)) return entries;
+    return [
+      ...entries,
+      {
+        name: "linked.ts",
+        isSymbolicLink: () => true,
+        isDirectory: () => false,
+        isFile: () => false,
+      },
+    ];
+  };
+  const { policyErrors, readErrors } = await runInbound(root, { readdir });
+  assert.ok(
+    hasSubstr(policyErrors, "server/src/linked.ts: workspace-source symlinks are forbidden"),
+    `policyErrors: ${policyErrors.join(" | ")} readErrors: ${readErrors.join(" | ")}`,
+  );
+  // And a symlinked DIRECTORY is refused the same way rather than walked.
+  const readdirDir = async (p, opts) => {
+    const entries = await fs.promises.readdir(p, opts);
+    if (path.resolve(p) !== path.resolve(target)) return entries;
+    return [
+      ...entries,
+      { name: "linked-dir", isSymbolicLink: () => true, isDirectory: () => true, isFile: () => false },
+    ];
+  };
+  const dir = await runInbound(root, { readdir: readdirDir });
+  assert.ok(
+    hasSubstr(dir.policyErrors, "server/src/linked-dir: workspace-source symlinks are forbidden"),
+    dir.policyErrors.join(" | "),
+  );
+});
+
 test("inbound: the REAL repository satisfies the inbound policy", async () => {
   const { runInboundCheck } = await import("./check-sandbox-fake-provider-boundary.mjs");
   const { policyErrors, readErrors, scanned } = await runInboundCheck(process.cwd());

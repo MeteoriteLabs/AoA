@@ -33,6 +33,7 @@ import {
   classifyRuntimeSourceFileName,
   extractModuleSpecifiers,
   findForbiddenGlobals,
+  tokenizeSource,
 } from "./worker-protocol-boundary.mjs";
 
 export { classifyRuntimeSourceFileName };
@@ -277,6 +278,34 @@ export function evaluateInboundManifest(manifest, { manifestRel }) {
  * @param {{ relPath:string, packageName:string, source:string }} args
  * @returns {string[]} violations (empty ⇒ clean)
  */
+/**
+ * Literal `require("…")` specifiers in `source`.
+ *
+ * ★ WHY THIS EXISTS (Codex P2, verified at source). `extractModuleSpecifiers` recognises ESM
+ * `import`/`export` and returns NOTHING for `require("…")` — measured: it yields `[]` for
+ * `const x = require("@armyofagents/sandbox-fake-provider")`. The inbound scan deliberately admits
+ * `.js`, `.cjs` and `.mjs`, so without this arm a CommonJS load of the fake provider passed the
+ * check entirely. The OUTBOUND arm already treats the `require(` bridge as a boundary escape, so the
+ * inbound arm was weaker than its own sibling.
+ *
+ * Built on `tokenizeSource`, NOT a regex, for the same reason the rest of this file is: the
+ * tokenizer consumes comments and string bodies, so `require("…")` mentioned inside a comment or a
+ * string literal cannot trip it. The decoy cases assert exactly that.
+ */
+export function extractRequireSpecifiers(source) {
+  const out = [];
+  const tokens = tokenizeSource(source);
+  for (let i = 0; i + 2 < tokens.length; i += 1) {
+    const a = tokens[i];
+    const b = tokens[i + 1];
+    const c = tokens[i + 2];
+    if (a.type === "word" && a.value === "require" && b.type === "punct" && b.value === "(" && c.type === "string") {
+      out.push(c.value);
+    }
+  }
+  return out;
+}
+
 export function evaluateInboundSourceImports({ relPath, packageName, source }) {
   const allowance = Object.prototype.hasOwnProperty.call(FAKE_PROVIDER_INBOUND_ALLOWANCES, packageName)
     ? FAKE_PROVIDER_INBOUND_ALLOWANCES[packageName]
@@ -284,9 +313,14 @@ export function evaluateInboundSourceImports({ relPath, packageName, source }) {
   if (allowance === "self") return [];
   const errors = [];
   const isTest = isInboundTestSourcePath(relPath);
-  for (const spec of extractModuleSpecifiers(source)) {
-    if (spec.nonLiteral || spec.value == null) continue; // non-literal specifiers are the outbound arm's
-    const value = spec.value;
+  const specifiers = [
+    ...extractModuleSpecifiers(source).map((spec) => (spec.nonLiteral || spec.value == null ? null : spec.value)),
+    // Codex P2 — the CommonJS half. `.js`/`.cjs` are in the inbound scan's extension set, and an
+    // ESM-only specifier reader cannot see `require("…")` at all.
+    ...extractRequireSpecifiers(source),
+  ];
+  for (const value of specifiers) {
+    if (value == null) continue; // non-literal specifiers are the outbound arm's
     if (value !== FAKE_PROVIDER_PACKAGE && !value.startsWith(`${FAKE_PROVIDER_PACKAGE}/`)) continue;
     if (isTest && allowance !== undefined) continue; // an allowlisted package's TEST source may
     errors.push(

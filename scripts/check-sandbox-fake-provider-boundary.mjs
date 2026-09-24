@@ -197,6 +197,12 @@ async function expandWorkspaceGlob(root, glob, readdir) {
 async function listPackageSources(root, packageRel, readdir) {
   const found = [];
   const readErrors = [];
+  // ★ ITS OWN ARRAY, and this is a self-caught defect worth naming: the first version of the
+  // symlink refusal below pushed onto the CALLER's `policyErrors`, which is not in scope here — so it
+  // would have thrown `ReferenceError` on the exact path it was written for, and the guard still
+  // reported PASS because the branch was never taken. An untaken branch is not a control; the
+  // fixture test now EXECUTES this one through an injected `readdir`.
+  const policyErrors = [];
   async function walk(relDir) {
     let entries;
     try {
@@ -208,7 +214,16 @@ async function listPackageSources(root, packageRel, readdir) {
     for (const entry of entries) {
       if (INBOUND_PRUNED_DIRS.has(entry.name)) continue;
       const rel = `${relDir}/${entry.name}`;
-      if (entry.isSymbolicLink()) continue; // the outbound arm refuses symlinks in the leaf src
+      // Codex P2 — REFUSE a symlink, never skip it. Skipping made the old comment here describe a
+      // stricter posture than the code: a production file can import a relative symlink pointing into
+      // the allowlisted conformance tests or the fake-provider tree, and the scanner would accept the
+      // relative import while never reading the target — TypeScript and Node follow the link, so the
+      // fake provider becomes reachable by a path the guard declined to look at. The outbound arm
+      // already reports symlinks as a policy violation; this now matches it.
+      if (entry.isSymbolicLink()) {
+        policyErrors.push(`${rel}: workspace-source symlinks are forbidden (inbound scan cannot follow them safely)`);
+        continue;
+      }
       if (entry.isDirectory()) {
         await walk(rel);
         continue;
@@ -217,7 +232,7 @@ async function listPackageSources(root, packageRel, readdir) {
     }
   }
   await walk(packageRel);
-  return { found, readErrors };
+  return { found, readErrors, policyErrors };
 }
 
 /**
@@ -270,6 +285,7 @@ export async function runInboundCheck(root, opts = {}) {
 
     const listed = await listPackageSources(root, packageRel, readdir);
     readErrors.push(...listed.readErrors);
+    policyErrors.push(...listed.policyErrors);
     for (const relPath of listed.found) {
       let source;
       try {
