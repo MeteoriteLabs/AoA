@@ -284,9 +284,18 @@ function prepare(args) {
   // Fail closed: an absent value used to fall back to a withdrawn `quay.io/minio/minio` tag in the
   // overlay's own default, which is how this lane came to die in `boot-core`. The overlay is now
   // `:?` as well, so a miss here reds the render rather than resolving something unpullable.
+  // ★ The shape is checked POSITIVELY, against the lane's own build-product namespace, and not by
+  // rejecting things that LOOK like registries (Codex P2, PR #604). A host-shaped pattern lets
+  // `minio/minio:latest` through — no dot in the first component, yet Docker resolves it through
+  // Docker Hub — and `localhost:5000/…` too, so Compose would PULL while `candidate.json` still
+  // recorded `builtFromSource: true`: false source-build evidence, which is worse than a refusal.
+  // A default-deny allowlist has no such gap: every registry form carries a `/` or a host, and a
+  // bare library name like `minio:latest` fails it as well.
   const minioImage = String(process.env.AOA_M1_MINIO_IMAGE ?? "").trim();
   if (!minioImage) fail("AOA_M1_MINIO_IMAGE is not set — the lane must build the object store from source (docker/d1/minio.Dockerfile) and export its tag before `prepare` (E6-F030)");
-  if (/^[^\s/]*\.[^\s/]*\//.test(minioImage)) fail(`AOA_M1_MINIO_IMAGE=${minioImage} names a registry host — the shipped-boot lane builds its object store from source (F3, E6-F030)`);
+  if (!/^aoa-[a-z0-9][a-z0-9-]*:[A-Za-z0-9._-]+$/.test(minioImage)) {
+    fail(`AOA_M1_MINIO_IMAGE=${minioImage} is not one of this lane's own locally built tags (aoa-<name>:<tag>, no registry and no slash) — the shipped-boot lane builds its object store from source, and anything Compose could PULL would make \`builtFromSource\` false evidence (F3, E6-F030)`);
+  }
 
   const images = readFileSync(path.join(repoRoot, "docker", "images", "digests.env"), "utf8");
   const tag = (key) => {
