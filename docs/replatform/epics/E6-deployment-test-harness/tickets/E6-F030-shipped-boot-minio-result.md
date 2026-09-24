@@ -2,7 +2,7 @@
 
 **Status:** `gate_review`
 **Epic:** E6 · **Finding:** `E6-F030` (HIGH) · **Milestone:** `M1a` (unblocks the keyed campaign lane)
-**Date (UTC):** `2026-09-25`
+**Date (UTC):** `2026-09-24`
 **Implementer:** Claude Opus 5 (M1 build agent)
 **Start SHA:** `00cbba381eaf6d49aec2f8b46e47e7747ae9e8cb` (`origin/docs/replatform-program`)
 **PR:** #604 (base `docs/replatform-program`)
@@ -30,7 +30,7 @@
 
 `docker/m1-boot/docker-compose.m1-boot.yml:91` defaulted the shipped-boot stack's object store to
 `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`. `E6-F021`'s amendment measures that reference
-as closed on every documented route. **Re-measured independently on 2026-09-25, with controls on
+as closed on every documented route. **Re-measured independently on 2026-09-24, with controls on
 both registries, before any code was written:**
 
 | registry | request | result |

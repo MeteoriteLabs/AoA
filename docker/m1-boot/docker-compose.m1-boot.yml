@@ -90,7 +90,7 @@ services:
   # ★ E6-F030 — THE OBJECT STORE IS BUILT FROM SOURCE BY THE LANE, like the three candidate images.
   #
   # This service used to default to `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`. That image
-  # is GONE: quay and Docker Hub both answer 401 for a pull-scoped token (re-measured 2026-09-25,
+  # is GONE: quay and Docker Hub both answer 401 for a pull-scoped token (re-measured 2026-09-24,
   # with anonymous 200 controls on quay.io/prometheus/busybox and docker.io/library/busybox),
   # mirror.gcr.io is a 404, dl.min.io's binary is a 410 Gone and the GitHub release carries zero
   # assets. Nothing overrode the default, so `m1-shipped-boot` died in `boot-core`.

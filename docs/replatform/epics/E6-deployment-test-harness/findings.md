@@ -2200,7 +2200,7 @@ operator-facing paths in epics other than E6, which were not examined.
 
 ## E6-F030 — the shipped-boot lane still resolves the withdrawn MinIO image, and the one-line fix is blocked by that lane's own shape guard
 
-**Status:** `resolved` (2026-09-25, route 2 built and PROVEN live — see *Closed* below)
+**Status:** `resolved` (2026-09-24, route 2 built and PROVEN live — see *Closed* below)
 **Severity:** HIGH (it fails `m1-shipped-boot` at boot, before the `M1a` journey runs)
 **Owner:** `unowned` (at filing; resolved by PR #604)
 **Filed:** 2026-09-24, by the `E6-F021` re-repair, after Codex round 4 (P1) on PR #603. Measured at
@@ -2307,7 +2307,7 @@ has actually been observed failing on this: the lane is dispatch-only and no dis
 failure is derived from the four measured links above, and **a dispatch is what would confirm it**.
 That dispatch was not made because the lane is keyed-capable and outside this ticket's brief.
 
-### Closed — 2026-09-25, route 2 built, and the lane PROVEN past MinIO
+### Closed — 2026-09-24, route 2 built, and the lane PROVEN past MinIO
 
 **PR #604**, head `f546f068ecb24a700d2c9ccb9460255d1a3b4a46` (the run in the next paragraph is cited at its own revision `845ffb4c9`, and a SECOND keyless dispatch, run `36051455003`, re-proves it on the Codex-round-1 tree). Evidence:
 `docs/replatform/epics/E6-deployment-test-harness/tickets/E6-F030-shipped-boot-minio-result.md`.
