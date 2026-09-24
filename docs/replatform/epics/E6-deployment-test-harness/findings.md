@@ -2113,3 +2113,86 @@ This finding does NOT say the local path is currently broken — all three insta
 says the path is **unverified**, and that three defects accumulated there undetected is evidence
 about the absence of a check, not about the current state of the tree. It also makes no claim about
 operator-facing paths in epics other than E6, which were not examined.
+---
+
+## E6-F030 — the shipped-boot lane still resolves the withdrawn MinIO image, and the one-line fix is blocked by that lane's own shape guard
+
+**Status:** open
+**Severity:** HIGH (it fails `m1-shipped-boot` at boot, before the `M1a` journey runs)
+**Owner:** `unowned`
+**Filed:** 2026-09-24, by the `E6-F021` re-repair, after Codex round 4 (P1) on PR #603. Measured at
+`82af63622c4341912adefbf3e1dce2b29313ebd0`.
+
+### The site, and that it is reached
+
+`docker/m1-boot/docker-compose.m1-boot.yml:91`:
+
+```
+image: "${AOA_M1_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}"
+```
+
+That is the identical reference `E6-F021` measures at **401** from quay and Docker Hub alike, with
+controls on both. `grep -rn "AOA_M1_MINIO_IMAGE"` over the whole repo returns **that line and nothing
+else**, so nothing overrides it and the dead default is what resolves.
+
+The chain was measured link by link rather than inferred from any one of them:
+
+| link | measured |
+|---|---|
+| the overlay is booted | `.github/workflows/m1-shipped-boot.yml` boots `docker/m1-boot/docker-compose.m1-boot.yml` |
+| MinIO is brought up | `scripts/m1-shipped-boot/journey.mjs:423` — `compose(state, ["up","-d","--wait",…, CP_REPLICAS[0]])`, and the comment above it names MinIO as part of replica A's dependency closure |
+| nothing overrides the image | the single-hit grep above |
+| the lane cannot authenticate | `.github/workflows/m1-shipped-boot.yml` contains no registry login |
+
+So `m1-shipped-boot` dispatches fail at `boot-core`, before the journey — and that is the `M1a` lane.
+
+### Why `E6-F021` did not catch it — a broken enumeration, not a failed repair
+
+`E6-F021`'s class sweep enumerated with `grep -rn "image:" docker-compose*.yml`. **That is not
+recursive.** The shell expands `docker-compose*.yml` before `grep` runs, and it expands only to the
+five root-level files, so `-r` recursed into nothing. `find . -name "docker-compose*.yml"` returns
+**seven**. The two never inspected were `docker/campaign/docker-compose.campaign.yml` (clean) and
+this one.
+
+★★★ **A sweep that silently covers five of seven reads exactly like one that covers all seven.** This
+is `E.2.1` — a check whose input is the thing under test can only tell you the artefact is
+well-formed, never that it is complete — landing on the sweep itself. The repair of the D1 half is
+sound and proven; the CLAIM that the class was fixed was false, and it was false because of the
+enumeration, which is the more dangerous of the two failure modes.
+
+### ★ The one-line fix does not work, and this is the part that needs a ruling
+
+Pointing the overlay at `ghcr.io/meteoritelabs/aoa-d1-minio@sha256:187391a6…` fails, because that
+package is **repo-scoped and private**, and `scripts/lib/m1-shipped-boot-shape.mjs:215` fails the
+lane on `/\bdocker (pull|login)\b/`:
+
+> *"the lane must never `docker pull`/`docker login` — images are built from the candidate's source"*
+
+That guard runs on every PR and is the thing that defines the lane's shape. So the lane cannot
+authenticate to a private mirror without redding it.
+
+Three routes. **None is a build agent's call**, which is why this is filed rather than fixed:
+
+1. **Make the GHCR package anonymously readable** (org-admin; `GITHUB_TOKEN` cannot set package
+   visibility). Then no login is required, the shape guard is untouched, and the fix genuinely is one
+   line. It also retires the login prerequisite `E6-F021` added to `docker/d1/README.md`.
+2. **Have the lane build MinIO from source itself**, as it builds everything else.
+   `docker/d1/minio.Dockerfile` already performs exactly that build, fail-closed on the release tag's
+   peeled commit, so this is reuse rather than new work. **This is the option most consistent with
+   the guard's stated intent** — *images are built from the candidate's source*. Cost: a Go compile
+   in the lane.
+3. **Amend the shape guard and its owning decision** to permit a `ghcr.io` login specifically.
+   Recorded for completeness and **recommended against**: it edits a guard to accommodate the need it
+   was written to forbid, which is the "make the failure quieter" shape this programme keeps paying
+   for.
+
+Recommendation: **(1) if the organisation will do it, otherwise (2).**
+
+### Not claimed
+
+This does NOT say the D1 lane is broken — it is fixed and proven at runs `36025567413` and
+`36027175548` (bring-up **and** full campaign, 47/47 + 9/9). `docker-compose.d1.yml` and
+`docker/m1-boot/docker-compose.m1-boot.yml` are separate stacks. Nor does it claim `m1-shipped-boot`
+has actually been observed failing on this: the lane is dispatch-only and no dispatch was made — the
+failure is derived from the four measured links above, and **a dispatch is what would confirm it**.
+That dispatch was not made because the lane is keyed-capable and outside this ticket's brief.

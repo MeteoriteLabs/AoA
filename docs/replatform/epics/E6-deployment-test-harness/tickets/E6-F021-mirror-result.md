@@ -256,8 +256,43 @@ whose contents a third party can withdraw.*
 **Its dual** (E.1(b)): *a D1 image reference pinned only by TAG, so the bytes can change under us
 without the reference changing.* Searched for both.
 
-Enumerated by `grep -rn "image:" docker-compose*.yml` plus `grep -rn "^FROM" docker/`, not by memory.
-D1-lane third-party refs: **4 checked, 1 found broken, 1 fixed.**
+★★★ **THE ENUMERATION BELOW WAS BROKEN, AND THE CLAIM IT SUPPORTED WAS FALSE.** Corrected
+2026-09-24 after Codex round 4 (P1). Superseded text, kept verbatim: *"Enumerated by
+`grep -rn "image:" docker-compose*.yml` plus `grep -rn "^FROM" docker/`, not by memory. D1-lane
+third-party refs: **4 checked, 1 found broken, 1 fixed.**"* — and the sentence two paragraphs down
+that read *"So the withdrawal class has exactly one member and it is fixed."*
+
+**The defect in the sweep itself.** `grep -rn … docker-compose*.yml` looks recursive and is not: the
+**shell** expands `docker-compose*.yml` before grep runs, and it expands only to the five
+**root-level** files. `-r` recursed into nothing. Two compose files were never inspected:
+
+```
+./docker/campaign/docker-compose.campaign.yml
+./docker/m1-boot/docker-compose.m1-boot.yml
+```
+
+Re-enumerated with `find . -name "docker-compose*.yml"`, which is the enumeration this should always
+have used: **7 compose files, not 5.** `docker/campaign/…` is clean (control-plane / adapter-manager
+/ worker only). `docker/m1-boot/docker-compose.m1-boot.yml:91` is **not**:
+
+```
+image: "${AOA_M1_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}"
+```
+
+— the identical withdrawn reference, and `grep -rn "AOA_M1_MINIO_IMAGE"` returns **that line and
+nothing else**, so no workflow or script overrides it and the dead default is what resolves.
+
+★ This is the E.2.1 lesson landing on me: *a check whose input is the thing under test cannot tell
+you what is missing.* My sweep's domain was itself the artefact I was reasoning from, and a
+enumeration that silently covers five of seven reads exactly like one that covers all seven.
+
+**So the withdrawal class has TWO members, and only ONE of them is fixed by this PR.** The open half
+is `E6-F030`, filed with its blocker measured; §10 carries the disposition. What follows is the
+corrected table.
+
+Enumerated by `find . -name "docker-compose*.yml"` plus `grep -rn "^FROM" docker/`, not by memory.
+Third-party refs across **all** compose files: **5 checked, 2 found broken, 1 fixed, 1 filed with a
+measured blocker.**
 
 | ref | anonymous pull, 2026-09-24 | tag-only? |
 |---|---|---|
@@ -266,7 +301,10 @@ D1-lane third-party refs: **4 checked, 1 found broken, 1 fixed.**
 | `ghcr.io/shopify/toxiproxy:2.9.0` | 200 `sha256:b44c2832…` | tag-only |
 | `node:lts-trixie-slim` (compose `test-runner`) | 200 `sha256:8ec5d755…` | tag-only |
 
-So the *withdrawal* class has exactly one member and it is fixed. **The dual class has three
+| `quay.io/minio/minio` in `docker/m1-boot/…:91` | **BROKEN** (401) | tag-pinned — **NOT fixed here**, see `E6-F030` |
+
+So the *withdrawal* class has **two** members: one fixed, one filed (`E6-F030`) because fixing it
+needs a ruling, not a keystroke — see §10.2. **The dual class has three
 surviving members**, deliberately not changed here: digest-pinning them is a correct change but it is
 not this outage, and bundling three unrelated image moves into the PR that has to unblock `M1a`
 today widens the bring-up blast radius for no gain. Their digests are recorded above so the follow-up
@@ -409,6 +447,42 @@ keeps paying for, and I introduced it.
   digest, which is intentional — an automatic re-pin would be a tag by another name. The cost is that
   a MinIO version bump in the harness is a human act, and `E6F-05`/`E6F-14` are what tell you whether
   the new version's presign still behaves.
+
+### 10.2 The FOURTH Codex round — the sweep was wrong, and the second site needs a ruling
+
+**STOPPED HERE, not fixed.** `docker/m1-boot/docker-compose.m1-boot.yml:91` carries the same
+withdrawn image, and it is reached: `.github/workflows/m1-shipped-boot.yml` boots that overlay and
+`scripts/m1-shipped-boot/journey.mjs:423` brings MinIO up as a dependency of the first control-plane
+replica during `boot-core`. So **shipped-boot dispatches fail before the journey**, which matters
+because that is the `M1a` lane.
+
+The one-line fix — point it at the mirror — **does not work, and I measured why rather than trying
+it.** `scripts/lib/m1-shipped-boot-shape.mjs:215` fails the lane on
+`/\bdocker (pull|login)\b/`: *"the lane must never `docker pull`/`docker login` — images are built
+from the candidate's source"*. That guard runs on every PR. The mirror is a **repo-scoped, private**
+GHCR package, so the lane cannot authenticate to it without redding the guard that defines its shape.
+
+Three routes, none of them a build agent's call:
+
+1. **Make the GHCR package anonymously readable** (org-admin). Then no login is needed, the guard
+   stays untouched, and the fix really is one line. Also closes the `E6-F021` §10 item and the login
+   prerequisite in `docker/d1/README.md`.
+2. **Have the shipped-boot lane build MinIO from source itself**, the way it builds everything else.
+   This is the option most consistent with the guard's stated intent — *images are built from the
+   candidate's source* — and `docker/d1/minio.Dockerfile` already does exactly that build. It costs
+   the lane a Go compile.
+3. **Amend the guard and its owning decision** to permit a `ghcr.io` login specifically. Weakest:
+   it edits the shape guard to accommodate a need it was written to forbid, and that is the
+   "make the failure quieter" shape this programme keeps paying for.
+
+My recommendation is **(1) if the org will do it, else (2)**. Not actioned: M1-BUILD-RULES §C caps
+me at two Codex rounds and this is the fourth, and M1-AGENT-RULES says to stop on anything needing a
+decision beyond the unit's brief. Filed as `E6-F030`, `unowned`.
+
+**What this does NOT change.** The D1 lane is fixed and proven — runs `36025567413` and
+`36027175548`, bring-up **and** full campaign, 47/47 + 9/9. `docker-compose.d1.yml` and
+`docker/m1-boot/docker-compose.m1-boot.yml` are separate stacks; the second was missed by a broken
+enumeration, not by a failed repair.
 
 ### 10.1 The third Codex round, and the ruling on it
 
