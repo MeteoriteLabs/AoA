@@ -2069,24 +2069,6 @@ const LEASE_CANDIDATE_EMPTY_REASON = "lease_candidate_store_empty";
  * container coming back (~30 s). */
 const RECONCILE_WINDOW_MS = 90_000;
 
-/**
- * The CONTROL's window, deliberately much shorter — and cycle 3 is why.
- *
- * ★★★ An interrupted run is RE-RUN, and its window is paid TWICE. Cycle 3
- * (`35957846155`) passed the graceful arm in full and then timed out waiting for its abandoned
- * attempt to terminalise: `settledAttemptStatus: "running"` after 200 s, with `attempt_started`
- * and the env-probe log event present. The restarted daemon had simply RE-LEASED that attempt and
- * was running it again — a second full 90 s scripted wait, on top of the time it took to resume
- * polling. Waiting longer is the fragile fix; making the control's window only as long as it needs
- * to be is the robust one.
- *
- * How short it may be: the restart must land while the run is still in flight. The case detects
- * `attempt_started` on a 2 s poll and then stops the service within a couple of seconds, so the
- * run needs to outlive `attempt_started` by under ~10 s. 30 s is ample for that and a third of the
- * re-run cost.
- */
-const RECONCILE_CONTROL_WINDOW_MS = 30_000;
-
 /** Occurrences of `needle` in `text`. ★ COUNTED, not merely tested for presence: this case has TWO
  * arms against the SAME log, so "the line is there" cannot separate them. A count taken before and
  * after each arm attributes each new line to the arm that produced it, and stays correct however
@@ -2162,78 +2144,47 @@ function parkRunInFlight(tenant, label, { attempts = 75, windowMs = RECONCILE_WI
   };
 }
 
-test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restart, and a GRACEFUL restart correctly finds nothing", { skip: SKIP }, () => {
+test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease when it comes back", { skip: SKIP }, () => {
   const [A] = M1_SPINE_TENANTS.enabled;
   const deployed = step(queryDeployedWorker({}), "deployed worker");
   assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
   assert.ok(deployed.workerId, "this case needs the DEPLOYED worker — it is that worker's reconciler under test");
 
-  // The baseline fence count, before either arm touches the service.
+  // ── ONE INTERRUPTION, and cycle 6 is why ──────────────────────────────────────────────────
+  //
+  // ★★★ THE GRACEFUL NEGATIVE CONTROL IS NOT DROPPED FOR CONVENIENCE; IT IS BANKED AND MOVED OUT.
+  // It passed IN FULL on FOUR consecutive live cycles — runs `35956091950`, `35957846155`,
+  // `35960080927` and `35962071988`, each recording `inFlight: true`, `reportedStoreEmpty: true`
+  // and (from cycle 4) `addedNoFenceLine: true`. What it proves is settled: a GRACEFUL restart
+  // drains, settles the handoff, prunes the candidate via `trackHandoff`'s `finally` →
+  // `recordCandidate("remove", offer)` (`poll-loop.ts`), and therefore reports
+  // `lease_candidate_store_empty` and adds NO fence line.
+  //
+  // It is removed from THIS case because it was the cause of the case's own failure, measured on
+  // cycle 6 (`35964102214`): the eligibility probe returned `failing: []` — the injection arm's
+  // attempt satisfied ALL ELEVEN conjuncts — while `workers[0].seenRecently` was FALSE and
+  // `worker-b`'s log read *"session terminal at boot; running idle — operator re-enrollment
+  // required"*, *"its session lapsed past the enrolment code-route boundary — WRK-010 §3.2"*. The
+  // lane's enrolment ticket is one-time and already consumed, so a worker interrupted TWICE cannot
+  // re-establish a session for the second interruption. One interruption is the hypothesis under
+  // test here.
+  //
+  // ★ WHAT THE CASE LOSES BY THAT, STATED RATHER THAN GLOSSED. The graceful arm was a
+  // SAME-MECHANISM negative control: it separated *"the fence line is caused by the daemon DYING
+  // with the lease"* from *"the fence line is caused by a restart having happened"*. Without it the
+  // attribution rests on THREE arms rather than four — absent-before / present-after by COUNT, this
+  // run's lease id in the line, and neither sibling arm of the same three-way branch naming this
+  // lease. That is weaker, and it is weaker in a NAMED way: a reader should know the fourth arm
+  // lives in the four runs above and not in this one.
   const logsStart = composeServiceLogs("worker-b");
   const fenceAtStart = countIn(logsStart.text, STARTUP_RECONCILE_ARMS.fenced);
 
-  // ── ARM 1, the NEGATIVE CONTROL: a GRACEFUL restart must find NOTHING ──────────────────────
-  //
-  // ★★★ THIS ARM IS WHY CYCLE 1 FAILED, AND IT IS NOW THE CONTROL. Run `35954159711` restarted
-  // `worker-b` mid-run with `docker compose restart` and the restarted daemon logged *"the
-  // lease-candidate store is empty; this daemon held no lease when it last stopped"*
-  // (`lease_candidate_store_empty`) — correctly. `restart` sends SIGTERM first; the daemon drains,
-  // the in-flight handoff settles, and `trackHandoff`'s `finally` calls
-  // `recordCandidate("remove", offer)` (`poll-loop.ts`). A cleanly stopped daemon DELIBERATELY
-  // leaves no candidate; the WRK-013 store exists for a daemon that DIED holding a lease, which is
-  // what this case declares.
-  //
-  // ★ SO IT IS A SAME-MECHANISM NEGATIVE CONTROL, which is stronger than a plain before/after
-  // reading: it shows the fence line is caused by the daemon DYING with the lease, not merely by
-  // "a restart happened". A before/after pair alone cannot tell those two apart.
-  const graceful = SUPPRESS_INJECTION
-    ? null
-    : parkRunInFlight(A, "reconcile-graceful", { windowMs: RECONCILE_CONTROL_WINDOW_MS });
-  const gracefulRuntimeBefore = composeServiceRuntime("worker-b");
-  const gracefulRestarted = SUPPRESS_INJECTION ? { ok: false, status: null } : restartComposeService("worker-b");
-  const gracefulCameBack = SUPPRESS_INJECTION
-    ? { ok: false, last: gracefulRuntimeBefore, polls: 0 }
-    : waitFor(
-      () => composeServiceRuntime("worker-b"),
-      (r) => r.ok === true && r.running === true && r.startedAt !== gracefulRuntimeBefore.startedAt,
-      { attempts: 60, everyMs: 2000 },
-    );
-  // The clean-stop observable: the store reports EMPTY, by name.
-  const gracefulSaw = SUPPRESS_INJECTION
-    ? { ok: false, last: null, polls: 0 }
-    : waitFor(
-      () => composeServiceLogs("worker-b"),
-      (l) => l.ok === true && l.text.includes(LEASE_CANDIDATE_EMPTY_REASON),
-      { attempts: 40, everyMs: 2000 },
-    );
-  const logsAfterGraceful = gracefulSaw.last ?? composeServiceLogs("worker-b");
-  const gracefulReportedEmpty = logsAfterGraceful?.ok === true && logsAfterGraceful.text.includes(LEASE_CANDIDATE_EMPTY_REASON);
-  const fenceAfterGraceful = countIn(logsAfterGraceful?.text, STARTUP_RECONCILE_ARMS.fenced);
-  // The negative half, by COUNT: a clean stop adds no fence line.
-  const gracefulAddedNoFence = fenceAfterGraceful === fenceAtStart;
-
-  // ── THE SLOT MUST BE FREE BEFORE ARM 2, and cycle 2 is why ────────────────────────────────
-  //
-  // ★★★ Cycle 2 (`35956091950`) passed ARM 1 in full and then failed with the killed arm's job
-  // still `attemptStatus: "pending"`, `events: []`, `leaseWorkerIds: []` after 45 polls. ARM 1
-  // abandoned an attempt mid-run, and this worker runs ONE job at a time: until that attempt
-  // terminalises, the restarted daemon has no slot for ARM 2's job, so ARM 2 was waiting on a
-  // worker that was busy rather than on a worker that was broken. Waiting for ARM 1's job to reach
-  // a terminal state does BOTH jobs at once — it frees the slot AND proves the restarted daemon
-  // resumed polling, which is the precondition ARM 2 silently assumed.
-  const gracefulSettled = SUPPRESS_INJECTION || graceful === null
-    ? null
-    : step(awaitSpineWorkerDrivenTerminal({ jobId: graceful.ids.jobId, timeoutMs: 260_000 }), "graceful arm settles");
-  const slotFree = gracefulSettled === null
-    ? false
-    : ["succeeded", "failed", "cancelled"].includes(String(gracefulSettled.attemptStatus));
-
-  // ── ARM 2, the INJECTION: KILL the worker mid-run ──────────────────────────────────────────
+  // THE INJECTION: park a run in flight, then KILL the worker holding its lease.
   const killed = SUPPRESS_INJECTION ? null : parkRunInFlight(A, "reconcile-kill");
   const killRuntimeBefore = composeServiceRuntime("worker-b");
   const hardKilled = SUPPRESS_INJECTION ? { ok: false, status: null } : killComposeService("worker-b", { signal: "KILL" });
   const started = SUPPRESS_INJECTION || hardKilled.ok !== true ? { ok: false, status: null } : startComposeService("worker-b");
-  const killCameBack = SUPPRESS_INJECTION
+  const cameBack = SUPPRESS_INJECTION
     ? { ok: false, last: killRuntimeBefore, polls: 0 }
     : waitFor(
       () => composeServiceRuntime("worker-b"),
@@ -2251,7 +2202,7 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
     killed.leaseWasLive &&
     hardKilled.ok === true &&
     started.ok === true &&
-    killCameBack.ok === true;
+    cameBack.ok === true;
 
   // ── The observation ───────────────────────────────────────────────────────────────────────
   const killLeaseId = killed?.lease?.id ?? null;
@@ -2259,95 +2210,69 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
     () => composeServiceLogs("worker-b"),
     (l) =>
       l.ok === true &&
-      countIn(l.text, STARTUP_RECONCILE_ARMS.fenced) > fenceAfterGraceful &&
+      countIn(l.text, STARTUP_RECONCILE_ARMS.fenced) > fenceAtStart &&
       l.text.includes(LEASE_CANDIDATE_FENCED_REASON) &&
       (killLeaseId === null || l.text.includes(killLeaseId)),
     { attempts: 60, everyMs: 2000 },
   );
-  const logsAfterKill = fenceSeen.last;
+  const logsAfter = fenceSeen.last;
   const leasesAfter = killed === null
     ? { leases: [] }
     : step(queryLeaseExpiries({ jobId: killed.ids.jobId }), "lease expiry after kill");
   const leaseAfter = (leasesAfter.leases ?? []).find((l) => l.id === killLeaseId) ?? null;
 
-  // The fenced ARM, not merely the fenced WORD: a NEW line (by count), its structured reason, THIS
-  // run's lease id, and neither sibling arm naming this lease.
-  const fenceAfterKill = countIn(logsAfterKill?.text, STARTUP_RECONCILE_ARMS.fenced);
-  const killAddedFence = fenceAfterKill > fenceAfterGraceful;
-  const reasonSeen = logsAfterKill?.ok === true && logsAfterKill.text.includes(LEASE_CANDIDATE_FENCED_REASON);
-  const leaseIdSeen = logsAfterKill?.ok === true && killLeaseId !== null && logsAfterKill.text.includes(killLeaseId);
-  const prunedArmSeen = logsAfterKill?.ok === true && logsAfterKill.text.includes(STARTUP_RECONCILE_ARMS.ended);
-  const unreachableArmSeen = logsAfterKill?.ok === true && logsAfterKill.text.includes(STARTUP_RECONCILE_ARMS.unreachable);
+  const fenceAfterKill = countIn(logsAfter?.text, STARTUP_RECONCILE_ARMS.fenced);
+  const killAddedFence = fenceAfterKill > fenceAtStart;
+  const reasonSeen = logsAfter?.ok === true && logsAfter.text.includes(LEASE_CANDIDATE_FENCED_REASON);
+  const leaseIdSeen = logsAfter?.ok === true && killLeaseId !== null && logsAfter.text.includes(killLeaseId);
+  const prunedArmSeen = logsAfter?.ok === true && logsAfter.text.includes(STARTUP_RECONCILE_ARMS.ended);
+  const unreachableArmSeen = logsAfter?.ok === true && logsAfter.text.includes(STARTUP_RECONCILE_ARMS.unreachable);
 
   // The probe is exactly ONE `lease_renew`, and `renewLease` extends `leases.expires_at` and
   // nothing else. Corroboration, not attribution: the pre-kill renewal loop moved the same column.
-  // What it does prove alone is that the probe's `live` arm was reachable — the lease had not
-  // ended, so this is not a dead-lease prune wearing a fence's name.
+  // What it does prove alone is that the probe's `live` arm was reachable.
   const expiryMovedForward =
     killed?.lease != null && leaseAfter !== null && Date.parse(leaseAfter.expiresAt) > Date.parse(killed.lease.expiresAt);
 
   const fencedItsOwnLease =
-    gracefulReportedEmpty &&
-    gracefulAddedNoFence &&
-    killAddedFence &&
-    reasonSeen &&
-    leaseIdSeen &&
-    !prunedArmSeen &&
-    !unreachableArmSeen;
+    fenceAtStart === 0 && killAddedFence && reasonSeen && leaseIdSeen && !prunedArmSeen && !unreachableArmSeen;
 
   record("d1.reconcile.worker_startup_lease_probe", {
     injectionFired,
     observedClassification: fencedItsOwnLease
       ? "startup_reconciler_fences_its_own_prior_lease"
-      : `gracefulEmpty_${gracefulReportedEmpty}_gracefulNoFence_${gracefulAddedNoFence}_killAddedFence_${killAddedFence}_reason_${reasonSeen}_leaseId_${leaseIdSeen}_pruned_${prunedArmSeen}_unreachable_${unreachableArmSeen}`,
-    // The positive control is the GRACEFUL arm: the same service, the same in-flight run, a stop
-    // that is NOT a death — it must report the store EMPTY and add NO fence line.
-    positiveControlPassed: gracefulReportedEmpty && gracefulAddedNoFence,
+      : `fenceAtStart_${fenceAtStart}_addedFence_${killAddedFence}_reason_${reasonSeen}_leaseId_${leaseIdSeen}_pruned_${prunedArmSeen}_unreachable_${unreachableArmSeen}`,
+    // The attribution baseline: no fence line existed before this kill, across every boot the
+    // retained tail covers.
+    positiveControlPassed: fenceAtStart === 0,
     detail: {
-      graceful: {
-        jobId: graceful?.ids.jobId ?? null,
-        inFlight: graceful?.inFlight.ok ?? null,
-        leaseLiveBefore: graceful?.lease?.live ?? null,
-        restartRequested: gracefulRestarted.ok,
-        restartStatus: gracefulRestarted.status ?? null,
-        startedAtChanged: gracefulCameBack.ok,
-        reportedStoreEmpty: gracefulReportedEmpty,
-        addedNoFenceLine: gracefulAddedNoFence,
-        placement: graceful?.placement ?? null,
-        notOfferedBecause: graceful?.eligibility?.failing ?? null,
-        eligibility: graceful?.eligibility ?? null,
-        polls: gracefulSaw.polls,
-      },
-      slot: {
-        settledAttemptStatus: gracefulSettled?.attemptStatus ?? null,
-        slotFree,
-      },
-      killed: {
-        jobId: killed?.ids.jobId ?? null,
-        windowMs: RECONCILE_WINDOW_MS,
-        controlWindowMs: RECONCILE_CONTROL_WINDOW_MS,
-        inFlight: { ok: killed?.inFlight.ok ?? null, polls: killed?.inFlight.polls ?? null },
-        placement: killed?.placement ?? null,
-        notOfferedBecause: killed?.eligibility?.failing ?? null,
-        eligibility: killed?.eligibility ?? null,
-        leaseId: killLeaseId,
-        leaseStatusBefore: killed?.lease?.status ?? null,
-        leaseLiveBefore: killed?.lease?.live ?? null,
-        leaseStatusAfter: leaseAfter?.status ?? null,
-        leaseLiveAfter: leaseAfter?.live ?? null,
+      jobId: killed?.ids.jobId ?? null,
+      windowMs: RECONCILE_WINDOW_MS,
+      inFlight: { ok: killed?.inFlight.ok ?? null, polls: killed?.inFlight.polls ?? null },
+      notOfferedBecause: killed?.eligibility?.failing ?? null,
+      eligibility: killed?.eligibility ?? null,
+      placement: killed?.placement ?? null,
+      lease: {
+        id: killLeaseId,
+        statusBefore: killed?.lease?.status ?? null,
+        liveBefore: killed?.lease?.live ?? null,
+        statusAfter: leaseAfter?.status ?? null,
+        liveAfter: leaseAfter?.live ?? null,
         expiryMovedForward,
-        killRequested: hardKilled.ok,
-        killStatus: hardKilled.status ?? null,
+      },
+      kill: {
+        requested: hardKilled.ok,
+        status: hardKilled.status ?? null,
         startRequested: started.ok,
         startStatus: started.status ?? null,
-        startedAtChanged: killCameBack.ok,
+        startedAtChanged: cameBack.ok,
+        polls: cameBack.polls,
       },
       log: {
         okStart: logsStart.ok ?? null,
         bytesStart: logsStart.bytes ?? null,
-        bytesAfterKill: logsAfterKill?.bytes ?? null,
+        bytesAfter: logsAfter?.bytes ?? null,
         fenceCountAtStart: fenceAtStart,
-        fenceCountAfterGraceful: fenceAfterGraceful,
         fenceCountAfterKill: fenceAfterKill,
         reasonSeen,
         leaseIdSeen,
@@ -2355,61 +2280,35 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
         unreachableArmSeen,
         polls: fenceSeen.polls,
       },
-      note:
-        "TWO arms of the same mechanism, separated by fence-line COUNTS rather than by presence, because both arms write to the SAME container log. A GRACEFUL restart drains, settles the handoff and prunes the candidate (poll-loop trackHandoff finally -> recordCandidate remove), so it must report lease_candidate_store_empty and add NO fence line -- measured live on runs 35954159711 and 35956091950. A HARD KILL leaves the candidate, so the restarted daemon's WRK-013 reconciler probes it once and fences it. The pair attributes the fence line to the daemon DYING with the lease rather than to a restart having happened, which a plain before/after reading cannot distinguish. Both arms' non-vacuity is the run being observed IN FLIGHT: the candidate is written BEFORE the ACK and the ACK precedes attempt_started, so a started run is a run whose candidate row exists. The expiry movement is corroboration only.",
+      gracefulControl:
+        "BANKED, NOT DROPPED. The same-mechanism graceful-restart negative control passed in full on runs 35956091950, 35957846155, 35960088927 and 35962071988 (inFlight true, reportedStoreEmpty true, addedNoFenceLine true from cycle 4). It is out of THIS case because a second worker interruption lapses the session past the WRK-010 section 3.2 code-route boundary and the lane's one-time enrolment ticket is consumed -- measured on run 35964102214, where the eligibility probe returned failing:[] with seenRecently false. Attribution here therefore rests on three arms, not four, and that is a real reduction rather than a presentational one.",
     },
   });
 
-  // ★ NON-VACUITY: the log must be readable and non-empty, or every count above is a measurement
-  //   of nothing.
+  // ★ NON-VACUITY: the log must be readable and non-empty, or every count is a measurement of
+  //   nothing.
   assert.equal(logsStart.ok, true, `the worker log must be readable: status=${logsStart.status}`);
   assert.ok((logsStart.bytes ?? 0) > 0, "the worker log is empty, so the counts below are not measurements");
+  assert.equal(fenceAtStart, 0, `a fence line was ALREADY in the worker log before this kill (count ${fenceAtStart}), so its later presence would not be attributable to this case`);
 
   if (!SUPPRESS_INJECTION) {
-    // Arm 1 first: without it the fence below is attributable only to "a restart", not to a death.
-    assert.equal(
-      graceful?.inFlight.ok,
-      true,
-      `the graceful arm's run must be IN FLIGHT — that is what proves a candidate row EXISTED at stop time, so its absence afterwards is a prune and not a never-written row. `
-        + `Failing eligibility conjuncts: ${JSON.stringify(graceful?.eligibility?.failing ?? null)} -- ${truncate(graceful?.inFlight.last)}`,
-    );
-    assert.equal(gracefulRestarted.ok, true, `the graceful restart must succeed: exit status ${gracefulRestarted.status}`);
-    assert.equal(gracefulCameBack.ok, true, `worker-b must come back from the graceful restart: ${truncate(gracefulCameBack.last)}`);
-    assert.equal(
-      gracefulReportedEmpty,
-      true,
-      `a CLEANLY stopped daemon must report ${LEASE_CANDIDATE_EMPTY_REASON} — that is the control that makes the fence below attributable to the KILL`,
-    );
-    assert.equal(
-      gracefulAddedNoFence,
-      true,
-      `a graceful restart must add NO fence line (count ${fenceAtStart} -> ${fenceAfterGraceful}); if it does, the fence line is not evidence of a death`,
-    );
-
-    // The slot, and why waiting here is not padding (cycle 2).
-    assert.equal(
-      slotFree,
-      true,
-      `the graceful arm's abandoned attempt must terminalise before the kill arm is seeded — this worker runs ONE job at a time, the abandoned attempt is RE-LEASED and RE-RUN (cycle 3 saw it still "running" after 200 s), and cycle 2 failed with the kill arm's job still "pending" behind it: ${truncate(gracefulSettled)}`,
-    );
-
     assert.equal(
       killed?.inFlight.ok,
       true,
-      `the killed arm's run must be IN FLIGHT, else nothing is interrupted. Failing eligibility conjuncts: `
-        + `${JSON.stringify(killed?.eligibility?.failing ?? null)} (an empty list means the attempt WAS eligible and the worker simply did not poll in time) `
-        + `-- ${truncate(killed?.inFlight.last)}`,
+      `the run must be IN FLIGHT, else nothing is interrupted. Failing eligibility conjuncts: `
+        + `${JSON.stringify(killed?.eligibility?.failing ?? null)} (an EMPTY list means the attempt was fully eligible and the worker did not poll — `
+        + `check workers[].seenRecently, which is what cycle 6 used to reach WRK-010 §3.2) -- ${truncate(killed?.inFlight.last)}`,
     );
     assert.equal(killed?.leaseWasLive, true, `the lease must be live at kill time, else the probe has no live candidate: ${truncate(killed?.lease)}`);
-    assert.equal(hardKilled.ok, true, `worker-b must be KILLED — a graceful stop prunes the candidate and is the control, not the injection: exit status ${hardKilled.status}`);
+    assert.equal(hardKilled.ok, true, `worker-b must be KILLED — a graceful stop prunes the candidate, which is why the graceful arm is a control and not the injection: exit status ${hardKilled.status}`);
     assert.equal(started.ok, true, `worker-b must be started again after the kill: exit status ${started.status}`);
-    assert.equal(killCameBack.ok, true, `worker-b must come back on a NEW container start: ${truncate(killCameBack.last)}`);
-    assert.ok((logsAfterKill?.bytes ?? 0) > 0, "the worker log is empty after the kill, so the fence assertion is not a measurement");
+    assert.equal(cameBack.ok, true, `worker-b must come back on a NEW container start: ${truncate(cameBack.last)}`);
+    assert.ok((logsAfter?.bytes ?? 0) > 0, "the worker log is empty after the kill, so the fence assertion is not a measurement");
     assert.equal(
       fencedItsOwnLease,
       true,
-      `the restarted daemon must FENCE its own prior lease (a NEW fence line — count ${fenceAfterGraceful} -> ${fenceAfterKill} — plus reason ${LEASE_CANDIDATE_FENCED_REASON}, this lease id, neither sibling arm, and a clean graceful control): ` +
-        `gracefulEmpty=${gracefulReportedEmpty} gracefulNoFence=${gracefulAddedNoFence} killAddedFence=${killAddedFence} reason=${reasonSeen} leaseId=${leaseIdSeen} pruned=${prunedArmSeen} unreachable=${unreachableArmSeen}`,
+      `the restarted daemon must FENCE its own prior lease (a NEW fence line — count ${fenceAtStart} -> ${fenceAfterKill} — plus reason ${LEASE_CANDIDATE_FENCED_REASON}, this lease id, and neither sibling arm): `
+        + `addedFence=${killAddedFence} reason=${reasonSeen} leaseId=${leaseIdSeen} pruned=${prunedArmSeen} unreachable=${unreachableArmSeen}`,
     );
   }
 });
