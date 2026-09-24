@@ -238,13 +238,16 @@ non-destructive). **The dual** — an early `fail()` that a suppressed run reach
 reason — was walked too: the remaining ones all assert the OWNER's own control, which suppression
 does not touch.
 
-★ **Rounds 3 and 4 are past the build rules' two-round cap, and both were fixed rather than
-reported.** Round 3 was a regression I introduced in round 2 that would have shipped a lane whose
+★ **Rounds 3, 4 and 5 are past the build rules' two-round cap, and all three were fixed rather
+than reported.** Round 3 was a regression I introduced in round 2 that would have shipped a lane whose
 own positive control could never pass. Round 4 was a requirement this ticket's own brief states in
 so many words — *"Each case must appear in the lane's suppressed-injection reds"* — which I had
-not enforced. Neither is a property converging; both are gaps in what was already promised, and
-shipping either to respect a round count would have been the worse failure. The cap overrun is
-recorded here rather than left for a reader to count.
+not enforced. Round 5 found that the round-4 control was
+TAUTOLOGICAL (§3.7). None of the three is a property converging: each is a gap in something already
+promised, and two of them are defects in the fix for the round before. Shipping any of them to
+respect a round count would have been the worse failure — a lane carrying three controls that
+cannot fail is worse than a lane carrying none, because it reads as proof. The overrun is recorded
+here rather than left for a reader to count, and no sixth fix was attempted.
 
 ### 3.6 "At least one marker" is "at least one test ran" — RAISED BY CODEX (round 4)
 
@@ -275,6 +278,34 @@ wrote `cases: []` into `cross-tenant-suppressed.json`. The new checker would hav
 read**: a control whose evidence file exists and carries no cases. `CrossTenantError` now carries
 `rows`/`detail` and the driver reads them off the error. *A control that was about to be given an
 empty input is the same class as the control it was fixing.*
+
+### 3.7 The round-4 control was TAUTOLOGICAL — RAISED BY CODEX (round 5)
+
+**The class:** *a control whose input is the flag it is checking.*
+
+Every row computed `injectionFired` by ANDing its observation with `injected`, which is exactly
+`!suppressInjection`. So if a regression made `hostileOrSkip` execute the request **with**
+suppression on, the request would fire and every row would still record `false` — and
+`check-cross-tenant-suppression.mjs`, added in round 4 to catch precisely that, would accept all
+fourteen. The control I had just built could not detect the regression it claimed to cover.
+
+The flag is now gone from every `injectionFired`. Each reads a fact about what the system DID:
+
+| Case family | The observation |
+|---|---|
+| the seven fenced worker-control calls | `httpFired(r)` — a real HTTP status; the skip sentinel carries `status: 0`, which is not one |
+| the two RLS read probes | a numeric row count; a skipped read carries `null` |
+| the cancel | the production service's own `ok`/`error` |
+| the legacy, cost and tool probes (which always run) | `probeIdentityWasForeign` — whether the identity actually handed to the probe differs from the victim's, resolved ONCE into `probeAttacker` and read at the recording site |
+| the lease binding | `presentedLeaseId !== own.offer.leaseId` — which lease was actually presented |
+
+★ **And the guard for it is pinned in SOURCE, not in a fixture**, because no runtime fixture can
+distinguish "false because suppressed" from "false because derived from the flag":
+`d2m-cross-tenant-coverage.test.mjs` scans every `injectionFired:` computation in the driver and
+reds if any mentions `injected` or `suppressInjection`, plus a second test pinning that the skip
+sentinel is distinguishable from a real response. Its own positive control arrived unbidden — it
+fired on this ticket's doc comment quoting the old form, which is the third time in this PR that a
+new guard's first red was its author.
 
 ### 3.3 A row fact asserted but not measured
 

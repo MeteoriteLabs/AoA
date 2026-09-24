@@ -96,3 +96,27 @@ test("the three journey-owned cases really are decided by the journey, not by th
 test("NON-VACUITY: the extraction actually found ids", () => {
   assert.ok(drivenIds.size >= 14, `only ${drivenIds.size} case id(s) extracted from the driver — the extraction is broken, not the driver`);
 });
+
+test("\u2605 `injectionFired` is an OBSERVATION, never the suppression flag (the tautology guard)", () => {
+  // Codex P1, PR #600 round 5. Every row used to compute `injectionFired: injected && <fact>`,
+  // where `injected` is exactly `!suppressInjection` -- so a regression that ran the hostile arm
+  // WITH suppression on would still record `false` everywhere, and
+  // `scripts/check-cross-tenant-suppression.mjs` (the control added to catch precisely that) would
+  // accept every case. *A control whose input is the flag it is checking is not a control.*
+  //
+  // Pinned in SOURCE, because it is a property of how the row is COMPUTED, and no runtime fixture
+  // can distinguish "false because suppressed" from "false because derived from the flag".
+  const rows = [...driver.matchAll(/injectionFired:\s*([^,\n]*)/g)].map((m) => m[1].trim());
+  assert.ok(rows.length >= 14, `expected at least 14 injectionFired computations, saw ${rows.length}`);
+  const tautological = rows.filter((r) => /\binjected\b|\bsuppressInjection\b/.test(r));
+  assert.deepEqual(tautological, [], `an injectionFired derived from the suppression flag makes the suppression control tautological: ${JSON.stringify(tautological)}`);
+});
+
+test("the suppression SKIP sentinel is distinguishable from a real response", () => {
+  // The observations above are only meaningful if a skipped call cannot look like a performed one:
+  // `status: 0` is not a real HTTP status and `total: null` is not a row count.
+  assert.ok(driver.includes('const SKIPPED = Object.freeze({ status: 0, body: null, suppressed: true })'),
+    "the skip sentinel must carry a non-HTTP status, or a skipped call is indistinguishable from a performed one");
+  assert.ok(driver.includes('const httpFired = (r) => typeof r?.status === "number" && r.status !== 0;'),
+    "the fired predicate must read the response status, not the flag");
+});

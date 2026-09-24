@@ -261,6 +261,30 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   // The read probes' foreign scope, likewise: `null` is not `0`, so no classifier reads it as a
   // denial, and nothing is queried under a scope that would make a suppressed run look clean.
   const foreignOrg = injected ? B.organizationId : null;
+  // The identity the in-container probes are actually given. Resolved ONCE, here, so that what was
+  // SENT can be observed at the recording site rather than re-derived from the flag.
+  const probeAttacker = injected
+    ? { organizationId: B.organizationId, companyId: B.companyId }
+    : { organizationId: A.organizationId, companyId: A.companyId };
+
+  // ★★★ `injectionFired` IS AN OBSERVATION, NEVER THE FLAG (Codex P1 on PR #600, round 5, and the
+  // finding was right — it caught the round-4 control being TAUTOLOGICAL).
+  //
+  // Every row used to AND its observation with `injected`, which is
+  // exactly `!suppressInjection`. So if a regression made `hostileOrSkip` execute the request WITH
+  // suppression on, the request would fire and every row would still record `false` — and
+  // `scripts/check-cross-tenant-suppression.mjs`, the control added in round 4 to catch exactly
+  // that, would accept all fourteen. A control whose input is the flag it is checking is not a
+  // control.
+  //
+  // So the flag is gone from every `injectionFired`. Each one now reads a fact about what the
+  // system DID: a real HTTP status (the skip sentinel carries `status: 0`), a numeric row count
+  // (a skipped read carries `null`), or — for the in-container probes, which always run — whether
+  // the identity actually handed to them differs from the victim's.
+  const probeIdentityWasForeign = probeAttacker.organizationId !== A.organizationId
+    && probeAttacker.companyId !== A.companyId;
+  /** A fenced worker-control call FIRED iff it came back with a real HTTP status. */
+  const httpFired = (r) => typeof r?.status === "number" && r.status !== 0;
   /** Violations of the SHARED isolation verdict, deferred to the final verdict so the markers are
    * emitted before anything throws. */
   const deferred = [];
@@ -380,7 +404,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   const isolationViolations = evaluateCrossTenantIsolation(observation);
 
   record("d2m.tenant.cross.events", {
-    injectionFired: injected && typeof hostileUpload.status === "number" && hostileUpload.status !== 0,
+    injectionFired: httpFired(hostileUpload),
     observedClassification: isolationViolations.some((v) => v.code.startsWith("isolation:foreign_event") || v.code === "isolation:own_event_denied")
       ? "not_denied" : "denied_with_same_tenant_positive_control",
     positiveControlPassed: ownUpload.status === 200 && ownUpload.body?.ack?.status === "accepted",
@@ -397,7 +421,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   });
 
   record("d2m.tenant.cross.read", {
-    injectionFired: injected && foreignRead.ok !== false && typeof foreignRead.total === "number",
+    injectionFired: foreignRead.ok !== false && typeof foreignRead.total === "number",
     observedClassification: foreignRead.total === 0 ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: ownRead.total > 0,
   }, { foreignScopeEventCount: foreignRead.total, ownScopeEventCount: ownRead.total, foreignScopeOrganizationId: foreignOrg });
@@ -425,7 +449,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     deviceKey: hostile.deviceKey,
   }), "hostile renew");
   record("d2m.tenant.cross.lease", {
-    injectionFired: injected && typeof hostileRenew.status === "number" && hostileRenew.status !== 0,
+    injectionFired: httpFired(hostileRenew),
     observedClassification: hostileRenew.status === FOREIGN_STATUS && hostileRenew.body?.code === FOREIGN_CODE
       ? "denied_with_same_tenant_positive_control" : "not_denied",
     // Re-derived, never hardcoded `true`: the assertion above is what STOPS a failing control, but
@@ -460,7 +484,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     fail(`the owner's own cancel must take effect, else the foreign refusal proves nothing: ${truncate({ ownCancel, ownAttempts })}`);
   }
   record("d2m.tenant.cross.cancel", {
-    injectionFired: injected && (hostileCancel.ok === true || typeof hostileCancel.error === "string"),
+    injectionFired: hostileCancel.ok === true || typeof hostileCancel.error === "string",
     observedClassification: victimUntouched && hostileCancel.ok === true && hostileCancel.outcome?.status === "not_found"
       ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: ownCancel.ok === true && ownCancelled,
@@ -510,7 +534,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   if (!(ownHandleRows.total > 0)) fail(`the owner's own scope must see its handle: ${truncate(ownHandleRows)}`);
   const secretsDenied = hostileResolve.status === 200 && hostileResolve.body?.outcome === "denied" && foreignHandleRows.total === 0;
   record("d2m.tenant.cross.secrets", {
-    injectionFired: injected && typeof hostileResolve.status === "number" && hostileResolve.status !== 0,
+    injectionFired: httpFired(hostileResolve),
     observedClassification: secretsDenied ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: ownResolved && ownHandleRows.total > 0,
   }, {
@@ -567,7 +591,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   }), "own commit");
   if (ownCommit.body?.outcome !== "committed") fail(`the owner's own commit must succeed: ${truncate(responseFacts(ownCommit))}`);
   record("d2m.tenant.cross.outputs", {
-    injectionFired: injected && typeof hostileCommit.status === "number" && hostileCommit.status !== 0,
+    injectionFired: httpFired(hostileCommit),
     observedClassification: hostileCommit.status === FOREIGN_STATUS && hostileCommit.body?.code === FOREIGN_CODE
       ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: ownCommit.body?.outcome === "committed",
@@ -599,7 +623,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     fail(`the owner's own DOWNLOAD grant on its own committed artifact must succeed, else the foreign refusal proves nothing: ${truncate(responseFacts(ownDownload))}`);
   }
   record("d2m.tenant.cross.staged_inputs", {
-    injectionFired: injected && typeof hostileDownload.status === "number" && hostileDownload.status !== 0,
+    injectionFired: httpFired(hostileDownload),
     observedClassification: hostileDownload.status === FOREIGN_STATUS && hostileDownload.body?.code === FOREIGN_CODE
       ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: ownDownload.body?.outcome === "download_granted",
@@ -621,9 +645,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     // Suppressed, the "attacker" IS the owner, so every foreign read returns the owner's rows and
     // the case classifies `not_filtered` — never `filtered`, which is what a suppressed run must
     // not be able to claim.
-    attacker: injected
-      ? { organizationId: B.organizationId, companyId: B.companyId }
-      : { organizationId: A.organizationId, companyId: A.companyId },
+    attacker: probeAttacker,
   }), "legacy tables");
   if (legacy.ok !== true) fail(`legacy-table probe: ${truncate(legacy)}`);
   detail.legacyTables = legacy.tables;
@@ -634,7 +656,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     if (!(t.own > 0)) fail(`${table}: the owner's own read must return its row: ${truncate(t)}`);
     if (!(t.unscoped > 0)) fail(`${table}: the predicate-removed read must return the row, or a zero foreign count proves nothing: ${truncate(t)}`);
     record(`d2m.tenant.legacy.${table}`, {
-      injectionFired: injected && typeof t.foreign === "number" && typeof t.own === "number" && typeof t.unscoped === "number",
+      injectionFired: probeIdentityWasForeign && typeof t.foreign === "number" && typeof t.own === "number" && typeof t.unscoped === "number",
       observedClassification: t.foreign === 0 && t.own > 0 ? "filtered_by_query_predicate_not_rls" : "not_filtered",
       positiveControlPassed: t.own > 0,
       antiVacuityObservedForeignRow: t.unscoped > 0,
@@ -644,7 +666,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   const cost = legacy.tables.cost_events;
   if (!(cost.ownCents > 0)) fail(`the owner's own cost read must return a REAL charge, else the foreign zero proves nothing: ${truncate(cost)}`);
   record("d2m.tenant.cross.cost_rows", {
-    injectionFired: injected && typeof cost.foreign === "number",
+    injectionFired: probeIdentityWasForeign && typeof cost.foreign === "number",
     observedClassification: cost.foreign === 0 ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: cost.own > 0 && cost.ownCents > 0,
   }, cost);
@@ -658,7 +680,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   }), "seed tool-surface runs");
   if (seededRuns.ok !== true) fail(`tool-surface run seed: ${truncate(seededRuns)}`);
   const toolProbe = step(H.probeToolSurfaceAtUse({
-    victim: { companyId: A.companyId }, attacker: { companyId: injected ? B.companyId : A.companyId },
+    victim: { companyId: A.companyId }, attacker: { companyId: probeAttacker.companyId },
     localRunId, distributedRunId,
   }), "tool surface");
   if (toolProbe.ok !== true) fail(`tool-surface probe: ${truncate(toolProbe)}`);
@@ -666,7 +688,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
     fail(`the SAME resolver on the SAME run under the OWN Company must ADMIT, else the deny proves nothing: ${truncate(toolProbe)}`);
   }
   record("d2m.tenant.cross.tool_calls", {
-    injectionFired: injected && typeof toolProbe.cross === "string",
+    injectionFired: probeIdentityWasForeign && typeof toolProbe.cross === "string",
     observedClassification: toolProbe.cross === "deny" ? "denied_with_same_tenant_positive_control" : "not_denied",
     positiveControlPassed: toolProbe.own === "admit",
   }, {
@@ -715,7 +737,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   }), "denial audit");
   record("d2m.credential.wrong_lease_redemption_refused", {
     // The injection IS the substitution: presenting a lease that is not this attempt's.
-    injectionFired: injected && presentedLeaseId !== own.offer.leaseId,
+    injectionFired: presentedLeaseId !== own.offer.leaseId,
     observedClassification: leaseControlResolved && wrong.status === 200 && wrong.body?.outcome === "denied"
       ? "redemption_refused_on_foreign_lease_with_own_lease_control" : "not_refused",
     positiveControlPassed: leaseControlResolved,
