@@ -293,6 +293,13 @@ test("the candidate-controls gate covers the whole control set, the log FILTER i
       "scripts/m1-shipped-boot/log-filter.mjs:capture-failed",
       "scripts/m1-shipped-boot/journey.mjs:capture-failed",
       "scripts/lib/m1-shipped-boot.mjs:carry = joined.slice(",
+      // DEP-022 — the cross-tenant drivers and the harness binding they address this stack with.
+      "scripts/m1-shipped-boot/journey.mjs:crossTenant(loadState",
+      "scripts/m1-shipped-boot/cross-tenant.mjs:runCrossTenantCases",
+      "scripts/m1-shipped-boot/cross-tenant.mjs:suppressInjection",
+      "scripts/check-cross-tenant-suppression.mjs:evaluateSuppressedRun",
+      "tests/d1/lib/e6f-harness.mjs:composeBaseArgs",
+      "tests/d1/lib/e6f-harness.mjs:HTTP_SERVICE",
       "scripts/lib/m1-shipped-boot.mjs:ACCUMULATES: a prefix may span",
       "scripts/lib/m1-shipped-boot.mjs:LENGTH floor",
       "scripts/lib/m1-shipped-boot.mjs:stripLogPrefix",
