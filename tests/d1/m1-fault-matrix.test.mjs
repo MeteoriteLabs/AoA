@@ -2101,8 +2101,25 @@ function countIn(text, needle) {
   return n;
 }
 
-/** Park one worker-driven run in flight and return what is needed to interrupt it. */
-function parkRunInFlight(tenant, deployed, label, { attempts = 75, windowMs = RECONCILE_WINDOW_MS } = {}) {
+/**
+ * Park one worker-driven run in flight and return what is needed to interrupt it.
+ *
+ * ★★★ THE DEPLOYED TARGET IS RE-READ AT EVERY SEED, and cycle 4 is why. A placement carries
+ * the target's `registered_profile_hash` and provider `digest` (`seedSpineWorkerDrivenJob`), and
+ * this case restarts the worker twice before the injection arm is seeded. Cycle 4
+ * (`35960080927`) got the slot precondition GREEN — `settledAttemptStatus: "succeeded"` — and the
+ * injection arm's job was STILL never leased in 150 s, on an idle worker that had just finished
+ * another job of the same tenant. The difference between the two jobs is WHEN THEY WERE PLACED:
+ * the control arm's was placed before any restart, the injection arm's with a target captured at
+ * the top of the case and two restarts stale. `DEP-020` cycle 2 recorded the same family from the
+ * other side, where fresh enrolments bumped a target's generation and revoked attempts that later
+ * cases reused. So the target is read HERE, per seed, never captured once and carried across a
+ * restart — and what was read is recorded, so a cycle that still fails can be told apart from this
+ * one without a second run.
+ */
+function parkRunInFlight(tenant, label, { attempts = 75, windowMs = RECONCILE_WINDOW_MS } = {}) {
+  const deployed = step(queryDeployedWorker({}), `${label} deployed worker (re-read)`);
+  assert.equal(deployed.ok, true, `${label}: the deployed target must be readable at seed time: ${truncate(deployed)}`);
   const ids = startWorkerDrivenRun(tenant, deployed, [`--aoa-fake-delay=${windowMs}`], label);
   const inFlight = waitFor(
     () => step(querySpineWorkerDriven({ jobId: ids.jobId }), `${label} in-flight probe`),
@@ -2118,6 +2135,13 @@ function parkRunInFlight(tenant, deployed, label, { attempts = 75, windowMs = RE
     ids,
     inFlight,
     lease,
+    placement: {
+      workerId: deployed.workerId ?? null,
+      workerCount: deployed.workerCount ?? null,
+      profileHash: deployed.target?.profileHash ?? null,
+      providerDigest: deployed.target?.providerDigest ?? null,
+      generation: deployed.target?.generation ?? null,
+    },
     // ★ IN FLIGHT IS THE NON-VACUITY FOR BOTH ARMS, and for a reason worth stating: the candidate
     // is written BEFORE the ACK (`poll-loop.ts`, "WRITE BEFORE ACK"), and the ACK precedes
     // `attempt_started`. So a run observed started is a run whose candidate row EXISTS. Without
@@ -2153,7 +2177,7 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
   // "a restart happened". A before/after pair alone cannot tell those two apart.
   const graceful = SUPPRESS_INJECTION
     ? null
-    : parkRunInFlight(A, deployed, "reconcile-graceful", { windowMs: RECONCILE_CONTROL_WINDOW_MS });
+    : parkRunInFlight(A, "reconcile-graceful", { windowMs: RECONCILE_CONTROL_WINDOW_MS });
   const gracefulRuntimeBefore = composeServiceRuntime("worker-b");
   const gracefulRestarted = SUPPRESS_INJECTION ? { ok: false, status: null } : restartComposeService("worker-b");
   const gracefulCameBack = SUPPRESS_INJECTION
@@ -2194,7 +2218,7 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
     : ["succeeded", "failed", "cancelled"].includes(String(gracefulSettled.attemptStatus));
 
   // ── ARM 2, the INJECTION: KILL the worker mid-run ──────────────────────────────────────────
-  const killed = SUPPRESS_INJECTION ? null : parkRunInFlight(A, deployed, "reconcile-kill");
+  const killed = SUPPRESS_INJECTION ? null : parkRunInFlight(A, "reconcile-kill");
   const killRuntimeBefore = composeServiceRuntime("worker-b");
   const hardKilled = SUPPRESS_INJECTION ? { ok: false, status: null } : killComposeService("worker-b", { signal: "KILL" });
   const started = SUPPRESS_INJECTION || hardKilled.ok !== true ? { ok: false, status: null } : startComposeService("worker-b");
@@ -2278,6 +2302,7 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
         startedAtChanged: gracefulCameBack.ok,
         reportedStoreEmpty: gracefulReportedEmpty,
         addedNoFenceLine: gracefulAddedNoFence,
+        placement: graceful?.placement ?? null,
         polls: gracefulSaw.polls,
       },
       slot: {
@@ -2289,6 +2314,7 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
         windowMs: RECONCILE_WINDOW_MS,
         controlWindowMs: RECONCILE_CONTROL_WINDOW_MS,
         inFlight: { ok: killed?.inFlight.ok ?? null, polls: killed?.inFlight.polls ?? null },
+        placement: killed?.placement ?? null,
         leaseId: killLeaseId,
         leaseStatusBefore: killed?.lease?.status ?? null,
         leaseLiveBefore: killed?.lease?.live ?? null,

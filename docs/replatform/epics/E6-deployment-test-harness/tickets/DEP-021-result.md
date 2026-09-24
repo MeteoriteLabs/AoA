@@ -591,19 +591,30 @@ Per-step conclusions are read from the jobs API and never from the run conclusio
 |---|---|---|
 | 1 | **`35954159711`** | **`d1.provider.worker_terminal_mapping` PASSED on its first live attempt** — `injectionFired: true`, `observedClassification: "worker_maps_provider_timeout_to_failed_terminal"` (the declared string, exactly), `positiveControlPassed: true`, 120.6 s. ★ And the reconcile case failed with the finding in §3.2: a GRACEFUL restart PRUNES the candidate, so the stop must be a SIGKILL — and the graceful arm becomes the case's own negative control. Every other case on the profile stayed green (23 tests, 1 failing), so the finding is localised to this case and is not a lane regression |
 | 2 | **`35956091950`** | **ARM 1, the graceful negative control, PASSED IN FULL** — `inFlight: true`, `restartStatus: 0`, `startedAtChanged: true`, `reportedStoreEmpty: true`. So the control half is proven live. ★ ARM 2 then failed with its job still `attemptStatus: "pending"`, `events: []`, `leaseWorkerIds: []` after 45 polls — **not a broken worker but a BUSY one**: ARM 1 abandons an attempt mid-run and this worker runs ONE job at a time, so until that attempt terminalises the restarted daemon has no slot. ARM 2's wait had silently assumed otherwise |
-| 3 | **`35957846155`** | the slot is freed between the arms (waiting on ARM 1's job to terminalise, which also proves the restarted daemon resumed polling), and the fence line is attributed by occurrence COUNT rather than presence, because both arms write to the same container log |
+| 3 | **`35957846155`** | ARM 1 passed in full AGAIN, and the new slot precondition timed out: `settledAttemptStatus: "running"` after 200 s, with `attempt_started` and the env-probe log event present. ★ **An interrupted run is RE-LEASED and RE-RUN, so its window is paid TWICE.** Waiting longer is the fragile fix; the CONTROL's window only has to outlive `attempt_started` long enough for the restart to land (~10 s), so `RECONCILE_CONTROL_WINDOW_MS` is 30 s while the injection keeps 90 s |
+| 4 | **`35960080927`** | **the slot precondition went GREEN** — `settledAttemptStatus: "succeeded"`, `slotFree: true` — and the injection arm's job was STILL never leased in 150 s, on an IDLE worker that had just finished another job of the same tenant. ★ The only difference between the two jobs is WHEN THEY WERE PLACED: a placement carries the target's `registered_profile_hash` and provider `digest`, the control arm's job was placed before any restart, and the injection arm's used a target captured at the top of the case and TWO restarts stale. `DEP-020` cycle 2 recorded the same family from the other side. The target is now re-read PER SEED, and what was read is recorded so a cycle that still fails is distinguishable without a second run |
+| 5 | *see the table above* | the per-seed target re-read |
 
 ★ **Each cycle cost ONE cycle and not three because every case records every conjunct of its
 injection separately.** Cycle 1's retained bundle answered *"which half did not happen"* — the
-injection had fired in full and the reconciler had simply found nothing — and cycle 2's answered
-*"the kill arm never got a lease"*, each without a second run to narrow it. A case recording only a
+injection had fired in full and the reconciler had simply found nothing — cycle 2's answered *"the kill arm never got a
+lease"*, cycle 3's *"the abandoned attempt is still running"* and cycle 4's *"the slot was free and it
+STILL was not leased"* — each without a second run to narrow it. A case recording only a
 pass/fail boolean would have needed a run per hypothesis. That is the practical argument for the
 per-conjunct `detail` block, recorded here rather than left as style.
 
 ★ **And each failure was promoted rather than patched around.** Cycle 1's graceful restart became
 the case's same-mechanism negative control; cycle 2's scheduling discovery became an explicit
-slot-free precondition with its own assertion. Neither is a workaround: both are statements about
-the system that the case now proves.
+slot-free precondition with its own assertion; cycle 3's re-run discovery became a deliberately
+short control window with the reason recorded at the constant; cycle 4's became a per-seed target
+re-read. None is a workaround: each is a statement about the system that the case now encodes.
+
+★★★ **The four findings are one family, and naming it is the point:** *a precondition the case
+assumed and did not assert*. It assumed the stop would leave a candidate (it does not, if graceful);
+that the worker would be free (it is not, while an abandoned attempt holds the slot); that an
+abandoned attempt would end (it is re-run first); and that a placement stays valid across a restart
+(it does not). Each cycle converted one assumption into an assertion, which is why the case now
+fails LOUDLY and specifically rather than timing out.
 
 ---
 
