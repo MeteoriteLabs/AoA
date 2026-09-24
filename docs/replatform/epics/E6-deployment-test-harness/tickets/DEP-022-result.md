@@ -395,10 +395,22 @@ end to end for free, and a keyed run is only ever spent confirming rows.
    accepts at 17 required / 17 fired.
    *If wrong:* `fault-matrix-verdict.json` names the violating case and its violation code.
 
-**What WAS exercised live:** the `m1-fault-matrix` job of `d1-merge-train.yml`, dispatched on this
-branch, which runs this tree (it pins no candidate). That is the live control for the risky half of
-the diff — the default binding and the narrowed resolve reply — on the lane those drivers already
-prove. Its run id is in the final report.
+**What WAS exercised live: the `m1-fault-matrix` job of `d1-merge-train.yml`, run
+`35980835956`, head `0c38b0e5f`, job conclusion `success`.** That lane pins no candidate, so it
+runs THIS tree, and it is the live control for the risky half of the diff. Every step passed,
+including:
+
+| Step | Conclusion | What it proves here |
+|---|---|---|
+| *Run the M1-D1-SPINE fault matrix (live)* | `success` | the harness's DEFAULT binding is unchanged — all 31 D1 cases still bring up, inject and classify through `composeBaseArgs()` and `HTTP_SERVICE` |
+| *The matrix's own verdict over the retained bundle* | `success` | the narrowed `resolveExecutionSecretHttp` reply still carries everything the two D1 `credential` cases classify on; their `resolved` controls still resolve |
+| *POSITIVE CONTROL — with every injection suppressed, the matrix MUST go red* | `success` | the suppression control still reds, and reds for the injection reason |
+
+It also proves the **D1 half of §3.3**: `d1.tenant.cross.staged_inputs` now classifies on a
+`download` pair over a committed artifact, and it fired and classified on this run.
+
+What that run does NOT prove is any `d2m.*` case: those need the shipped-boot lane, which is what
+§8's two dispatches are for.
 
 ---
 
