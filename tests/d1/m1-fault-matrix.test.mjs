@@ -2063,9 +2063,28 @@ const LEASE_CANDIDATE_FENCED_REASON = "lease_candidate_fenced";
  * control's own observable. */
 const LEASE_CANDIDATE_EMPTY_REASON = "lease_candidate_store_empty";
 
-/** The in-flight window, in ms. Comfortably inside the 240 s op deadline
- * (`RUN_OP_DEADLINE_CEILING_MS`) and the 300 s lease, and far longer than a container stop. */
+/** The INJECTION's in-flight window, in ms. Comfortably inside the 240 s op deadline
+ * (`RUN_OP_DEADLINE_CEILING_MS`) and the 300 s lease, and far longer than a kill + start + the
+ * container coming back (~30 s). */
 const RECONCILE_WINDOW_MS = 90_000;
+
+/**
+ * The CONTROL's window, deliberately much shorter — and cycle 3 is why.
+ *
+ * ★★★ An interrupted run is RE-RUN, and its window is paid TWICE. Cycle 3
+ * (`35957846155`) passed the graceful arm in full and then timed out waiting for its abandoned
+ * attempt to terminalise: `settledAttemptStatus: "running"` after 200 s, with `attempt_started`
+ * and the env-probe log event present. The restarted daemon had simply RE-LEASED that attempt and
+ * was running it again — a second full 90 s scripted wait, on top of the time it took to resume
+ * polling. Waiting longer is the fragile fix; making the control's window only as long as it needs
+ * to be is the robust one.
+ *
+ * How short it may be: the restart must land while the run is still in flight. The case detects
+ * `attempt_started` on a 2 s poll and then stops the service within a couple of seconds, so the
+ * run needs to outlive `attempt_started` by under ~10 s. 30 s is ample for that and a third of the
+ * re-run cost.
+ */
+const RECONCILE_CONTROL_WINDOW_MS = 30_000;
 
 /** Occurrences of `needle` in `text`. ★ COUNTED, not merely tested for presence: this case has TWO
  * arms against the SAME log, so "the line is there" cannot separate them. A count taken before and
@@ -2083,8 +2102,8 @@ function countIn(text, needle) {
 }
 
 /** Park one worker-driven run in flight and return what is needed to interrupt it. */
-function parkRunInFlight(tenant, deployed, label, { attempts = 75 } = {}) {
-  const ids = startWorkerDrivenRun(tenant, deployed, [`--aoa-fake-delay=${RECONCILE_WINDOW_MS}`], label);
+function parkRunInFlight(tenant, deployed, label, { attempts = 75, windowMs = RECONCILE_WINDOW_MS } = {}) {
+  const ids = startWorkerDrivenRun(tenant, deployed, [`--aoa-fake-delay=${windowMs}`], label);
   const inFlight = waitFor(
     () => step(querySpineWorkerDriven({ jobId: ids.jobId }), `${label} in-flight probe`),
     (o) =>
@@ -2132,7 +2151,9 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
   // ★ SO IT IS A SAME-MECHANISM NEGATIVE CONTROL, which is stronger than a plain before/after
   // reading: it shows the fence line is caused by the daemon DYING with the lease, not merely by
   // "a restart happened". A before/after pair alone cannot tell those two apart.
-  const graceful = SUPPRESS_INJECTION ? null : parkRunInFlight(A, deployed, "reconcile-graceful");
+  const graceful = SUPPRESS_INJECTION
+    ? null
+    : parkRunInFlight(A, deployed, "reconcile-graceful", { windowMs: RECONCILE_CONTROL_WINDOW_MS });
   const gracefulRuntimeBefore = composeServiceRuntime("worker-b");
   const gracefulRestarted = SUPPRESS_INJECTION ? { ok: false, status: null } : restartComposeService("worker-b");
   const gracefulCameBack = SUPPRESS_INJECTION
@@ -2167,7 +2188,7 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
   // resumed polling, which is the precondition ARM 2 silently assumed.
   const gracefulSettled = SUPPRESS_INJECTION || graceful === null
     ? null
-    : step(awaitSpineWorkerDrivenTerminal({ jobId: graceful.ids.jobId, timeoutMs: 200_000 }), "graceful arm settles");
+    : step(awaitSpineWorkerDrivenTerminal({ jobId: graceful.ids.jobId, timeoutMs: 260_000 }), "graceful arm settles");
   const slotFree = gracefulSettled === null
     ? false
     : ["succeeded", "failed", "cancelled"].includes(String(gracefulSettled.attemptStatus));
@@ -2266,6 +2287,7 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
       killed: {
         jobId: killed?.ids.jobId ?? null,
         windowMs: RECONCILE_WINDOW_MS,
+        controlWindowMs: RECONCILE_CONTROL_WINDOW_MS,
         inFlight: { ok: killed?.inFlight.ok ?? null, polls: killed?.inFlight.polls ?? null },
         leaseId: killLeaseId,
         leaseStatusBefore: killed?.lease?.status ?? null,
@@ -2322,7 +2344,7 @@ test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease on restar
     assert.equal(
       slotFree,
       true,
-      `the graceful arm's abandoned attempt must terminalise before the kill arm is seeded — this worker runs ONE job at a time, and cycle 2 failed with the kill arm's job still "pending" behind it: ${truncate(gracefulSettled)}`,
+      `the graceful arm's abandoned attempt must terminalise before the kill arm is seeded — this worker runs ONE job at a time, the abandoned attempt is RE-LEASED and RE-RUN (cycle 3 saw it still "running" after 200 s), and cycle 2 failed with the kill arm's job still "pending" behind it: ${truncate(gracefulSettled)}`,
     );
 
     assert.equal(killed?.inFlight.ok, true, `the killed arm's run must be IN FLIGHT, else nothing is interrupted: ${truncate(killed?.inFlight.last)}`);
