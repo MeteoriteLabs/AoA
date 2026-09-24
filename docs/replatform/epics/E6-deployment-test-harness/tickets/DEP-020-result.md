@@ -10,6 +10,14 @@
 
 > `Status` is `gate_review` and may be set to `complete` only by a DISTINCT reviewer, never by this
 > author.
+>
+> **On the reviewed revision.** `97ddb8cd3` is the revision every measurement in this record was
+> taken on, and the revision run `35940077444` executed. Commits after it on this PR are **this
+> record and nothing else** — a documentation-only delta following the reviewed implementation
+> revision, which `epic-regrooming/qa-handoff-recovery.md` §1 permits provided both are stated. No
+> file under `scripts/`, `tests/`, `packages/`, `server/` or `.github/` changes after `97ddb8cd3`; a
+> reviewer can confirm that with
+> `git diff --stat 97ddb8cd3..HEAD` (docs only).
 
 ---
 
