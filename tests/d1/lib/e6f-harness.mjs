@@ -2834,7 +2834,9 @@ try {
   await sql.end({ timeout: 5 });
 }
 `;
-  return dexecModule("control-plane", script);
+  // Same chokepoint scrub as `seedResolvableProviderSecretHandle`: when a caller overrides
+  // `secretValue` with a per-run canary, that value must not be printable from either stream.
+  return dexecModule("control-plane", script, { secrets: [secretValue] });
 }
 
 /** What the DEPLOYED worker wrote for one attempt: the accepted events WITH the worker id each
@@ -2867,9 +2869,7 @@ try {
   await sql.end({ timeout: 5 });
 }
 `;
-  // Same chokepoint scrub as `seedResolvableProviderSecretHandle`: when a caller overrides
-  // `secretValue` with a per-run canary, that value must not be printable from either stream.
-  return dexecModule("control-plane", script, { secrets: [secretValue] });
+  return dexecModule("control-plane", script);
 }
 
 /**
@@ -3034,7 +3034,28 @@ report({ status: res.status, body: safeJson(text) });
  * /worker-control/execution-secrets/resolve. The route collapses every refusal to
  * { outcome: "denied", reason } on purpose (it must not be an oracle for which handle exists),
  * so the case reads the REASON: a foreign worker presenting the victim's lease is refused by the
- * FENCE (`stale_fence`), while the owner's identical call gets past it. */
+ * FENCE (`stale_fence`), while the owner's identical call gets past it.
+ *
+ * ★★★ CORRECTED 2026-09-24, and the correction matters beyond this helper. Until now the request
+ * body OMITTED the `audience` literal and carried an `issuedAt` field the schema does not declare.
+ * `executionSecretResolveRequestSchema` pins `audience: z.literal("worker_run")` and is `.strict()`,
+ * so BOTH were fatal: every call ever made through this helper was rejected at
+ * `safeParse` and answered by the route's `denyMalformed()` — before the device proof, before
+ * `guardActiveFence`, before the broker, and therefore WITHOUT any
+ * `security.denied.secret_resolve` audit row. Measured on runs `35933605253` and `35935012713`:
+ * `{"outcome":"denied","reason":"malformed"}` with `durable=[]` for a request that was in every
+ * other respect the owner's own, on its own live lease, against a resolvable handle.
+ *
+ * ★ SO `d1.tenant.cross.secrets`'s RECORDED EXPLANATION OF ITS OWN WEAKNESS IS WRONG. That case
+ * states the route arm carries no control because *"this lane's fixture handle is unresolvable"*.
+ * The fixture is indeed unresolvable, but that is not why owner and attacker were
+ * indistinguishable: the route never reached the fence, the handle or the broker for EITHER of
+ * them. Its classification is unaffected — it classifies on the RLS row read, deliberately — and
+ * its assertion (*"the foreign resolve must at least be REFUSED"*) still holds, because a foreign
+ * fence is still refused. What changes is that the route arm is now exercised past schema
+ * validation for the first time on this lane. The stale sentence is left where it stands, in that
+ * case's own comment, because this file does not rewrite a record in place; it is corrected here,
+ * dated, at the helper the claim was made about. */
 export function resolveExecutionSecretHttp({ session, workerId, jobId, attempt, leaseId, fenceToken, handleId, deviceKey }) {
   const url = `${CONTROL_PLANE_URL}/api/worker-control/execution-secrets/resolve`;
   const params = { url, session, workerId, jobId, attempt, leaseId, fenceToken, handleId, privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer };
@@ -3043,8 +3064,13 @@ ${DEVICE_PROOF_SNIPPET}
 ${embedParams(params)}
 const body = {
   protocolVersion: 1,
+  // MEASURED on runs 35933605253 and 35935012713: without this field, and with the issuedAt that
+  // used to be here, every call this helper has ever made was rejected at
+  // executionSecretResolveRequestSchema.safeParse and answered by the route's denyMalformed().
+  // The schema (server/src/services/execution-secret-resolve.ts) pins audience as a literal and is
+  // .strict(), and it has no issuedAt member. See this function's docstring.
+  audience: "worker_run",
   correlationId: randomUUID(),
-  issuedAt: new Date().toISOString(),
   workerId: P.workerId,
   jobId: P.jobId,
   attempt: P.attempt,
