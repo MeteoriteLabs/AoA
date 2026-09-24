@@ -2200,9 +2200,9 @@ operator-facing paths in epics other than E6, which were not examined.
 
 ## E6-F030 — the shipped-boot lane still resolves the withdrawn MinIO image, and the one-line fix is blocked by that lane's own shape guard
 
-**Status:** open
+**Status:** `resolved` (2026-09-24, route 2 built and PROVEN live — see *Closed* below)
 **Severity:** HIGH (it fails `m1-shipped-boot` at boot, before the `M1a` journey runs)
-**Owner:** `unowned`
+**Owner:** `unowned` (at filing; resolved by PR #604)
 **Filed:** 2026-09-24, by the `E6-F021` re-repair, after Codex round 4 (P1) on PR #603. Measured at
 `82af63622c4341912adefbf3e1dce2b29313ebd0`.
 
@@ -2306,3 +2306,59 @@ This does NOT say the D1 lane is broken — it is fixed and proven at runs `3602
 has actually been observed failing on this: the lane is dispatch-only and no dispatch was made — the
 failure is derived from the four measured links above, and **a dispatch is what would confirm it**.
 That dispatch was not made because the lane is keyed-capable and outside this ticket's brief.
+
+### Closed — 2026-09-24, route 2 built, and the lane PROVEN past MinIO
+
+**PR #604**, head `f546f068ecb24a700d2c9ccb9460255d1a3b4a46` (the run in the next paragraph is cited at its own revision `845ffb4c9`, and a SECOND keyless dispatch, run `36051455003`, re-proves it on the Codex-round-1 tree). Evidence:
+`docs/replatform/epics/E6-deployment-test-harness/tickets/E6-F030-shipped-boot-minio-result.md`.
+
+The measurement above was reproduced before building — quay **401** and Docker Hub **401** for
+pull-scoped tokens, against anonymous **200** controls on `quay.io/prometheus/busybox` and
+`docker.io/library/busybox` — and the release tag's **peeled** commit re-read as
+`07c3a429bfed…` (`refs/tags/<tag>^{}`), distinct from the annotated tag object `01ce918d…`, which
+is the pin `docker/d1/minio.Dockerfile` already carries and fails closed on.
+
+Route 2 as ruled: `.github/workflows/m1-shipped-boot.yml` now **builds** the store
+(`docker build -f docker/d1/minio.Dockerfile`), asserts the tag resolves locally, and exports it as
+`AOA_M1_MINIO_IMAGE`; the overlay's `minio` service is **`:?`** on that variable rather than
+defaulting to anything; `journey.mjs prepare` refuses an absent value and one naming a registry host;
+and two new clauses in `scripts/lib/m1-shipped-boot-shape.mjs` require the build and the export, each
+with a red in `check-m1-shipped-boot-shape.test.mjs` (42 executed; the clauses' absence reds exactly
+2). No test or guard was weakened and no failure path was made non-fatal. The D1 half of `E6-F021`
+is untouched, per the asymmetry ruled above.
+
+★ **The `$GITHUB_ENV` export is the load-bearing half, and the run measured the link that had only
+been inferred.** `actions/checkout` replaces the workspace with the candidate, so an older candidate
+brings its own compose default and its own `prepare`; Compose reads the process environment, which
+outranks both that default and `--env-file`.
+
+**The derived failure is now an OBSERVED pass.** `m1-shipped-boot`, `mode: keyless`, run
+**`36047740323`**, candidate `00cbba381eaf6d49aec2f8b46e47e7747ae9e8cb` — a candidate that **still
+carries this finding's quay default**, which is what makes it the right test. *Build the object store
+image from upstream source (E6-F030)* → `success`
+(`object store aoa-m1-minio:RELEASE.2025-09-07T16-13-09Z built from upstream source`); *Boot the
+core* → `success`
+(`boot-core: postgres, minio, migrate (completed), control-plane + control-plane-b healthy`); and
+*Probe the presign store from the adapter-manager's seat* → `success`, which shows the store is
+**functional** and not merely up — the presign surface being exactly what the wrong MinIO version
+breaks. No `pull access denied`, no 401, no registry error anywhere in the log.
+
+★ Re-proved on the round-1 fixes: run **`36051455003`** (head `f546f068e`, same candidate) printed
+`minio version RELEASE.2025-09-07T16-13-09Z (commit-id=07c3a429bfed433e49018cb0f78a52145d4bedeb)` off
+the BUILT BINARY before booting — the release AND the peeled commit confirmed on the artefact rather
+than on the build request — and `boot-core` was green again. Both dispatches were `mode: keyless` and
+free; no keyed dispatch was made.
+
+★ **Both** runs' overall conclusion was `failure`, **fourteen steps later**, at the DEP-022 `cross-tenant`
+step, with the byte-identical error — two independent dispatches, so it is reproducible and
+candidate-side rather than a flake (`cross-tenant: activity_log: the owner's own read must return its row: {"own":0,…}` — that
+driver's own positive control declining to grade a case it could not set up). It touches no object
+store and is not this finding's. It is `DEP-022-result.md`'s step-1 keyless rehearsal returning its
+*failing* prediction, with a cause outside the two that section anticipated, so **the keyed step 2
+must not be dispatched yet**. Recorded for the planning session; no id minted for another ticket's
+surface.
+
+★ Two same-class sites are deliberately left: `AOA_M1_POSTGRES_IMAGE`'s `pgvector/pgvector:pg18`
+default in the same overlay (currently pullable, and source-building PostgreSQL is an unruled
+widening — the residual risk, recorded for a ruling) and `docker-compose.staging.yml`'s `ghcr.io`
+defaults (staging's own, overridden by the overlay's required digests on this lane).

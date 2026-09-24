@@ -84,6 +84,17 @@ export const CANDIDATE_CONTROL_MARKERS = [
   ["scripts/m1-shipped-boot/journey.mjs", "never closed"],
 ];
 
+/** E6-F030 — the object store the lane BUILDS (reusing the D1 harness's source build), and the
+ * variable it exports the built tag as. The overlay's MinIO service is `:?` on that variable. */
+export const MINIO_DOCKERFILE = "docker/d1/minio.Dockerfile";
+export const MINIO_IMAGE_ENV = "AOA_M1_MINIO_IMAGE";
+/** The release the lane must pin, and the PEELED commit of its tag. Pinned HERE and passed as
+ * `--build-arg`s, because the step runs the CANDIDATE's Dockerfile and that file's own defaults
+ * belong to the D1 harness (Codex P2, PR #604): without the pins the lane could build a newer,
+ * presign-stricter MinIO while tagging it as this release. */
+export const MINIO_RELEASE = "RELEASE.2025-09-07T16-13-09Z";
+export const MINIO_SOURCE_COMMIT = "07c3a429bfed433e49018cb0f78a52145d4bedeb";
+
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";
 /** E6-D001: the one branch the registration-only push may name. */
 export const REGISTRATION_BRANCH = "docs/replatform-program";
@@ -212,8 +223,45 @@ export function evaluateShippedBootWorkflowShape(text) {
   for (const script of ["build.sh", "sbom.sh", "sign.sh", "admit.sh"]) {
     if (!new RegExp(`bash docker/images/${script.replace(".", "\\.")}`).test(src)) v.push(`the lane must run docker/images/${script} (build from source + DEP-014's admission chain)`);
   }
+  // ★ E6-F030 — the OBJECT STORE is built from source too, and that is a property of this file.
+  // The registry ban below reads the WORKFLOW and nothing else, so a registry reference placed in
+  // `docker/m1-boot/docker-compose.m1-boot.yml` never reached it: a pulled MinIO would have gone
+  // green here while weakening exactly the property this clause exists to protect. These two
+  // checks are what make the compose-side repair unremovable.
+  if (!new RegExp(`docker build[^\\n]*-f ${MINIO_DOCKERFILE.replace(/[.]/g, "\\.")}`).test(src)) {
+    v.push(`the lane must BUILD its object store from upstream source (\`docker build -f ${MINIO_DOCKERFILE} …\`) — F3: the shipped boot builds what it boots, and the store's upstream image is withdrawn (E6-F030)`);
+  }
+  // ★ The export must reach `$GITHUB_ENV`, not merely be an assignment (Codex P2, PR #604): a plain
+  // shell assignment satisfies "the name appears with an `=`" while LATER STEPS INHERIT NOTHING, so
+  // the guard would have gone green over exactly the regression it claims to prevent. A check that
+  // matches a weaker string than the property it names is the vacuous-control family.
+  if (!new RegExp(`${MINIO_IMAGE_ENV}=[^\\n]*>> "\\$GITHUB_ENV"`).test(src)) {
+    v.push(`the lane must export the built store's tag to \`$GITHUB_ENV\` (\`${MINIO_IMAGE_ENV}=… >> "$GITHUB_ENV"\`) — a plain shell assignment is not inherited by the later steps, and the overlay is fail-closed on the variable (E6-F030)`);
+  }
+  // ★ The RELEASE and its PEELED commit are pinned by the LANE, passed as build args, because the
+  // step runs the candidate's Dockerfile and its defaults may move for the D1 harness's reasons.
+  for (const [arg, value] of [["MINIO_VERSION", MINIO_RELEASE], ["MINIO_SOURCE_COMMIT", MINIO_SOURCE_COMMIT]]) {
+    if (!src.includes(`${arg}=${value}`)) {
+      v.push(`the lane must pin \`${arg}=${value}\` for the object-store build — the step runs the CANDIDATE's ${MINIO_DOCKERFILE}, whose defaults belong to the D1 harness, so an unpinned build could ship a newer, presign-stricter MinIO under this release's tag (E6-F030)`);
+    }
+  }
+  // …and the built BINARY must be read back, because a build arg is what was requested.
+  if (!/--version/.test(src)) {
+    v.push("the lane must read the built object store's own `--version` back — a build arg records what was REQUESTED, not what was produced (E6-F030)");
+  }
+  // The candidate gate must REQUIRE the build recipe: checkout replaces the workspace, and a
+  // candidate predating `bafa11938` has no such file, so the build step would die on a missing file
+  // instead of the gate saying "too old" (Codex P1, PR #604). Two occurrences: the gate + the build.
+  if ((src.split(MINIO_DOCKERFILE).length - 1) < 2) {
+    v.push(`the candidate gate must require ${MINIO_DOCKERFILE} as well as building from it — a candidate that predates the recipe must be refused by the gate, not by a missing-file error after the images are built (E6-F030)`);
+  }
   if (/\bdocker (pull|login)\b/.test(src)) v.push("the lane must never `docker pull`/`docker login` — images are built from the candidate's source");
-  if (/ghcr\.io|docker\.io\/|registry-1\./i.test(src.replace(/^\s*#.*$/gm, ""))) v.push("the lane must not reference a registry image — images are built from source");
+  // ★ SAME CLASS as the journey's image-shape check, swept here too (E6-F030): a registry ban that
+  // NAMES registries is only as complete as its list, and this one did not name `quay.io` — the very
+  // host this finding is about. The hosts this programme has actually referenced are added; the
+  // residual (an unnamed host) is stated rather than pretended away, and the `docker pull`/`login`
+  // ban above plus the compose overlay's `:?` are what cover it.
+  if (/ghcr\.io|docker\.io\/|registry-1\.|quay\.io|mirror\.gcr\.io|registry\.min\.io|cgr\.dev/i.test(src.replace(/^\s*#.*$/gm, ""))) v.push("the lane must not reference a registry image — images are built from source");
 
   // (5) The keypair is generated in the job — and no signing key comes from a secret store.
   if (!/journey\.mjs prepare\b/.test(src)) v.push("the keypair must be generated in the job (`journey.mjs prepare`)");

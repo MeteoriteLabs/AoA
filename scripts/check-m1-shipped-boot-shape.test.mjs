@@ -157,6 +157,77 @@ test("REJECT: a pulled image instead of a source build, or the admission step dr
   assert.ok(anyMatch(violationsOf(unadmitted), /docker\/images\/admit\.sh/), violationsOf(unadmitted).join("\n"));
 });
 
+// ★ E6-F030. Two reds, because the repair has two halves and either alone is a hole: without the
+// BUILD the lane has no store image, and without the EXPORT the built image is never the one
+// Compose resolves — an older candidate would quietly fall back to its own withdrawn default.
+test("REJECT: the object store no longer built from source (it would have to be pulled)", () => {
+  const v = violationsOf(mutate(
+    real(),
+    "          docker build -f docker/d1/minio.Dockerfile \\\n",
+    "          docker build \\\n",
+  ));
+  assert.ok(anyMatch(v, /must BUILD its object store from upstream source/), v.join("\n"));
+});
+
+test("REJECT: the built store's tag not exported, so Compose resolves something else", () => {
+  const stripped = real()
+    .replace('          echo "AOA_M1_MINIO_IMAGE=$AOA_M1_MINIO_IMAGE" >> "$GITHUB_ENV"\n', "");
+  assert.ok(!/AOA_M1_MINIO_IMAGE=[^\n]*GITHUB_ENV/.test(stripped), "the export mutation must remove the `$GITHUB_ENV` write");
+  const v = violationsOf(stripped);
+  assert.ok(anyMatch(v, /must export the built store's tag/), v.join("\n"));
+});
+
+// ★ Codex P2, PR #604 — the mutation the FIRST version of the clause above could not see: an
+// ordinary shell assignment, which later steps do not inherit. The clause matched `NAME=` anywhere,
+// so it stayed green over exactly the regression it claims to prevent.
+test("REJECT: the export downgraded to a plain shell assignment (later steps inherit nothing)", () => {
+  const v = violationsOf(mutate(
+    real(),
+    '          echo "AOA_M1_MINIO_IMAGE=$AOA_M1_MINIO_IMAGE" >> "$GITHUB_ENV"\n',
+    '          AOA_M1_MINIO_IMAGE="$AOA_M1_MINIO_IMAGE"\n',
+  ));
+  assert.ok(anyMatch(v, /must export the built store's tag/), v.join("\n"));
+});
+
+// ★ Codex P2, PR #604 — the step runs the CANDIDATE's Dockerfile, so the release must be pinned by
+// the LANE. Dropping the build args would build that candidate's default MinIO under this tag.
+for (const [arg, value] of [["MINIO_VERSION", "RELEASE.2025-09-07T16-13-09Z"], ["MINIO_SOURCE_COMMIT", "07c3a429bfed433e49018cb0f78a52145d4bedeb"]]) {
+  test(`REJECT: the object-store build no longer pins ${arg} (the candidate's default would ship)`, () => {
+    const from = `            --build-arg "${arg}=${value}" \\\n`;
+    const v = violationsOf(mutate(real(), from, ""));
+    assert.ok(anyMatch(v, new RegExp(`must pin \`${arg}=`)), v.join("\n"));
+  });
+}
+
+test("REJECT: the built binary's own --version no longer read back", () => {
+  const stripped = real().replace(/--version/g, "--help");
+  assert.ok(!/--version/.test(stripped), "the mutation must remove every `--version`");
+  const v = violationsOf(stripped);
+  assert.ok(anyMatch(v, /read the built object store's own `--version` back/), v.join("\n"));
+});
+
+// ★ Codex P1, PR #604 — checkout replaces the workspace, and `docker/d1/minio.Dockerfile` only
+// exists from `bafa11938`. An accepted-but-older candidate (3966a01f9f carries every control marker)
+// would die at the build step on a missing file instead of being refused as too old.
+test("REJECT: the candidate gate no longer requires the object-store build recipe", () => {
+  const v = violationsOf(mutate(
+    real(),
+    "                   docker/d1/minio.Dockerfile; do\n",
+    "                   ; do\n",
+  ));
+  assert.ok(anyMatch(v, /candidate gate must require docker\/d1\/minio\.Dockerfile/), v.join("\n"));
+});
+
+// ★ The registry ban NAMED registries, and did not name the one this finding is about.
+test("REJECT: a quay.io reference — the ban must not be only as complete as its host list", () => {
+  const v = violationsOf(mutate(
+    real(),
+    '          AOA_M1_MINIO_IMAGE: "aoa-m1-minio:RELEASE.2025-09-07T16-13-09Z"\n',
+    '          AOA_M1_MINIO_IMAGE: "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"\n',
+  ));
+  assert.ok(anyMatch(v, /must not reference a registry image/), v.join("\n"));
+});
+
 test("REJECT: the evidence upload widened to the whole output dir (keys, env, state)", () => {
   const text = mutate(real(), "          path: ${{ env.M1_OUT }}/evidence/\n", "          path: ${{ env.M1_OUT }}/\n");
   assert.ok(anyMatch(violationsOf(text), /only uploaded path must be/), violationsOf(text).join("\n"));

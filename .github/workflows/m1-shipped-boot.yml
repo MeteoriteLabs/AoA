@@ -131,8 +131,15 @@ jobs:
             echo "::error::$CANDIDATE is not an ancestor of docs/replatform-program (not a frozen candidate)"
             exit 1
           }
+          # ★ E6-F030 (Codex P1, PR #604). `docker/d1/minio.Dockerfile` is in this list because
+          # checkout REPLACES the workspace with the candidate, and that file was only added by
+          # `bafa11938`. A candidate before it — `3966a01f9f`, say, which carries every marker the
+          # control gate below enforces — would reach the object-store build step with no recipe and
+          # die there on a missing file, which is a confusing way to say "too old". Candidates are
+          # therefore restricted, here and explicitly, to revisions that contain the build recipe.
           for f in docker/m1-boot/docker-compose.m1-boot.yml scripts/m1-shipped-boot/journey.mjs \
-                   docker/images/build.sh docker/images/admit.sh docker/adapter-manager/Dockerfile; do
+                   docker/images/build.sh docker/images/admit.sh docker/adapter-manager/Dockerfile \
+                   docker/d1/minio.Dockerfile; do
             test -f "$f" || { echo "::error::the candidate has no $f (it predates DEP-015/DEP-014)"; exit 1; }
           done
           # ★ THE CANDIDATE MUST CARRY THE CONTROLS IT WILL BE JUDGED BY (Codex P1, PR #574).
@@ -217,6 +224,60 @@ jobs:
             [[ "$label" == "$AOA_IMAGE_REVISION" ]] || { echo "::error::$key image revision label '$label' is not the candidate"; exit 1; }
             echo "$key $tag revision=$label"
           done
+
+      # ★ E6-F030 — THE OBJECT STORE IS BUILT FROM SOURCE TOO.
+      #
+      # The overlay's MinIO used to resolve `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`,
+      # which is withdrawn (401 from quay AND Docker Hub with pull-scoped tokens; mirror.gcr.io
+      # 404; dl.min.io 410 Gone; the GitHub release carries no binaries), so this lane died in
+      # `boot-core` before the journey ever ran. Route 2 was ruled over a registry mirror on
+      # principle: F3 says this lane BUILDS what it boots, and an object store pulled from a
+      # registry would be a weaker claim — one that would also have left the shape guard green,
+      # since that guard reads this workflow and never the compose file.
+      #
+      # `docker/d1/minio.Dockerfile` already performs this build and FAILS CLOSED on the release
+      # tag's peeled commit id (`refs/tags/<tag>^{}`, not the annotated tag object — the two are
+      # different ids and only one is what a checkout lands on). The version is not a free
+      # variable: a newer MinIO is stricter about presigning and broke the D1 presign cases.
+      #
+      # The tag is exported to $GITHUB_ENV so Compose resolves it from the PROCESS environment,
+      # which outranks `--env-file`. That is also what makes the repair effective against a
+      # candidate that predates it: checkout replaces the workspace, so an older candidate brings
+      # its own compose default, and a process-env value overrides it. A build failure is FATAL —
+      # a lane that skipped or tolerated a missing object store would convert a loud blocker into
+      # a silent hole.
+      # ★ THE VERSION IS PINNED BY THIS LANE, NOT BY THE CANDIDATE (Codex P2, PR #604). The step
+      # below runs the CANDIDATE's copy of the Dockerfile, whose `MINIO_VERSION` /
+      # `MINIO_SOURCE_COMMIT` defaults belong to the D1 harness and may legitimately move there.
+      # Without these `--build-arg`s the lane would build whatever the candidate defaulted to while
+      # still tagging and recording it as RELEASE.2025-09-07T16-13-09Z — silently running the newer,
+      # presign-stricter MinIO this whole change exists to avoid. The commit is the PEELED id of
+      # that tag (`refs/tags/<tag>^{}`), and the Dockerfile's own `test` aborts on a mismatch.
+      # `--version` is then read back off the built binary, because a build arg is what was
+      # REQUESTED and the binary is what was PRODUCED.
+      - name: Build the object store image from upstream source (E6-F030)
+        env:
+          AOA_M1_MINIO_IMAGE: "aoa-m1-minio:RELEASE.2025-09-07T16-13-09Z"
+        run: |
+          set -euo pipefail
+          # The release and its peeled commit are LITERAL here on purpose: the shape guard checks
+          # these exact pins, and an env indirection would hide them from it.
+          docker build -f docker/d1/minio.Dockerfile \
+            --build-arg "MINIO_VERSION=RELEASE.2025-09-07T16-13-09Z" \
+            --build-arg "MINIO_SOURCE_COMMIT=07c3a429bfed433e49018cb0f78a52145d4bedeb" \
+            -t "$AOA_M1_MINIO_IMAGE" docker/d1
+          # Prove the tag EXISTS locally before anything depends on it: a build that printed a
+          # warning and produced nothing would otherwise surface as a compose pull attempt.
+          docker image inspect "$AOA_M1_MINIO_IMAGE" >/dev/null
+          # …and prove the BINARY is the release the tag claims, not merely the one asked for.
+          built="$(docker run --rm --entrypoint /usr/bin/minio "$AOA_M1_MINIO_IMAGE" --version)"
+          echo "$built"
+          grep -Fq "RELEASE.2025-09-07T16-13-09Z" <<<"$built" || {
+            echo "::error::the built object store does not report RELEASE.2025-09-07T16-13-09Z — the tag would misdescribe it"
+            exit 1
+          }
+          echo "AOA_M1_MINIO_IMAGE=$AOA_M1_MINIO_IMAGE" >> "$GITHUB_ENV"
+          echo "object store $AOA_M1_MINIO_IMAGE built from upstream source"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
