@@ -43,7 +43,7 @@ import {
 import { ConcurrencyLimiter } from "../poll/concurrency.js";
 import { createHostCapacityProbes, defaultHostProbeReaders } from "../poll/host-probes.js";
 import { createSupervisor } from "../supervisor/supervisor.js";
-import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
+import { createRunCanaryCoordinator, type RunCanaryCoordinator } from "../supervisor/run-canaries.js";
 import { createUsageObserver } from "../supervisor/usage-observer.js";
 import { resolveRunOpDeadlineMs } from "./run-op-deadline.js";
 import { createRedeemer, synthesiseRunSecrets } from "../lease/secret-redemption.js";
@@ -136,6 +136,15 @@ export interface ComposeDispatchRuntimeDeps {
   /** DEP-017 — `AOA_WORKER_ENV_PROBE=1`: compose the live env-absence probe into the supervisor.
    * Default off; only the DEP-015 shipped-boot overlay sets it. */
   readonly envProbe?: boolean;
+  /** DEP-023 — `AOA_WORKER_RUN_OUTPUT_PROBE=1`: compose the bounded run-output redaction probe into
+   * the usage observer. Default off; only the D1 fault-matrix overlay sets it. */
+  readonly runOutputProbe?: boolean;
+  /**
+   * DEP-023 — the per-lease canary coordinator, INJECTED so the daemon's logger (built before this
+   * runtime is composed) can read the same live canaries at its transport boundary. Defaults to a
+   * fresh coordinator, which is exactly the previous behaviour for every caller that omits it.
+   */
+  readonly canaryCoordinator?: RunCanaryCoordinator;
   // --- test seams: default to the real factories -------------------------------------------
   /** The host capacity probes; defaults to the real node:os/node:fs readers over `workDir`. */
   readonly probes?: CapacityProbes;
@@ -218,7 +227,7 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
 
   // DAT-008 slice 5 — the per-lease canary coordinator, shared by the supervisor and the driver's
   // fence-close proxy so ONE redemption seeds BOTH event streams (per-run, before create).
-  const canaryCoordinator = createRunCanaryCoordinator();
+  const canaryCoordinator = deps.canaryCoordinator ?? createRunCanaryCoordinator();
 
   // DAT-008 slice 5 — per-run secret materialisation: redeem the envelope's `env`/`sandbox_local_only`
   // handles via the LOCAL resolve route (device proof + the live session), synthesise the sandbox
@@ -329,7 +338,12 @@ export async function composeDispatchRuntime(deps: ComposeDispatchRuntimeDeps): 
     exportArtifacts,
     resolveExportArtifacts,
     canaryCoordinator,
-    observeRun: createUsageObserver({ metrics: deps.metrics }),
+    observeRun: createUsageObserver({
+      metrics: deps.metrics,
+      // Both together or neither: the logger is consulted ONLY on the probe path, and passing it
+      // when the probe is off would be a dependency nothing reads.
+      ...(deps.runOutputProbe ? { runOutputProbe: true, ...(deps.logger ? { logger: deps.logger } : {}) } : {}),
+    }),
     // ★ H1 — the run's OWN budget, from `workload.maxRuntimeSeconds`. Before this the
     // supervisor's 60 s default stood for every run, and that one number is simultaneously
     // the execute race, the E2B sandbox TTL, and the E2B command timeout — so every task

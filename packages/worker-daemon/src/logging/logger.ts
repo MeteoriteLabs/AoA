@@ -11,6 +11,8 @@
 
 import pino from "pino";
 
+import { createRedactingDestination } from "./redacting-destination.js";
+
 export interface Logger {
   info(message: string): void;
   info(bindings: Record<string, unknown>, message: string): void;
@@ -45,6 +47,17 @@ export interface WorkerLoggerOptions {
    * Ignored when `destination` is supplied — an explicit stream wins.
    */
   readonly filePath?: string;
+  /**
+   * DEP-023 — the live run canaries, scrubbed out of the SERIALIZED record at the transport
+   * boundary (`createRedactingDestination`), below the `msg`/`time`/`level` the sink adds.
+   *
+   * This is closure route 2 of `E4-F019`: the key-name redaction below and the caller-side
+   * `scrubLogRecord` both run ABOVE the sink and therefore cannot see those keys. Absent, the
+   * destination is the unwrapped one and every byte is exactly as before.
+   */
+  readonly redactionCanaries?: () => readonly string[];
+  /** Told once per record the transport scrubber refused. No content, ever. */
+  readonly onRedactionRefused?: () => void;
 }
 
 /**
@@ -100,16 +113,26 @@ function redactBindings(value: unknown, seen: WeakSet<object> = new WeakSet()): 
 }
 
 export function createWorkerLogger(opts: WorkerLoggerOptions = {}): Logger {
+  const baseDestination =
+    opts.destination ??
+    (opts.filePath === undefined
+      ? pino.destination(1)
+      : pino.destination({ dest: opts.filePath, mkdir: true, append: true, mode: 0o600 }));
+  const destination =
+    opts.redactionCanaries === undefined
+      ? baseDestination
+      : createRedactingDestination({
+          destination: baseDestination,
+          canaries: opts.redactionCanaries,
+          ...(opts.onRedactionRefused ? { onRefused: opts.onRedactionRefused } : {}),
+        });
   const instance = pino(
     {
       level: opts.level ?? "info",
       base: opts.base,
       serializers: { err: pino.stdSerializers.err },
     },
-    opts.destination ??
-      (opts.filePath === undefined
-        ? pino.destination(1)
-        : pino.destination({ dest: opts.filePath, mkdir: true, append: true, mode: 0o600 })),
+    destination,
   );
 
   const logger: Logger = {

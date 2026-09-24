@@ -14,7 +14,7 @@ import {
   scrubLogRecord,
 } from "../supervisor/run-output.js";
 import { createSupervisor, type RunObservation, type SupervisorDeps } from "../supervisor/supervisor.js";
-import { PARSED_USAGE_LOG_MESSAGE, createUsageObserver } from "../supervisor/usage-observer.js";
+import { createUsageObserver } from "../supervisor/usage-observer.js";
 import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { compatibleOffer } from "./support/poll-fixtures.js";
 import { collectingSink, makeHandoff, SUPERVISOR_IDENTITY } from "./support/supervisor-fixtures.js";

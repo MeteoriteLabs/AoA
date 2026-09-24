@@ -33,8 +33,10 @@
 
 import type { UsagePayloadV1 } from "@armyofagents/worker-protocol";
 
+import type { Logger } from "../logging/logger.js";
 import type { Metrics } from "../metrics/metrics.js";
 import { REDACTION_MARKER } from "./redaction.js";
+import { RUN_OUTPUT_PROBE_LOG_MESSAGE, selectRunOutputProbeLines } from "./run-output-probe.js";
 import type { RunObservation, SupervisorDeps } from "./supervisor.js";
 
 /** Counter: runs whose output carried no parseable usage (no labels — no content, no id). */
@@ -111,17 +113,47 @@ export function parseClaudeStreamJsonUsage(stdout: string): ParsedAgentUsage | n
 
 export interface UsageObserverDeps {
   readonly metrics?: Metrics;
+  /**
+   * DEP-023 — the run-output REDACTION PROBE, off unless the daemon was booted with
+   * `AOA_WORKER_RUN_OUTPUT_PROBE=1`. When on, a single `AOA-RUN-OUTPUT-PROBE`-tagged line of the
+   * run's ALREADY-SCRUBBED stdout tail is forwarded to BOTH streams the E5 clause-5 case asserts
+   * on: the run's event stream (as `obs.logs`, which the supervisor turns into a `log` event) and
+   * the worker's container log (through `logger`). Off, this observer is byte-identical to the
+   * usage-only one — no selection, no log entry, no log line.
+   */
+  readonly runOutputProbe?: boolean;
+  /** The worker logger, used ONLY for the probe line. Safe because the daemon's logger scrubs the
+   * serialized record at the transport boundary (`logging/redacting-destination.ts`) — see the
+   * `E4-F019` note in `run-output-probe.ts`. */
+  readonly logger?: Pick<Logger, "info">;
 }
 
-/** The composed `observeRun`: usage only (stdout is never re-emitted as log events). */
+/** The composed `observeRun`: usage, plus (opt-in) the bounded run-output redaction probe. */
 export function createUsageObserver(deps: UsageObserverDeps = {}): NonNullable<SupervisorDeps["observeRun"]> {
   return (input): RunObservation => {
+    // ★ The probe runs on the SAME already-scrubbed tail the parser reads, and it runs BEFORE the
+    // parse's early returns: a run whose usage is unparseable (a `suppressed` transcript, a
+    // structurally-redacted result line) still has a redaction story to tell, and gating the probe
+    // on a successful parse would make clause 5 silently depend on usage.
+    const probeLines =
+      deps.runOutputProbe === true && input.output !== undefined
+        ? selectRunOutputProbeLines(input.output.stdoutTail)
+        : [];
+    for (const line of probeLines) {
+      try {
+        deps.logger?.info({ probeLine: line }, RUN_OUTPUT_PROBE_LOG_MESSAGE);
+      } catch {
+        // Instrumentation must never fail a run (the supervisor swallows a throw here too, but the
+        // event half below must still be produced if the LOG half fails).
+      }
+    }
+    const logs = probeLines.map((message) => ({ stream: "system", level: "info", message }) as const);
     const parsed = input.output ? parseClaudeStreamJsonUsage(input.output.stdoutTail) : null;
     if (parsed === null || input.output === undefined) {
       deps.metrics?.inc(RUN_USAGE_MISSING_METRIC);
-      return { usage: null };
+      return { ...(logs.length > 0 ? { logs } : {}), usage: null };
     }
     const runtimeMillis = Math.max(0, Math.round(input.output.runtimeMillis));
-    return { usage: { ...parsed, runtimeMillis } };
+    return { ...(logs.length > 0 ? { logs } : {}), usage: { ...parsed, runtimeMillis } };
   };
 }

@@ -593,6 +593,17 @@ export {
 } from "./supervisor/usage-observer.js";
 export type { ParsedAgentUsage, UsageObserverDeps } from "./supervisor/usage-observer.js";
 
+// DEP-023 — the run-output redaction probe (the E5 clause-5 observation surface) and the
+// transport-boundary log scrubber that makes writing it safe (E4-F019 closure route 2).
+export {
+  RUN_OUTPUT_PROBE_TAG,
+  RUN_OUTPUT_PROBE_MAX_LINES,
+  RUN_OUTPUT_PROBE_MAX_CHARS,
+  RUN_OUTPUT_PROBE_LOG_MESSAGE,
+  selectRunOutputProbeLines,
+} from "./supervisor/run-output-probe.js";
+export { createRedactingDestination, LOG_RECORD_REFUSED_LINE } from "./logging/redacting-destination.js";
+
 export type { NetworkDenialClass } from "./supervisor/events.js";
 
 // --- WRK-005: lease renewal, fence-close proxy, and orphan-output quarantine --
