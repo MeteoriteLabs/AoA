@@ -95,6 +95,16 @@ import {
   probeLegacyTableIsolation,
   probeToolSurfaceAtUse,
   seedToolSurfaceRuns,
+  // M1a harness gaps (2026-09-24) — the E5 clause-4 and clause-5 floors.
+  seedResolvableProviderSecretHandle,
+  querySecretResolveDenials,
+  composeServiceLogs,
+  queryJobEventPayloadText,
+  seedSpineWorkerDrivenJob,
+  awaitSpineWorkerDrivenTerminal,
+  REDACTION_MARKER,
+  queryDeployedWorker,
+  SPINE_DEPLOYED_TARGET_ID,
 } from "./lib/e6f-harness.mjs";
 import {
   M1_SPINE_TENANTS,
@@ -163,10 +173,21 @@ const bundle = {
 
 /** Record ONE declared case's evidence row. `observedClassification` is what the campaign
  * compares with the declaration; `detail` is kept beside the bundle for the reader. */
-function record(caseId, { injectionFired, observedClassification, positiveControlPassed, antiVacuityObservedForeignRow, detail }) {
+function record(caseId, { injectionFired, observedClassification, positiveControlPassed, antiVacuityObservedForeignRow, redactedOnAllStreams, scrubberMarkerObservedOnStream, streamBytesObserved, detail }) {
   const row = { case: caseId, injectionFired: injectionFired === true, observedClassification: observedClassification ?? null };
   if (positiveControlPassed !== undefined) row.positiveControlPassed = positiveControlPassed === true;
   if (antiVacuityObservedForeignRow !== undefined) row.antiVacuityObservedForeignRow = antiVacuityObservedForeignRow === true;
+  // ★ THE REDACTION ROW FACTS (Codex P1 on PR #593, and the finding was right even though no case
+  // currently files them). This helper copied a FIXED set of fields and silently dropped anything
+  // else, so a redaction case that passed `redactedOnAllStreams` / the per-stream marker map /
+  // `streamBytesObserved` would have had them discarded on the way into the bundle — and
+  // `evaluateFaultMatrixEvidence` would then have refused the case for facts the case DID measure
+  // and DID pass. That is the "a check that nothing runs" class inverted: a check that reds on
+  // evidence it was handed and threw away. Threaded now, ahead of the case that needs it, because
+  // the case that needs it first is the KEYED one and discovering this there costs an E2B run.
+  if (redactedOnAllStreams !== undefined) row.redactedOnAllStreams = redactedOnAllStreams === true;
+  if (scrubberMarkerObservedOnStream !== undefined) row.scrubberMarkerObservedOnStream = scrubberMarkerObservedOnStream;
+  if (streamBytesObserved !== undefined) row.streamBytesObserved = streamBytesObserved;
   bundle.cases.push(row);
   if (detail !== undefined) bundle.detail[caseId] = detail;
   return row;
@@ -877,6 +898,330 @@ test("fault-matrix: cross-tenant tool calls — denied by the per-Organization t
 });
 
 // ═══ 5. cancellation ═════════════════════════════════════════════════════════
+
+// -----------------------------------------------------------------------------
+// E5 EXIT-GATE CLAUSE 4 — lease-scoped secrets (ADDED 2026-09-24).
+//
+// ★ PLACED HERE, AFTER EVERY TENANT CASE, AND THAT POSITION IS LOAD-BEARING. Measured on run
+// 35933605253, where these cases sat immediately after `cross-tenant secrets`: they enroll NEW
+// workers on NEW targets for tenant A, which bumps the tenant's target generation and REVOKED the
+// victim attempt the later cases reuse — `d1.tenant.cross.staged_inputs`, `.outputs` and
+// `.control_refused` all failed downstream with `target_revoked` and a placement that would no
+// longer select. Nothing was wrong with those cases; my three were wrong to run before them. The
+// file's own header says order is load-bearing over ONE shared stack; a case that mints fresh
+// enrolments belongs after the cases that depend on the existing ones, and before the destructive
+// faults.
+//
+// The `a2` audit graded clause 4 `proven_weakly` against an `M1a` floor of `proven_in_d1`, with
+// one blocker: *"no declared D1 lease-expiry / wrong-lease redemption-refusal case"*. `proven_in_d1`
+// requires that *"Redemption after the lease ends, or on a different lease, is refused"* in a
+// D1-topology campaign. These two cases are that.
+//
+// ★★★ WHAT MAKES THEM NON-VACUOUS, which is the whole reason the audit refused the existing arm.
+// `d1.tenant.cross.secrets` concedes in its own record that *"the fenced route collapses every
+// refusal to denied/malformed by design and this lane's fixture handle is unresolvable, so owner
+// and attacker are indistinguishable here and the arm carries no control."* Both halves of that
+// were measured again for these cases, and the SECOND half is false of the LANE:
+//
+//   * the route does NOT collapse everything — `admitSandboxLocalResolution`
+//     (`server/src/services/execution-secret-resolve.ts`) passes a broker denial's own reason
+//     through, so `stale_fence` / `attempt_terminal` reach the wire distinct from `malformed`,
+//     and only the route's catch-all answers `malformed`;
+//   * the handle is unresolvable only because THAT FIXTURE points `ref_id` at a secret that does
+//     not exist. `docker/d1/m1-spine.override.yml:99` gives the control plane a real
+//     `AOA_SECRETS_MASTER_KEY`, and `seedSpineWorkerDrivenJob` already writes a Company secret
+//     through the server's own `secretService`. So a resolve on this lane CAN answer `resolved`.
+//
+// That is what gives these cases a POSITIVE CONTROL worth the name: the same tenant, the same
+// worker, the same handle SHAPE, on a LIVE lease, answers `resolved` — so a later `denied` is
+// attributable to the lease state and not to "nothing resolves on this lane".
+//
+// ★ TWO HANDLES, NEVER ONE. The control and the injected arm use SEPARATE handles on the same
+// attempt, so a refusal can never be explained as "already redeemed once".
+//
+// ★ NO VALUE EVER REACHES THE BUNDLE. Every recorded fact goes through `responseFacts`, which
+// takes status/outcome/code/reason and never `body.value` — and a `resolved` reply carries a live
+// credential. This is the retained-evidence channel the cross-tenant cases' own comment warns about.
+
+/** A resolvable provider-key handle on an existing attempt. The value is credential-shaped and
+ * per-call unique; it is never reported, recorded or asserted on. */
+function seedRedeemableHandle(tenant, jobId, { secretName, value }) {
+  const handleId = randomUUID();
+  const seeded = step(seedResolvableProviderSecretHandle({
+    organizationId: tenant.organizationId, companyId: tenant.companyId, jobId, handleId, secretName, value,
+  }), `redeemable handle ${secretName}`);
+  assert.equal(seeded.ok, true, `redeemable handle seed: ${truncate(seeded)}`);
+  return handleId;
+}
+
+function resolveAs(actor, jobId, attempt, leaseId, fenceToken, handleId, label) {
+  return step(resolveExecutionSecretHttp({
+    session: actor.session, workerId: actor.ids.workerId, jobId, attempt, leaseId, fenceToken,
+    handleId, deviceKey: actor.deviceKey,
+  }), label);
+}
+
+/** The two fence-family denial reasons `admitSandboxLocalResolution` passes through. `malformed`
+ * is deliberately NOT here: it is the route's catch-all and proves nothing about the fence. */
+const FENCE_DENIAL_REASONS = new Set(["stale_fence", "attempt_terminal", "target_revoked"]);
+
+test("fault-matrix: redemption AFTER the lease ends is refused — with a live-lease same-tenant control", { skip: SKIP }, () => {
+  const [A] = M1_SPINE_TENANTS.enabled;
+  const owner = bringUpLeasedAttempt(A);
+  const nonce = randomBytes(6).toString("hex");
+  const controlHandle = seedRedeemableHandle(A, owner.ids.jobId, {
+    secretName: `provider:m1fm-lease-expiry-control-${nonce}`,
+    value: `m1fm-${randomBytes(24).toString("hex")}`,
+  });
+  const injectedHandle = seedRedeemableHandle(A, owner.ids.jobId, {
+    secretName: `provider:m1fm-lease-expiry-injected-${nonce}`,
+    value: `m1fm-${randomBytes(24).toString("hex")}`,
+  });
+
+  const fence = [owner.ids.jobId, owner.offer.job.attempt, owner.offer.leaseId, owner.offer.fenceToken];
+
+  // ── THE POSITIVE CONTROL, TAKEN FIRST, ON THE LIVE LEASE ──────────────────
+  // Taken before the injection so it cannot be explained by anything the injection did.
+  const control = resolveAs(owner, ...fence, controlHandle, "live-lease control resolve");
+  const controlResolved = control.status === 200 && control.body?.outcome === "resolved";
+  // ★ The control's OWN diagnostic. The wire reply is deliberately coarse, so when the control does
+  // NOT resolve the assertion message would otherwise say only `denied/malformed` and leave the
+  // author guessing which of `authorizeSecretResolve`'s sixteen machine reasons refused it. The
+  // tenant's own audit trail has the real one (`secret-resolve-denial-audit.ts`), so it is read
+  // here and carried into the failure message.
+  const controlDenials = step(querySecretResolveDenials({ organizationId: A.organizationId, jobId: owner.ids.jobId, handleId: controlHandle }), "control denial audit");
+
+  // ── THE INJECTION: end the lease ──────────────────────────────────────────
+  // Back-dating the deadlines alone does NOT end a lease — `docker/d1/campaign.env`'s E6F-14 THIRD
+  // bump records exactly that mistake ("the commit SUCCEEDED"). The reaper is what converts an
+  // overdue lease to a terminal one, so the two are paired, as e6f-09 pairs them.
+  // ★ MEASURED on run 35933605253: `expireLeaseDeadlines({ jobId })` THREW
+  // *"supply ackDeadlineIntervalSec and/or expiresAtIntervalSec"*. It takes a LEASE id and an
+  // explicit back-date interval — the expired/active idiom this file already uses at the reaped-
+  // lease case. Both columns are back-dated, keeping ack_deadline < expires_at
+  // (leases_authority_atomic_check).
+  const expired = SUPPRESS_INJECTION
+    ? { ok: false, updated: 0 }
+    : step(expireLeaseDeadlines({ leaseId: owner.offer.leaseId, ackDeadlineIntervalSec: 2, expiresAtIntervalSec: 1 }), "expire deadlines");
+  const reaped = SUPPRESS_INJECTION ? { status: 0 } : step(reapOrganization({ organizationId: A.organizationId }), "reap");
+  // ★ THE INJECTION IS BOTH HALVES, AND BOTH MUST BE OBSERVED (Codex P1, PR #593 — the finding was
+  // right). The back-date alone does not end a lease; the REAPER is what converts an overdue lease to
+  // a terminal one. An earlier version required only the back-date's row count and merely RECORDED
+  // the reap, so a reaper endpoint answering 404 or 500 would have left `injectionFired: true` while
+  // the lease was still live — the case would then have reded on its classification, which is
+  // fail-closed but blames the wrong half and tells the reader nothing. `reapOrganization` reports
+  // `{status, body}`, so the status is checked, not the object's existence: `assert.ok(reaped)` would
+  // be vacuously true for any object, which is the same E6F-14 lesson this file already records
+  // against `expireLeaseDeadlines`.
+  const reapAccepted = typeof reaped.status === "number" && reaped.status >= 200 && reaped.status < 300;
+  const injectionFired = SUPPRESS_INJECTION
+    ? false
+    : (expired.ok === true && Number(expired.updated) > 0 && reapAccepted);
+
+  const after = resolveAs(owner, ...fence, injectedHandle, "post-expiry resolve");
+  const afterReason = after.body?.reason ?? null;
+  const refusedAtFence = after.status === 200 && after.body?.outcome === "denied" && FENCE_DENIAL_REASONS.has(afterReason);
+
+  // The tenant's OWN audit trail carries the real machine reason, which the wire deliberately
+  // coarsens. Read, recorded, and NOT classified on: the wire refusal is the contract.
+  const denials = step(querySecretResolveDenials({ organizationId: A.organizationId, jobId: owner.ids.jobId, handleId: injectedHandle }), "denial audit");
+
+  record("d1.credential.lease_expired_redemption_refused", {
+    injectionFired,
+    observedClassification: controlResolved && refusedAtFence
+      ? "redemption_refused_after_lease_end_with_live_lease_control"
+      : "not_refused",
+    positiveControlPassed: controlResolved,
+    detail: {
+      control: responseFacts(control),
+      controlDurableDenialReasons: controlDenials.ok ? controlDenials.reasons : { error: controlDenials.error ?? null },
+      afterExpiry: responseFacts(after),
+      expiredRows: expired.updated ?? null,
+      reapStatus: reaped.status ?? null,
+      reapAccepted,
+      durableDenialReasons: denials.ok ? denials.reasons : { error: denials.error ?? null },
+    },
+  });
+  assert.equal(controlResolved, true, `the live-lease control must RESOLVE, else the refusal below proves nothing: ${truncate(responseFacts(control))} durable=${truncate(controlDenials.ok ? controlDenials.reasons : controlDenials.error)}`);
+  // The injection's OWN assertion, ahead of the outcome's: if the reap was not accepted, the lease
+  // never ended and whatever the resolve answered is about something else.
+  if (!SUPPRESS_INJECTION) {
+    assert.equal(reapAccepted, true, `the reaper must ACCEPT the reap, else the lease never ended and the refusal below is about something else: status=${reaped.status ?? null}`);
+  }
+  assert.equal(refusedAtFence, true, `after the lease ended the redemption must be refused at the FENCE (not the catch-all): ${truncate(responseFacts(after))}`);
+});
+
+test("fault-matrix: redemption on a DIFFERENT lease is refused — with an own-lease same-tenant control", { skip: SKIP }, () => {
+  const [A] = M1_SPINE_TENANTS.enabled;
+  // Two LIVE attempts of the SAME tenant, so the only thing that differs between the control and
+  // the injected arm is WHICH LEASE is presented. A cross-tenant pair would be testing tenancy
+  // (already `d1.tenant.cross.secrets`); this is the lease binding itself.
+  const own = bringUpLeasedAttempt(A);
+  const other = bringUpLeasedAttempt(A);
+  const nonce = randomBytes(6).toString("hex");
+  const handleId = seedRedeemableHandle(A, own.ids.jobId, {
+    secretName: `provider:m1fm-wrong-lease-${nonce}`,
+    value: `m1fm-${randomBytes(24).toString("hex")}`,
+  });
+  const otherHandleId = seedRedeemableHandle(A, own.ids.jobId, {
+    secretName: `provider:m1fm-wrong-lease-control-${nonce}`,
+    value: `m1fm-${randomBytes(24).toString("hex")}`,
+  });
+
+  // CONTROL FIRST: the owner's own lease, its own handle → resolved.
+  const control = resolveAs(own, own.ids.jobId, own.offer.job.attempt, own.offer.leaseId, own.offer.fenceToken, otherHandleId, "own-lease control resolve");
+  const controlResolved = control.status === 200 && control.body?.outcome === "resolved";
+  const controlDenials = step(querySecretResolveDenials({ organizationId: A.organizationId, jobId: own.ids.jobId, handleId: otherHandleId }), "control denial audit");
+
+  // THE INJECTION: the SAME worker, the SAME job, the SAME handle — but the OTHER attempt's live
+  // lease and fence token. Suppressed, the arm presents its own lease, so the case records a
+  // `resolved` and the matrix's suppression control reds it exactly as it should.
+  const presentedLeaseId = SUPPRESS_INJECTION ? own.offer.leaseId : other.offer.leaseId;
+  const presentedFence = SUPPRESS_INJECTION ? own.offer.fenceToken : other.offer.fenceToken;
+  const injectionFired = !SUPPRESS_INJECTION && presentedLeaseId !== own.offer.leaseId;
+
+  const wrong = resolveAs(own, own.ids.jobId, own.offer.job.attempt, presentedLeaseId, presentedFence, handleId, "wrong-lease resolve");
+  const refused = wrong.status === 200 && wrong.body?.outcome === "denied";
+
+  const denials = step(querySecretResolveDenials({ organizationId: A.organizationId, jobId: own.ids.jobId, handleId }), "denial audit");
+
+  // ★ THE CLASSIFICATION IS THE PAIR, NOT THE REASON. A wrong-lease presentation may be refused at
+  // the fence (`stale_fence`) or may throw inside the lease lookup and reach the route's catch-all
+  // (`malformed`) — the route is deliberately not an oracle for which lease exists, so the case
+  // must not depend on which. What it DOES depend on is mutation-sensitive: the identical request
+  // with the CORRECT lease resolves, so a refusal here is caused by the lease binding. Remove that
+  // binding and the control stays green while this arm flips to `resolved`.
+  record("d1.credential.wrong_lease_redemption_refused", {
+    injectionFired,
+    observedClassification: controlResolved && refused
+      ? "redemption_refused_on_foreign_lease_with_own_lease_control"
+      : "not_refused",
+    positiveControlPassed: controlResolved,
+    detail: {
+      control: responseFacts(control),
+      controlDurableDenialReasons: controlDenials.ok ? controlDenials.reasons : { error: controlDenials.error ?? null },
+      wrongLease: responseFacts(wrong),
+      presentedAnotherAttemptsLease: injectionFired,
+      durableDenialReasons: denials.ok ? denials.reasons : { error: denials.error ?? null },
+    },
+  });
+  assert.equal(controlResolved, true, `the own-lease control must RESOLVE: ${truncate(responseFacts(control))} durable=${truncate(controlDenials.ok ? controlDenials.reasons : controlDenials.error)}`);
+  assert.equal(refused, true, `a redemption on another attempt's lease must be REFUSED: ${truncate(responseFacts(wrong))}`);
+});
+
+// -----------------------------------------------------------------------------
+// E5 EXIT-GATE CLAUSE 5 — redaction (ADDED 2026-09-24).
+//
+// The `a2` audit's blocker: *"no declared planted-leak case with an unseeded control on either M1a
+// lane"*, after its author *"enumerated every case id in all three profiles … not one names
+// redaction, a canary, or a planted leak"*. It is explicit that the mechanism lane's secret-scan
+// step is not this clause's path: it is *"a CI scrub of the uploaded bundle"* that *"does not seed
+// per-run canaries through `synthesiseRunSecrets`, does not read the supervisor's scrubbed event
+// stream, and has no unseeded control"*.
+//
+// This case is the clause's own path. The DEPLOYED worker (`worker-b`, dispatch enabled via
+// `docker/d1/m1-spine.override.yml:137`, boot root `networked-host.js`) leases a real job whose
+// envelope carries a resolvable handle, so `synthesiseRunSecrets`
+// (`packages/worker-daemon/src/lease/secret-redemption.ts`) redeems it and registers the value as
+// a redaction canary. The canary is high-entropy and unique to this run.
+//
+// ★★★ THE CONTROL, and why it is the SCRUBBER'S OWN MARKER. "A control that passes because it read
+// zero rows proves nothing." A run whose streams are clean of the canary is indistinguishable from
+// a run that emitted the value nowhere — so the case also requires a POSITIVE observation that the
+// scrubber acted. `scrubEventStrings` (`packages/worker-daemon/src/supervisor/redaction.ts`)
+// replaces each canary with `REDACTION_MARKER`, so the marker's presence proves the canary reached
+// the scrubber and was REPLACED. The case requires, on the same streams, in the same run:
+//
+//     canary ABSENT               (the scrubber did its work)
+//   AND the REDACTION MARKER PRESENT (it demonstrably acted ON THIS RUN)
+//   AND bytes > 0 on each stream  (the scan was not over nothing)
+//
+// Remove the redaction and BOTH arms flip: the marker disappears and the canary appears. Neither
+// arm can pass alone.
+//
+// ★ THE FIRST DESIGN WAS MEASURED AND ABANDONED, recorded rather than quietly replaced. It carried
+// an unregistered TWIN of identical shape on the same run through the workload args and required it
+// PRESENT verbatim — the E5 audit's literal phrasing, *"an unseeded control that leaks the value
+// verbatim"*. Run **35936498467** measured that the twin reaches NEITHER stream: workload args are
+// not echoed into `job_events` or the worker's container log. That arm could therefore never pass,
+// and a permanently red case whose redness says nothing about redaction is worse than no case. The
+// marker is a STRICTLY STRONGER attribution than a twin — a twin shows the streams can carry such a
+// string, the marker shows the scrubber handled this run's canary — and it is substituted here as a
+// judgement, flagged for the audit author rather than presented as the same thing.
+//
+// ★ BOTH STREAMS. A scrubbed event stream beside an unscrubbed container log is still a leak, so
+// the case asserts the same pair on `job_events` AND on the worker's container log, and the
+// declaration names both in `redactionCase.streams`.
+//
+// ★ NOTHING SECRET REACHES THE BUNDLE. Only booleans and byte counts are recorded — never the
+// canary, never the twin, never a stream excerpt.
+
+test("fault-matrix: THE CLAUSE-5 BLOCKER, measured live — this lane emits no redeemed credential, so the scrubber has nothing to substitute", { skip: SKIP }, () => {
+  // ★★★ THIS TEST IS NOT THE CLAUSE-5 CASE. It is the live PROOF of that case's `pendingReason`,
+  // and it exists because this programme's worst failure class is a `pending` reason that is false
+  // of the lane it excuses — the exact defect the `M1-D1-SPINE` `a2` record graded `SPINE-MATRIX-3`.
+  // It therefore `record()`s NOTHING: `d1.redaction.planted_canary_scrubbed` is declared `pending`,
+  // and a bundle that reported evidence for a pending case is REFUSED by design.
+  //
+  // WHAT WAS ATTEMPTED, over three live campaigns on this branch:
+  //   35933605253  the case as first written; fell over earlier (a wrong `job_events` column).
+  //   35936498467  fixed. The unregistered TWIN carried through the workload args appeared on
+  //                NEITHER stream.
+  //   35938378052  twin replaced by the scrubber's own `REDACTION_MARKER`. The MARKER appeared on
+  //                neither stream either.
+  //
+  // WHAT THAT MEASURES — a fact about the lane, not about redaction: the canary is absent because
+  // **nothing on this lane ever emits the redeemed value**, so `scrubEventStrings` has nothing to
+  // substitute and its marker never appears. A clean stream here is therefore VACUOUS — the very
+  // thing clause 5's control exists to exclude — and reporting it as a scrub would be the failure
+  // this whole exercise is about.
+  //
+  // WHY: the reference provider EXECUTES a deterministic scripted transcript
+  // (`packages/sandbox-fake-provider/src/scripted-command.ts`) that is a pure function of
+  // `(args, usage)`. It never reads the sandbox env, and an argument outside the `--aoa-fake-`
+  // namespace is passed over without comment — which is also why the twin vanished silently. On the
+  // KEYED lane the echo exists BY DESIGN: `DEP-017`'s env probe performs a *"planted execute, so any
+  // echo of them is scrubbed"* (`packages/worker-daemon/src/supervisor/env-probe.ts`), and the
+  // mechanism record's `plantedControl.red: true` is that echo being caught.
+  //
+  // SO IT IS UNBUILT HERE, NOT UNAVAILABLE — stated that way deliberately, because "unavailable" is
+  // what the two wrongly-excused spine cases claimed. It needs ONE `--aoa-fake-echo-env=<NAME>`
+  // scripting flag on the reference provider, a provider-package change with its own typecheck and
+  // build. Filed in the declaration's `pendingReason`, not smuggled in here.
+  const [A] = M1_SPINE_TENANTS.enabled;
+  const deployed = step(queryDeployedWorker({}), "deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+  assert.ok(deployed.workerId, "the blocker probe needs the DEPLOYED worker, which is what redeems");
+
+  const canary = `m1fmcanary${randomBytes(20).toString("hex")}`;
+  const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
+  const seeded = step(seedSpineWorkerDrivenJob({
+    tenant: A, ...ids, target: deployed.target, workloadArgs: [],
+    secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`, secretValue: canary,
+  }), "canary worker-driven seed");
+  assert.equal(seeded.ok, true, `canary job seed: ${truncate(seeded)}`);
+
+  const observation = step(awaitSpineWorkerDrivenTerminal({ jobId: ids.jobId }), "canary run terminal");
+  const events = step(queryJobEventPayloadText({ jobId: ids.jobId }), "event stream");
+  const logs = composeServiceLogs("worker-b");
+  assert.equal(events.ok, true, `event stream read: ${truncate({ ok: events.ok, error: events.error ?? null })}`);
+  assert.equal(logs.ok, true, `worker log read: status=${logs.status}`);
+
+  // ★ NON-VACUITY FIRST. A blocker proved over empty streams proves nothing either: the run must
+  // actually have produced events and the worker must actually have logged.
+  assert.ok((events.events ?? 0) > 0, `the run produced no events, so nothing below is a measurement: ${truncate(observation)}`);
+  assert.ok((logs.bytes ?? 0) > 0, "the worker container log is empty, so nothing below is a measurement");
+
+  const canaryPresent = events.text.includes(canary) || logs.text.includes(canary);
+  const markerPresent = events.text.includes(REDACTION_MARKER) || logs.text.includes(REDACTION_MARKER);
+
+  // Asserted in BOTH directions so the declaration cannot go stale unnoticed: if the canary or the
+  // marker EVER appears, this lane does emit the value / the scrubber is acting, the clause-5 case
+  // becomes buildable here, and THIS TEST REDS — which is how the `pending` declaration gets
+  // revisited instead of quietly outliving its reason.
+  assert.equal(canaryPresent, false, "the redeemed value APPEARED on a stream: this lane now emits it, so d1.redaction.planted_canary_scrubbed is buildable here and its pending declaration is stale");
+  assert.equal(markerPresent, false, `the scrubber's marker APPEARED: it is acting on this lane after all, so d1.redaction.planted_canary_scrubbed's pendingReason is stale. events=${events.events} logBytes=${logs.bytes}`);
+});
 
 test("fault-matrix: cancelling an UNLEASED attempt cancels it directly", { skip: SKIP }, () => {
   const [A] = M1_SPINE_TENANTS.enabled;

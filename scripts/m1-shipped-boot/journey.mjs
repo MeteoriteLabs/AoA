@@ -35,6 +35,11 @@
 //                      DEP-017: each enabled tenant's attempt must also carry a clean live
 //                      env-absence probe summary (read from its `job_events`), with a red
 //                      planted control; keyless observes no probe (no sandbox exists).
+//   fault-matrix       KEYED ONLY. Maps the journey's own per-tenant observations onto the three
+//                      `M1a-D2-MECHANISM` cases they decide (the two enabled journeys and the
+//                      control tenant's refusal), writes `fault-matrix-bundle.json`, and re-judges
+//                      it through `evaluateFaultMatrixEvidence`. Refuses rather than filing a row
+//                      it cannot support. The profile's other cases stay `pending`.
 //   collect            redacted service logs + `compose ps` into the evidence dir
 //   leak-scan          HARD check before upload, on BOTH surfaces: no job secret (raw/base64/
 //                      base64url) and no key material, in the evidence bundle OR the job log
@@ -51,6 +56,12 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  evaluateFaultMatrixDeclaration,
+  evaluateFaultMatrixEvidence,
+  formatViolations as formatMatrixViolations,
+  FAULT_MATRIX_PATH,
+} from "../lib/campaign-fault-matrix.mjs";
 import {
   buildRolloutPolicy,
   evaluateTenantRollout,
@@ -1064,6 +1075,144 @@ function collect(state) {
   console.log(`collect: evidence at ${evidenceDir(state)}`);
 }
 
+// -----------------------------------------------------------------------------
+// M1a HARNESS GAP 1 (2026-09-24) — THE FAULT-MATRIX STEP THIS LANE NEVER HAD.
+//
+// The `M1a-D2-MECHANISM` QA record `a2` measured the defect and its root cause in one line:
+// *".github/workflows/m1-shipped-boot.yml at the candidate has no fault-matrix step, and the
+// uploaded artifact contains no fault-matrix bundle. The M1a-D2-MECHANISM profile in
+// tests/d1/fault-matrix.json therefore stands at 23 declared, 23 pending, 0 fired."* Its §11.1
+// recommends option (a): *"add a fault-matrix step to m1-shipped-boot.yml that runs the
+// M1a-D2-MECHANISM profile"*, and notes *"the lane exists, it works, and the declaration is
+// already written; what is missing is a step that runs it."* This phase is that step.
+//
+// ★★★ WHAT IT DOES AND DOES NOT CLAIM, because a step that emitted a bundle for every declared
+// case would be the very failure this whole exercise is about. It maps the journey's OWN
+// observations onto the three cases those observations actually decide — the two per-tenant
+// journeys and the control tenant's refusal — and nothing else. The other twenty cases in the
+// profile need INJECTIONS (cancellation, provider failure, daemon restart, the three cleanup
+// paths, the nine hostile cross-tenant attempts, the four legacy-table reads) that this lane does
+// not yet perform, and they remain `pending` with their kind, reason and owner. Declaring them
+// `required` against a driver nobody has run would red the keyed campaign and spend E2B to
+// discover it.
+//
+// ★ IT REFUSES RATHER THAN EMITTING A ROW IT CANNOT SUPPORT. Every fact below comes from
+// `journey.json`; a missing tenant, a missing outcome or a missing rollout resolution FAILS the
+// phase. `evaluateFaultMatrixEvidence` then re-judges the bundle it just wrote, so a row whose
+// observed classification disagrees with the declaration fails the step rather than being filed.
+//
+// ★ KEYED ONLY, and the workflow gates it that way. In keyless mode only the CONTROL tenant is
+// dispatched, so the two enabled journeys have no observation at all — and a phase that quietly
+// emitted fewer rows in one mode would be exactly the silent-drift tripwire the matrix's
+// `pending_case_reported` rule exists to stop, inverted.
+// -----------------------------------------------------------------------------
+
+/** One declared case's row, with the fact that decided it. */
+function matrixRow(caseId, { injectionFired, observedClassification, detail }) {
+  return { case: caseId, injectionFired: injectionFired === true, observedClassification, detail };
+}
+
+function faultMatrix(state) {
+  const profile = "M1a-D2-MECHANISM";
+  if (state.mode !== "keyed") {
+    fail(`the fault-matrix phase runs on the KEYED lane only (mode=${JSON.stringify(state.mode)}); in keyless mode only the control tenant is dispatched, so the enabled tenants' cases have no observation`);
+  }
+  const journeyPath = path.join(evidenceDir(state), "journey.json");
+  if (!existsSync(journeyPath)) fail("no journey.json — the fault-matrix phase must run AFTER dispatch");
+  const journey = JSON.parse(readFileSync(journeyPath, "utf8"));
+
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
+  const declarationViolations = evaluateFaultMatrixDeclaration(matrix);
+  if (declarationViolations.length > 0) {
+    fail(`${FAULT_MATRIX_PATH} is not a valid declaration:\n${formatMatrixViolations(declarationViolations)}`);
+  }
+
+  const outcomeFor = (key, role) => {
+    const o = journey.outcomes?.[key];
+    if (!o) fail(`journey.json carries no outcome for tenant ${key} — the fault-matrix phase cannot file a row it cannot support`);
+    if (o.role !== role) fail(`tenant ${key} has role ${JSON.stringify(o.role)}, expected ${JSON.stringify(role)}`);
+    if (!o.outcome) fail(`tenant ${key} has no classified outcome`);
+    return o;
+  };
+
+  const rows = [];
+  for (const [key, caseId] of [["a", "d2m.tenant.journey.A"], ["b", "d2m.tenant.journey.B"]]) {
+    const o = outcomeFor(key, "enabled");
+    // "Fired" for a journey case is the journey having RUN for this tenant on the distributed
+    // path: a heartbeat run exists and it carries the distributed ids. Without those the tenant
+    // never reached the mechanism under test, and a classification would be about nothing.
+    const injectionFired = Boolean(o.run) && o.run.execution_owner === "distributed"
+      && Boolean(o.run.distributed_job_id) && Boolean(o.run.distributed_attempt_id);
+    // The classification is the CORROBORATION, which is the verifier's verdict — not the run's own
+    // report of itself. `capabilityProven` is deliberately not part of it: `false` is a PASS for
+    // M1a by the triage's own terms.
+    const corroborated = injectionFired && o.verifierExit === 0 && o.verdict?.ok === true;
+    rows.push(matrixRow(caseId, {
+      injectionFired,
+      observedClassification: corroborated ? "distributed_run_corroborated" : "not_corroborated",
+      detail: {
+        organizationId: o.organizationId,
+        executionOwner: o.run?.execution_owner ?? null,
+        distributedJobId: o.run?.distributed_job_id ?? null,
+        verifierExit: o.verifierExit ?? null,
+        verdictOk: o.verdict?.ok ?? null,
+        capabilityProven: o.capabilityProven ?? null,
+        rolloutState: o.rolloutResolution?.rolloutState ?? null,
+      },
+    }));
+  }
+
+  {
+    const o = outcomeFor("c", "control");
+    // ★ WHAT MAKES THIS A REFUSAL AND NOT MERELY AN ABSENCE. `classifyTenantOutcome`
+    // (scripts/lib/m1-shipped-boot.mjs) already requires of a `control` tenant that its run carry
+    // NO execution owner, NO distributed ids, ZERO jobs for the Organization, and — the part that
+    // makes it a refusal — that the control plane itself logged `rolloutState: "off"` for the run.
+    // Its own comment: "A legacy run for any other reason (a dead worker, a stale preflight) is
+    // not a control." So `outcome.pass` is that conjunction, and the rollout state is re-read here
+    // explicitly rather than trusted through it.
+    const refused = o.outcome.pass === true && o.rolloutResolution?.rolloutState === "off";
+    rows.push(matrixRow("d2m.tenant.control_refused", {
+      injectionFired: Boolean(o.run),
+      observedClassification: refused ? "legacy_for_organization_disabled" : "not_refused",
+      detail: {
+        organizationId: o.organizationId,
+        executionOwner: o.run?.execution_owner ?? null,
+        distributedJobId: o.run?.distributed_job_id ?? null,
+        rolloutState: o.rolloutResolution?.rolloutState ?? null,
+        classifiedPass: o.outcome.pass,
+        reasons: o.outcome.reasons ?? [],
+      },
+    }));
+  }
+
+  const bundle = {
+    profile,
+    ticket: "DEP-015",
+    candidate: state.candidate,
+    mode: state.mode,
+    producedBy: "scripts/m1-shipped-boot/journey.mjs fault-matrix",
+    note: "Rows are emitted ONLY for the cases this lane's journey observes. Every other case in this profile is declared `pending` with its kind, reason and owner; see tests/d1/fault-matrix.json.",
+    startedAt: journey.startedAt ?? null,
+    finishedAt: new Date().toISOString(),
+    cases: rows,
+  };
+  writeEvidence(state, "fault-matrix-bundle.json", bundle);
+
+  // The matrix's own verdict, over the bundle just written. A row that disagrees with the
+  // declaration, a duplicate row, an undeclared case, or a row filed for a PENDING case all fail
+  // HERE rather than being uploaded for a reader to discover.
+  const { violations, summary } = evaluateFaultMatrixEvidence(matrix, bundle);
+  writeEvidence(state, "fault-matrix-verdict.json", { summary, violations });
+  console.log(`fault-matrix: profile ${profile} — declared ${summary.declared}, required ${summary.required}, pending ${summary.pending}, fired ${summary.fired}`);
+  if (violations.length > 0) {
+    fail(`the fault-matrix evidence is refused:\n${formatMatrixViolations(violations)}`);
+  }
+  if (summary.fired !== summary.required || summary.required === 0) {
+    fail(`the fault-matrix fired ${summary.fired} of ${summary.required} required case(s) — a profile that asserts nothing is not a campaign`);
+  }
+}
+
 function teardown(state) {
   compose(state, ["down", "-v", "--remove-orphans"], { allowFail: true, timeout: 600_000 });
   for (const dir of [path.join(state.out, "keys")]) {
@@ -1089,6 +1238,7 @@ const PHASES = {
   reconcile: (args) => reconcile(loadState(args.out)),
   "probe-presign": (args) => probePresign(loadState(args.out)),
   dispatch: (args) => dispatch(loadState(args.out)),
+  "fault-matrix": (args) => faultMatrix(loadState(args.out)),
   collect: (args) => collect(loadState(args.out)),
   "leak-scan": (args) => leakScan(loadState(args.out)),
   teardown: (args) => teardown(loadState(args.out)),

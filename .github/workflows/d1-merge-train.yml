@@ -20,6 +20,53 @@ permissions:
 
 on:
   merge_group:
+  # ★ ADDED 2026-09-24 (M1a harness gaps, ruled by the planning session under F2).
+  #
+  # SUPERSEDED TEXT, kept verbatim because this programme does not rewrite history in a
+  # quote — the `push:` block below used to say: *"workflow_dispatch is omitted
+  # deliberately: it requires the workflow on the default branch (main), and this program
+  # keeps everything on the one integration branch."*
+  #
+  # THAT REASON IS DISPROVEN in this repository. `m1-shipped-boot.yml` is NOT on
+  # `origin/main` (`git cat-file -e origin/main:.github/workflows/m1-shipped-boot.yml`
+  # fails) and was nevertheless dispatched twice with `--ref docs/replatform-program`:
+  # runs **`35919374111`** (keyless rehearsal, 30 steps) and **`35920425288`** (the keyed
+  # campaign, 30 steps). Those two run ids are the positive control for this trigger.
+  #
+  # WHAT IS ACTUALLY TRUE is `E6-D001`'s registration-push pattern: a workflow becomes
+  # dispatchable on a ref once a `push` on its OWN file path has registered it. This file
+  # already lists `.github/workflows/d1-merge-train.yml` in its `push.paths`, so the
+  # registration has held for as long as the lane has existed; only the trigger was missing.
+  #
+  # WHY IT MATTERS. Without it the live `m1-spine` and `m1-fault-matrix` jobs — the only
+  # things that fire a `d1.*` campaign case — could not run on a feature branch at all, so a
+  # newly declared case's FIRST execution was the push that merged it. That is "a declared
+  # case that nothing runs", relocated to where it is harder to see.
+  #
+  # `pull_request` is deliberately still NOT here: this lane is not a required check
+  # (`scripts/lib/ci-lanes.mjs`), and a `pull_request` trigger would entangle it with branch
+  # protection. `workflow_dispatch` gives pre-merge proof without touching the gate topology.
+  workflow_dispatch:
+    inputs:
+      lanes:
+        description: Which job(s) to run
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - d1-merge-train
+          - m1-spine
+          - m1-fault-matrix
+      campaign:
+        description: E6F scope for d1-merge-train; committed keeps docker/d1/campaign.env
+        required: false
+        default: committed
+        type: choice
+        options:
+          - committed
+          - bounded
+          - foundation
   push:
     # On `main` this is the merge-train lane (its trigger paths should broaden to
     # the distributed code the live stack exercises when this workflow lands on
@@ -27,9 +74,13 @@ on:
     # the E6-D1-FOUNDATION gate-campaign lane: it fires whenever the D1 campaign
     # machinery changes — which is exactly how the campaign is iterated to green —
     # and on demand by bumping `docker/d1/campaign.env` (which also selects the
-    # E6F scope: AOA_D1_CAMPAIGN=bounded|foundation). workflow_dispatch is omitted
-    # deliberately: it requires the workflow on the default branch (main), and this
-    # program keeps everything on the one integration branch.
+    # E6F scope: AOA_D1_CAMPAIGN=bounded|foundation).
+    #
+    # ★ 2026-09-24: the sentence that stood here — *"workflow_dispatch is omitted
+    # deliberately: it requires the workflow on the default branch (main), and this program
+    # keeps everything on the one integration branch"* — is SUPERSEDED and was false. It is
+    # quoted in full, with the measurement that disproves it, in the `workflow_dispatch:`
+    # block above.
     branches:
       - main
       - docs/replatform-program
@@ -154,6 +205,9 @@ concurrency:
 
 jobs:
   d1-merge-train:
+    # Dispatch selector (see the `workflow_dispatch:` block). On every non-dispatch
+    # event `inputs.lanes` is empty, so the first disjunct runs the job exactly as before.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.lanes == 'all' || inputs.lanes == 'd1-merge-train' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -321,6 +375,7 @@ jobs:
       - name: Run the E6F campaign (live)
         env:
           AOA_D1_LIVE: "1"
+          AOA_D1_CAMPAIGN_INPUT: ${{ (github.event_name == 'workflow_dispatch' && inputs.campaign != 'committed') && inputs.campaign || '' }}
         run: |
           set -euo pipefail
           # Scope selector (committed + path-triggered): `bounded` = the smoke +
@@ -333,6 +388,9 @@ jobs:
             . docker/d1/campaign.env
           fi
           CAMPAIGN="${AOA_D1_CAMPAIGN:-$CAMPAIGN}"
+          # A dispatch may override the committed scope for THIS run only; empty keeps the
+          # committed selector, so the push/merge_group path is byte-identical to before.
+          CAMPAIGN="${AOA_D1_CAMPAIGN_INPUT:-$CAMPAIGN}"
           echo "E6F campaign scope: ${CAMPAIGN}"
           # BOUNDED: the topology network-denial proofs (E6F-05) + one fixture-driven
           # fake-provider job (E6F-03) — the full submit -> placement -> lease ->
@@ -412,6 +470,9 @@ jobs:
   # a passing run, and a passing run whose evidence was discarded cannot be a record.
   # ---------------------------------------------------------------------------
   m1-spine:
+    # Dispatch selector (see the `workflow_dispatch:` block). On every non-dispatch
+    # event `inputs.lanes` is empty, so the first disjunct runs the job exactly as before.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.lanes == 'all' || inputs.lanes == 'm1-spine' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -671,6 +732,9 @@ jobs:
   # went red for the INJECTION reason rather than a bring-up failure.
   # ---------------------------------------------------------------------------
   m1-fault-matrix:
+    # Dispatch selector (see the `workflow_dispatch:` block). On every non-dispatch
+    # event `inputs.lanes` is empty, so the first disjunct runs the job exactly as before.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.lanes == 'all' || inputs.lanes == 'm1-fault-matrix' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

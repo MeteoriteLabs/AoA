@@ -224,14 +224,36 @@ export function buildWorkerHello({ workerId, targetId, deviceGeneration = 1 }) {
 
 /** Run an ESM script inside a compose service (source piped on STDIN). Returns the
  * exit status, raw stdout/stderr, and the parsed `__E6F_RESULT__` line if present. */
-export function dexecModule(service, scriptSource, { timeout = 60_000 } = {}) {
+/**
+ * ★ `secrets` ADDED 2026-09-24, from the self-audit of the M1a harness-gap diff, and it closes a
+ * channel that existed BEFORE that diff as well.
+ *
+ * THE CLASS: a helper that embeds a caller-supplied secret VALUE into a dexec script whose
+ * `stdout`/`stderr` is printed verbatim into the CI job log on failure. The script goes in on
+ * STDIN, so the value is never in argv — but if node cannot parse or run it, node echoes the
+ * offending SOURCE LINE to stderr, and `step()` prints both streams into its assertion message.
+ * The fault-matrix job's log is a public run log. *A channel that leaks only when the system is
+ * broken is still a channel.*
+ *
+ * The scrub is here, at the chokepoint, and not at each message site: a fix applied per-message
+ * would have to be repeated by every future caller and by every future assertion, which is how
+ * this kind of gap regenerates. Callers that embed a value pass it here and nothing downstream can
+ * print it. `maxBuffer` truncation cannot defeat it either — the replacement runs over whatever
+ * text came back.
+ */
+export function dexecModule(service, scriptSource, { timeout = 60_000, secrets = [] } = {}) {
   const res = spawnSync(
     "docker",
     ["compose", "-f", COMPOSE_FILE, "exec", "-T", service, "node", "--input-type=module"],
     { input: scriptSource, encoding: "utf8", timeout, maxBuffer: 16 * 1024 * 1024 },
   );
-  const stdout = res.stdout ?? "";
-  const stderr = res.stderr ?? "";
+  // Longest first, so a value that contains another is not partly revealed by the shorter
+  // replacement running first.
+  const toScrub = [...new Set(secrets.filter((v) => typeof v === "string" && v.length > 0))]
+    .sort((a, b) => b.length - a.length);
+  const scrub = (text) => toScrub.reduce((acc, v) => acc.split(v).join("[REDACTED]"), text ?? "");
+  const stdout = scrub(res.stdout ?? "");
+  const stderr = scrub(res.stderr ?? "");
   let result = null;
   const idx = stdout.indexOf(RESULT_MARKER);
   if (idx >= 0) {
@@ -2727,12 +2749,18 @@ try {
  * COMMAND (`--aoa-fake-usage=suppressed` is the usage positive control), because a worker-driven
  * journey mints the provider id inside the worker and the harness has no id to `/script`.
  */
-export function seedSpineWorkerDrivenJob({ tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs = [], target }) {
+/**
+ * ★ `secretName` / `secretValue` ADDED 2026-09-24 for the E5 clause-5 redaction case, which needs
+ * the redeemed value to be a HIGH-ENTROPY CANARY UNIQUE TO ITS RUN rather than the lane's shared
+ * reference credential. Both default to exactly what this function used before, so every existing
+ * caller is byte-identical; the secret is still written through the server's own `secretService`.
+ */
+export function seedSpineWorkerDrivenJob({ tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs = [], target, secretName = SPINE_PROVIDER_SECRET_NAME, secretValue = "m1-spine-reference-credential" }) {
   const params = {
-    ...tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs,
+    ...tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs, secretValue,
     targetId: SPINE_DEPLOYED_TARGET_ID,
     policyHash: SPINE_DEPLOYED_POLICY_HASH,
-    secretName: SPINE_PROVIDER_SECRET_NAME,
+    secretName,
     profileHash: target.profileHash,
     providerDigest: target.providerDigest,
     generation: target.generation,
@@ -2767,7 +2795,7 @@ try {
   const { secretService } = await import("${CP_DIST}/services/secrets.js");
   const svc = secretService(createDb(process.env.DATABASE_URL));
   if (!(await svc.getByName(P.companyId, P.secretName))) {
-    await svc.create(P.companyId, { name: P.secretName, provider: "local_encrypted", value: "m1-spine-reference-credential" });
+    await svc.create(P.companyId, { name: P.secretName, provider: "local_encrypted", value: P.secretValue });
   }
   await sql\`INSERT INTO issues (id, company_id, title, assignee_agent_id)
     VALUES (\${P.issueId}, \${P.companyId}, \${"m1-spine worker-driven " + P.jobId.slice(0, 8)}, \${P.agentId})\`;
@@ -2806,7 +2834,9 @@ try {
   await sql.end({ timeout: 5 });
 }
 `;
-  return dexecModule("control-plane", script);
+  // Same chokepoint scrub as `seedResolvableProviderSecretHandle`: when a caller overrides
+  // `secretValue` with a per-run canary, that value must not be printable from either stream.
+  return dexecModule("control-plane", script, { secrets: [secretValue] });
 }
 
 /** What the DEPLOYED worker wrote for one attempt: the accepted events WITH the worker id each
@@ -3004,7 +3034,28 @@ report({ status: res.status, body: safeJson(text) });
  * /worker-control/execution-secrets/resolve. The route collapses every refusal to
  * { outcome: "denied", reason } on purpose (it must not be an oracle for which handle exists),
  * so the case reads the REASON: a foreign worker presenting the victim's lease is refused by the
- * FENCE (`stale_fence`), while the owner's identical call gets past it. */
+ * FENCE (`stale_fence`), while the owner's identical call gets past it.
+ *
+ * ★★★ CORRECTED 2026-09-24, and the correction matters beyond this helper. Until now the request
+ * body OMITTED the `audience` literal and carried an `issuedAt` field the schema does not declare.
+ * `executionSecretResolveRequestSchema` pins `audience: z.literal("worker_run")` and is `.strict()`,
+ * so BOTH were fatal: every call ever made through this helper was rejected at
+ * `safeParse` and answered by the route's `denyMalformed()` — before the device proof, before
+ * `guardActiveFence`, before the broker, and therefore WITHOUT any
+ * `security.denied.secret_resolve` audit row. Measured on runs `35933605253` and `35935012713`:
+ * `{"outcome":"denied","reason":"malformed"}` with `durable=[]` for a request that was in every
+ * other respect the owner's own, on its own live lease, against a resolvable handle.
+ *
+ * ★ SO `d1.tenant.cross.secrets`'s RECORDED EXPLANATION OF ITS OWN WEAKNESS IS WRONG. That case
+ * states the route arm carries no control because *"this lane's fixture handle is unresolvable"*.
+ * The fixture is indeed unresolvable, but that is not why owner and attacker were
+ * indistinguishable: the route never reached the fence, the handle or the broker for EITHER of
+ * them. Its classification is unaffected — it classifies on the RLS row read, deliberately — and
+ * its assertion (*"the foreign resolve must at least be REFUSED"*) still holds, because a foreign
+ * fence is still refused. What changes is that the route arm is now exercised past schema
+ * validation for the first time on this lane. The stale sentence is left where it stands, in that
+ * case's own comment, because this file does not rewrite a record in place; it is corrected here,
+ * dated, at the helper the claim was made about. */
 export function resolveExecutionSecretHttp({ session, workerId, jobId, attempt, leaseId, fenceToken, handleId, deviceKey }) {
   const url = `${CONTROL_PLANE_URL}/api/worker-control/execution-secrets/resolve`;
   const params = { url, session, workerId, jobId, attempt, leaseId, fenceToken, handleId, privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer };
@@ -3013,8 +3064,13 @@ ${DEVICE_PROOF_SNIPPET}
 ${embedParams(params)}
 const body = {
   protocolVersion: 1,
+  // MEASURED on runs 35933605253 and 35935012713: without this field, and with the issuedAt that
+  // used to be here, every call this helper has ever made was rejected at
+  // executionSecretResolveRequestSchema.safeParse and answered by the route's denyMalformed().
+  // The schema (server/src/services/execution-secret-resolve.ts) pins audience as a literal and is
+  // .strict(), and it has no issuedAt member. See this function's docstring.
+  audience: "worker_run",
   correlationId: randomUUID(),
-  issuedAt: new Date().toISOString(),
   workerId: P.workerId,
   jobId: P.jobId,
   attempt: P.attempt,
@@ -3348,6 +3404,171 @@ try {
   const rows = await sql\`SELECT id, execution_owner AS "executionOwner" FROM heartbeat_runs
     WHERE id = ANY(\${[P.localRunId, P.distributedRunId]})\`;
   report({ ok: rows.length === 2, rows });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+// -----------------------------------------------------------------------------
+// M1a HARNESS GAPS (2026-09-24) — the two E5 exit-gate floors the `a2` audit found MISSING
+// from every campaign profile: clause 4 (lease-scoped secrets) and clause 5 (redaction).
+//
+// ★ THE MEASUREMENT THAT MADE BOTH REACHABLE ON D1, and it corrects a claim this file's own
+// neighbouring case comment makes. `d1.tenant.cross.secrets` records that *"this lane's fixture
+// handle is unresolvable — the D1 compose configures no broker that could return a value"*, and
+// concludes from it that owner and attacker are indistinguishable so the arm *"carries no
+// control"*. The first half is true of THAT FIXTURE (`seedExecutionSecretHandle` deliberately
+// points `ref_id` at a secret that does not exist). The second half is FALSE OF THE LANE:
+//
+//   * `docker/d1/m1-spine.override.yml:99` gives the control plane a real `AOA_SECRETS_MASTER_KEY`;
+//   * `seedSpineWorkerDrivenJob` (above, :2730) ALREADY writes a Company secret through the
+//     server's own `secretService` and mints a `provider_key` handle against it — so a resolve on
+//     this lane CAN answer `resolved` with a real value, and the deployed worker already redeems
+//     one on every worker-driven journey.
+//
+// So the broker is configured and the value path works; only the FIXTURE was unresolvable. That
+// is what lets clause 4 have a real same-tenant positive control (a live-lease resolve that
+// answers `resolved`, not merely one that fails differently), and it is what puts a real
+// redemption canary into the deployed worker's run for clause 5.
+// -----------------------------------------------------------------------------
+
+/**
+ * Seed a RESOLVABLE provider-key handle for an existing attempt: a Company secret written through
+ * the server's own `secretService` (so the stored material is encrypted exactly as production
+ * writes it) plus a `job_secret_handles` row pointing at it by name.
+ *
+ * `value` is the caller's — the clause-5 case plants a high-entropy canary here and then requires
+ * it to be absent from every retained stream, so the value must be unique per case and must never
+ * be echoed into an evidence bundle.
+ */
+export function seedResolvableProviderSecretHandle({
+  organizationId, companyId, jobId, handleId, secretName, value, envTarget = "ANTHROPIC_API_KEY",
+}) {
+  const params = { organizationId, companyId, jobId, handleId, secretName, value, envTarget };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const { createDb } = await import("@armyofagents/db");
+const { secretService } = await import("${CP_DIST}/services/secrets.js");
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const svc = secretService(createDb(process.env.DATABASE_URL));
+  // Idempotent by NAME, like the worker-driven seed: a re-run of one case must not mint a second
+  // secret with a different value and leave the handle pointing at whichever won.
+  if (!(await svc.getByName(P.companyId, P.secretName))) {
+    await svc.create(P.companyId, { name: P.secretName, provider: "local_encrypted", value: P.value });
+  }
+  await sql\`INSERT INTO job_secret_handles
+    (id, organization_id, job_id, handle, ref_kind, ref_id, materialization, materialization_target,
+     use_policy, destination, status)
+    VALUES (\${P.handleId}, \${P.organizationId}, \${P.jobId}, \${P.handleId}, 'provider_key',
+      \${P.secretName}, 'env', \${P.envTarget}, 'sandbox_local_only', NULL, 'active')\`;
+  const [row] = await sql\`SELECT id FROM job_secret_handles WHERE id = \${P.handleId}\`;
+  // The VALUE is never reported back — only whether the rows exist.
+  report({ ok: Boolean(row), handleId: P.handleId, secretName: P.secretName });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  // The VALUE is scrubbed from both streams at the chokepoint: a postgres or secret-service error
+  // could otherwise echo it, and a syntax error in this script would make node print the embedded
+  // literal to stderr.
+  return dexecModule("control-plane", script, { secrets: [value] });
+}
+
+/**
+ * The DURABLE denial reason for a refused execution-secret resolve.
+ *
+ * ★ WHY THIS EXISTS AND WHY THE ROUTE ALONE IS NOT ENOUGH. The wire reply collapses every refusal
+ * to `{outcome:"denied", reason}` and the route's catch-all answers `malformed` for anything that
+ * threw, deliberately (`worker-control.ts`'s `denyMalformed`: it must not be an oracle for which
+ * worker, lease or handle exists). `admitSandboxLocalResolution`
+ * (`server/src/services/execution-secret-resolve.ts`) DOES pass a broker denial's own reason
+ * through — `stale_fence` / `attempt_terminal` / `target_revoked` — so a fence refusal is
+ * distinguishable on the wire from a post-fence one. The tenant's OWN audit trail is finer still:
+ * `secret-resolve-denial-audit.ts` records the real machine reason as an `activity_log` row with
+ * `action = 'security.denied.secret_resolve'`. Non-disclosure is a property of the protocol reply,
+ * not of the tenant's audit trail — so the case reads both and classifies on the pair.
+ */
+export function querySecretResolveDenials({ organizationId, jobId, handleId }) {
+  const params = { organizationId, jobId, handleId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT action, entity_id AS "entityId", details
+    FROM activity_log
+    WHERE organization_id = \${P.organizationId}
+      AND action LIKE 'security.denied.%'
+    ORDER BY created_at DESC LIMIT 50\`;
+  const mine = rows.filter((r) => r.entityId === P.handleId);
+  report({
+    ok: true,
+    total: rows.length,
+    forHandle: mine.length,
+    // Reasons only — the details blob is sanitized server-side, but this narrows it further to
+    // the two fields the case classifies on rather than carrying a whole audit row into evidence.
+    reasons: mine.map((r) => ({ action: r.action, reason: r.details?.reason ?? null, crossing: r.details?.crossing ?? null })),
+  });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
+/** The scrubber's own replacement marker, mirrored from
+ * `packages/worker-daemon/src/supervisor/redaction.ts`'s `REDACTION_MARKER` rather than re-derived.
+ * The clause-5 case classifies on its PRESENCE: `scrubEventStrings` substitutes it FOR a run
+ * canary, so seeing it proves the canary reached the scrubber and was replaced — not merely that
+ * the run emitted the value nowhere. Mirrored (not imported) because this harness runs from source
+ * against built images and must not take a build-time dependency on the worker package. */
+export const REDACTION_MARKER = "«redacted»";
+
+/** One compose service's container log, from the HOST docker daemon — the LOG half of clause 5's
+ * two streams. Returned as raw text plus its byte length, because a scan over an empty stream is
+ * vacuously clean and the case has to be able to say the stream was non-empty. */
+export function composeServiceLogs(service, { tail = 5000, timeout = 120_000 } = {}) {
+  const res = spawnSync(
+    "docker",
+    ["compose", "-f", COMPOSE_FILE, "logs", "--no-color", "--tail", String(tail), service],
+    { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 },
+  );
+  const text = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+  return { ok: res.status === 0, status: res.status, text, bytes: Buffer.byteLength(text, "utf8") };
+}
+
+/** Every `job_events` row for one job, as ONE text blob plus its byte length — the EVENT half of
+ * clause 5's two streams.
+ *
+ * ★ MEASURED on run 35933605253: there is no `payload` column and no `seq`. The wire event is
+ * stored WHOLE in `event` (jsonb) and the per-attempt ordering column is `sequence`
+ * (packages/db/src/schema/job_events.ts). Scanning the whole event is also the stronger read for
+ * a redaction case: a canary that leaked into an envelope field rather than a payload field is
+ * still a leak. Owner DSN: the case is asking what the tenant's own durable event
+ * stream contains, not whether another tenant can see it (that is `d1.tenant.cross.events`). */
+export function queryJobEventPayloadText({ jobId }) {
+  const params = { jobId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT event_type AS "eventType", event FROM job_events
+    WHERE job_id = \${P.jobId} ORDER BY sequence ASC\`;
+  const text = rows.map((r) => r.eventType + " " + JSON.stringify(r.event ?? null)).join("\\n");
+  report({ ok: true, events: rows.length, text, bytes: Buffer.byteLength(text, "utf8") });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
 } finally {

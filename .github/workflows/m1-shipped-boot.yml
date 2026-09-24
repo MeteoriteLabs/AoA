@@ -157,6 +157,14 @@ jobs:
           grep -q "base64Payload" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it leaves JSON punctuation and escapes between wrapped fragments, so a framed key never forms its marker (missing base64Payload in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
           grep -q "job log is ABSENT" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan reads an ABSENT job log as an empty surface and passes, so a bundle without Actions-log coverage uploads (missing 'job log is ABSENT' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
           grep -q "log-filter] opened" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its filter does not bracket its own capture, so a filter killed mid-stream leaves a hole no later check can see (missing 'log-filter] opened' in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          # ★ DEP-020 (Codex P1, PR #593). The fault-matrix step below is MODE-GATED, not
+          # candidate-gated, and checkout replaces the workspace with the candidate — so a candidate
+          # that predates DEP-020 would reach that step with a driver that has no `fault-matrix`
+          # phase and a declaration whose three cases are still `pending`. It would fail, loudly, but
+          # only AFTER the images are built, the stack is booted and the KEYED journey has already
+          # spent E2B and model tokens. Rejecting it here costs nothing and saves the run.
+          grep -q "\"fault-matrix\": (args)" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates DEP-020: its driver has no fault-matrix phase, so the step below would fail after the keyed journey had already spent (missing the \"fault-matrix\" phase in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "REQUIRED_CREDENTIAL_REFUSAL_KINDS" scripts/lib/campaign-fault-matrix.mjs || { echo "::error::the candidate predates DEP-020: its fault-matrix verdicts do not carry the E5 clause-4 floor (missing REQUIRED_CREDENTIAL_REFUSAL_KINDS in scripts/lib/campaign-fault-matrix.mjs)"; exit 1; }
           grep -q "is TRUNCATED" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not check that every capture that opened also closed, so a truncated log is judged clean (missing 'is TRUNCATED' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
           grep -q "insidePemBlock = !PEM_END.test(payload)" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor returns early on a mask directive, so a PEM masked by its armour publishes its BODY (missing 'insidePemBlock = !PEM_END.test(payload)' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
           grep -q "directiveJoined" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor does not run a mask directive PAYLOAD through the joined window, so a wrapped key masked by its first fragment publishes the rest (missing 'directiveJoined' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
@@ -266,6 +274,36 @@ jobs:
 
       - name: Run the journey
         run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      # M1a HARNESS GAP 1 (2026-09-24) — THE FAULT-MATRIX STEP THIS LANE NEVER HAD.
+      #
+      # The `M1a-D2-MECHANISM` QA record `a2` measured it: *"m1-shipped-boot.yml at the candidate
+      # has no fault-matrix step, and the uploaded artifact contains no fault-matrix bundle. The
+      # M1a-D2-MECHANISM profile in tests/d1/fault-matrix.json therefore stands at 23 declared,
+      # 23 pending, 0 fired."* Its §11.1 recommends exactly this step ("the lane exists, it works,
+      # and the declaration is already written; what is missing is a step that runs it").
+      #
+      # It emits rows ONLY for the three cases this journey's own observations decide — the two
+      # per-tenant journeys and the control tenant's refusal — and REFUSES rather than filing a
+      # row it cannot support. The other twenty declared cases need injections this lane does not
+      # yet perform and stay `pending` with their kind, reason and owner.
+      #
+      # KEYED ONLY: in keyless mode only the control tenant is dispatched, so the two enabled
+      # journeys have no observation at all and the phase fails closed rather than filing fewer
+      # rows in one mode than the other.
+      - name: Run the M1a-D2-MECHANISM fault matrix over the journey's observations (keyed only)
+        if: inputs.mode == 'keyed'
+        run: node scripts/m1-shipped-boot/journey.mjs fault-matrix --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      # The matrix's own verdict, re-run as its own step over the retained bundle — the same shape
+      # the D1 lane's `m1-fault-matrix` job uses, so a reader comparing the two lanes sees one
+      # contract rather than two. The phase above already refuses on a violation; this step is what
+      # a QA owner can point at without reading the driver.
+      - name: The matrix's own verdict over the retained bundle (keyed only)
+        if: inputs.mode == 'keyed'
+        run: >-
+          node scripts/check-campaign-fault-matrix.mjs
+          --evidence "$M1_OUT/evidence/fault-matrix-bundle.json"
 
       - name: Collect the evidence (redacted)
         id: collect
