@@ -3004,6 +3004,39 @@ the invented ownership the manifest exists to prevent.
 
 **Filed:** 2026-09-24 by the class sweep (PR #584), after the second collision of the day.
 
+### Addendum (2026-09-24) — a SECOND hole in the same guard: mnemonic decision ids are never scanned
+
+Recorded by the M1 planning session as custodian, after two `E6-F` id collisions in one day
+(`E6-F026` minted twice, then `E6-F027` minted twice). It is an addendum rather than a new finding
+because it is the same guard being partial in a second way, and a reader who fixes only the half
+above will still be exposed.
+
+**What.** `EPIC_DECISION_HEADING` (`scripts/lib/register-id-uniqueness.mjs`) is
+`/^#{2,4}\s+([A-Z][A-Z0-9]*-D\d+)(?=\s|$)/` — it requires `-D` followed by **digits**. Measured across
+`docs/replatform/epics/*/decisions.md` at this revision: **31 decision ids are scanned and 4 are
+not** — `E3-D-ACC`, `E3-D-AUDIT-SET`, `E3-D-OUTPUT-MAP`, `E3-D-TERMINAL-WINNER`. Every mnemonic id is
+invisible to the uniqueness check, so two branches may mint the same one with nothing objecting.
+
+**Why it compounds the finding above.** `E0-F021` records that the numeric registers are checked
+only when **both** copies survive a merge textually. The mnemonic ids are not checked **at all**,
+in either direction. The weaker case is the one nobody is watching.
+
+★ **The ruling on `E3-F041` sits behind this exact hole.** `E3-D-GEN-INVALIDATION` — the decision
+governing a HIGH production defect — is itself a mnemonic id, so it is unscanned. This was
+volunteered by the agent that minted it, against its own interest, and it is the sharpest statement
+of the problem: the convention that documents the gap is written in the notation the gap covers.
+
+**Not a naming quibble, and it was nearly dismissed as one.** The agent that measured it judged it
+too small to file when looking at it in isolation — correct for that evidence, wrong for the
+evidence that exists, since two collisions had already occurred that day. Its own diagnosis: the
+same measure-the-link-not-the-chain error, with the chain here being the register's history rather
+than a code path.
+
+**Resolving it** (either is acceptable, and neither is authorised here): widen the pattern to accept
+mnemonic ids and scan them for uniqueness alongside the numeric ones; or rule the mnemonic form
+out of the convention and migrate the five. Whichever is chosen needs a positive control that reds
+on a duplicated **mnemonic** id — the control the guard does not have today.
+
 ## E0-F022 - the review protocol's "reviewed revision must be an ancestor of HEAD" test is unsatisfiable once the PR squash-merges
 
 **Status:** open - **Severity:** MEDIUM - **Owner:** `unowned`
