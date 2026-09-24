@@ -46,7 +46,7 @@
     },
     "packages/sandbox-fake-provider": {
       "mode": "pinned",
-      "count": 10
+      "count": 11
     },
     "packages/sandbox-provider-contract": {
       "mode": "pinned",
@@ -58,7 +58,7 @@
     },
     "packages/worker-daemon": {
       "mode": "pinned",
-      "count": 174
+      "count": 175
     },
     "packages/worker-keystore": {
       "mode": "pinned",
@@ -78,7 +78,7 @@
     },
     "server": {
       "mode": "floor",
-      "count": 1585
+      "count": 1586
     },
     "tests": {
       "mode": "pinned",

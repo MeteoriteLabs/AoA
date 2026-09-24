@@ -139,6 +139,13 @@ services:
       AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
       # DEP-017 — the live env-absence probe, armed. DEP-016 acceptance item 6.
       AOA_WORKER_ENV_PROBE: "1"
+      # DEP-023 — the run-output REDACTION PROBE, armed. This is what makes the E5 audit matrix's
+      # clause 5 observable: the reference provider echoes the run's redeemed credential under the
+      # `AOA-RUN-OUTPUT-PROBE` tag, both captures scrub it, and the ONE surviving tagged line
+      # reaches the run's event stream and this container's log carrying the scrubber's own marker.
+      # Default OFF everywhere else — it is a redaction observation surface, not an output
+      # mechanism (WRK-018 1(c), the open F7 ruling).
+      AOA_WORKER_RUN_OUTPUT_PROBE: "1"
       AOA_WORKER_PROVIDER_URL: "http://fake-provider:8082"
     volumes:
       - "d1-spine-worker-state:/worker"

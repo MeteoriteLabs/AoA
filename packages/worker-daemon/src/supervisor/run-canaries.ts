@@ -30,6 +30,18 @@ export interface RunCanaryCoordinator {
   release(leaseId: string): void;
   /** Live count of tracked leases — for a leak-growth assertion. */
   size(): number;
+  /**
+   * DEP-023 — every canary of every lease currently tracked, de-duplicated.
+   *
+   * ★ DELIBERATELY UNSCOPED, and only ever used where scoping is impossible. Its one consumer is
+   * the logger's transport-boundary scrubber (`logging/redacting-destination.ts`), which sees a
+   * SERIALIZED log record carrying no run attribution — so "which run's canaries apply" has no
+   * answer there and the only sound question is "is ANY live canary in these bytes". Scrubbing one
+   * run's canary out of another run's log line over-redacts, which is the safe direction. Nothing
+   * on an EVENT path may use this: events carry attribution and are scrubbed per run, which is the
+   * invariant this module's header exists to protect.
+   */
+  snapshot(): readonly string[];
 }
 
 export function createRunCanaryCoordinator(): RunCanaryCoordinator {
@@ -48,6 +60,15 @@ export function createRunCanaryCoordinator(): RunCanaryCoordinator {
     },
     size(): number {
       return byLease.size;
+    },
+    snapshot(): readonly string[] {
+      const out = new Set<string>();
+      for (const values of byLease.values()) {
+        for (const value of values) {
+          if (typeof value === "string" && value.length > 0) out.add(value);
+        }
+      }
+      return [...out];
     },
   };
 }

@@ -48,6 +48,11 @@ export interface WorkerConfig {
   readonly dispatchEnabled: boolean;
   /** DEP-017 — `AOA_WORKER_ENV_PROBE`: run the live env-absence probe in every sandbox. Default off. */
   readonly envProbe: boolean;
+  /** DEP-023 — `AOA_WORKER_RUN_OUTPUT_PROBE`: forward a run's own `AOA-RUN-OUTPUT-PROBE`-tagged
+   * stdout line (already scrubbed, bounded, one line) to the run's event stream and the worker
+   * log, so the E5 audit matrix's clause 5 can observe the scrubber acting. Default OFF — this is
+   * a redaction OBSERVATION surface, not an output mechanism (WRK-018 1(c), the open F7 ruling). */
+  readonly runOutputProbe: boolean;
   /** `AOA_WORKER_EVENT_OUTBOX_PATH`. `null` when unset — NOT defaulted to a path (a default the
    * container cannot write would turn every inert boot into a failure). The durable event outbox
    * opens here; absence is a dispatch REFUSAL (`no_event_outbox_path`), never a no-op sink. */
@@ -86,6 +91,7 @@ export const ENV = {
   targetScope: "AOA_WORKER_TARGET_SCOPE",
   dispatchEnabled: "AOA_WORKER_DISPATCH_ENABLED",
   envProbe: "AOA_WORKER_ENV_PROBE",
+  runOutputProbe: "AOA_WORKER_RUN_OUTPUT_PROBE",
   eventOutboxPath: "AOA_WORKER_EVENT_OUTBOX_PATH",
   leaseCandidatePath: "AOA_WORKER_LEASE_CANDIDATE_PATH",
   concurrencyBatch: "AOA_WORKER_CONCURRENCY_BATCH",
@@ -198,6 +204,21 @@ function parseEnvProbe(env: Env): boolean {
   throw new Error(`${ENV.envProbe}=${JSON.stringify(raw)} is not recognised; use "1" to enable the DEP-017 env probe or leave it unset.`);
 }
 
+/**
+ * DEP-023 — the same strict grammar as {@link parseEnvProbe} and the dispatch switch, as ONE
+ * function. Exactly `"1"` enables; unset/empty/`"0"` disable; anything else THROWS, so an intended
+ * probe can never be silently off. Written as a shared helper rather than a fourth copy: the three
+ * existing switches are the class, and a fourth hand-copy is where a grammar drifts.
+ */
+function parseStrictSwitch(env: Env, name: string, what: string): boolean {
+  const raw = env[name];
+  if (raw === undefined) return false;
+  const value = raw.trim();
+  if (value === "" || value === "0") return false;
+  if (value === "1") return true;
+  throw new Error(`${name}=${JSON.stringify(raw)} is not recognised; use "1" to enable ${what} or leave it unset.`);
+}
+
 /** WRK-013 — the lease-candidate store's default home: a sibling of the event outbox, so it lands
  * on the same writable volume with no new deployment setting. String surgery, not `node:path`, so
  * a POSIX container path is derived identically on every host platform. */
@@ -213,6 +234,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
   const targetScope = parseEnumEnv(env, ENV.targetScope, TARGET_SCOPES);
   const dispatchEnabled = parseDispatchEnabled(env);
   const envProbe = parseEnvProbe(env);
+  const runOutputProbe = parseStrictSwitch(env, ENV.runOutputProbe, "the DEP-023 run-output redaction probe");
   // Whitespace is ABSENCE: `openEventOutboxStore("")` would open an anonymous DB that vanishes
   // on restart. `|| null` (NOT `?? null`) folds empty/whitespace to null.
   const eventOutboxPath = env[ENV.eventOutboxPath]?.trim() || null;
@@ -266,6 +288,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     targetScope,
     dispatchEnabled,
     envProbe,
+    runOutputProbe,
     eventOutboxPath,
     leaseCandidatePath,
     concurrency,

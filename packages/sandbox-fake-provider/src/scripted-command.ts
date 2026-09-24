@@ -77,6 +77,19 @@ export interface ScriptedCommandPlan {
    * that window, and it is the reason the case can fire at all.
    */
   readonly delayMs: number;
+  /**
+   * DEP-023 — `--aoa-fake-echo-env=<NAME>`: write ONE line to stdout echoing the value of the
+   * sandbox environment variable `NAME`, tagged with {@link RUN_OUTPUT_PROBE_TAG}.
+   *
+   * ★ WHY AN ECHO IS A CONTROL AND NOT A CONVENIENCE. The E5 audit matrix's clause 5 asserts that
+   * a run's redeemed credential is SCRUBBED out of the run's streams and that the scrubber's own
+   * marker appears in its place. Nothing on this lane ever emitted the redeemed value, so a clean
+   * stream was VACUOUS — `scrubEventStrings` had nothing to substitute. This flag is the planted
+   * leak the scrubbers then catch, and it is the reason the case can fire at all.
+   *
+   * `undefined` (the default) means no echo and a byte-identical transcript.
+   */
+  readonly echoEnvName: string | undefined;
 }
 
 /**
@@ -93,7 +106,16 @@ export const DEFAULT_SCRIPTED_COMMAND_PLAN: ScriptedCommandPlan = Object.freeze(
   exitCode: 0,
   timedOut: false,
   delayMs: 0,
+  echoEnvName: undefined,
 });
+
+/**
+ * DEP-023 — the line prefix the worker's run-output redaction probe selects on. MIRRORED from
+ * `RUN_OUTPUT_PROBE_TAG` (`packages/worker-daemon/src/supervisor/run-output-probe.ts`) rather than
+ * imported, for the same reason `ScriptedExecuteInput` mirrors the port: this package takes no
+ * dependency on the worker-daemon. The mirror is pinned by this package's own test.
+ */
+export const RUN_OUTPUT_PROBE_TAG = "AOA-RUN-OUTPUT-PROBE";
 
 function parseFlagValue(flag: string, raw: string | undefined): string {
   if (raw === undefined || raw === "") {
@@ -111,6 +133,7 @@ function parseFlagValue(flag: string, raw: string | undefined): string {
  *   `--aoa-fake-exit=<non-negative safe integer>`
  *   `--aoa-fake-timeout`            (no value; the exhausted-budget verdict)
  *   `--aoa-fake-delay=<0..SCRIPTED_COMMAND_MAX_DELAY_MS>`  (the in-flight window)
+ *   `--aoa-fake-echo-env=<ENV_NAME>`   (DEP-023 — the planted leak clause 5 scrubs)
  *
  * Every other `--aoa-fake-*` argument throws, as does a repeated flag (a repeat means two
  * callers disagree about the script and the last one would silently win).
@@ -120,6 +143,7 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
   let exitCode: number | undefined;
   let timedOut: boolean | undefined;
   let delayMs: number | undefined;
+  let echoEnvName: string | undefined;
 
   for (const arg of args) {
     if (!arg.startsWith(SCRIPT_FLAG_PREFIX)) continue;
@@ -168,6 +192,18 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
         delayMs = parsed;
         break;
       }
+      case `${SCRIPT_FLAG_PREFIX}echo-env`: {
+        if (echoEnvName !== undefined) throw new ScriptedCommandError(`${flag} appears more than once`);
+        const value = parseFlagValue(flag, rawValue);
+        // A POSIX-ish env NAME only. A permissive value here would let a job envelope write
+        // arbitrary bytes onto the run's stdout under the probe tag, which is the one thing this
+        // flag must not become.
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+          throw new ScriptedCommandError(`${flag} must name an environment variable, got ${JSON.stringify(value)}`);
+        }
+        echoEnvName = value;
+        break;
+      }
       default:
         throw new ScriptedCommandError(`unrecognised scripting flag ${JSON.stringify(flag)}`);
     }
@@ -178,6 +214,7 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
     exitCode: exitCode ?? DEFAULT_SCRIPTED_COMMAND_PLAN.exitCode,
     timedOut: timedOut ?? DEFAULT_SCRIPTED_COMMAND_PLAN.timedOut,
     delayMs: delayMs ?? DEFAULT_SCRIPTED_COMMAND_PLAN.delayMs,
+    echoEnvName,
   };
 }
 
@@ -374,6 +411,35 @@ function finishScriptedCommand(
   stderrRef: string,
 ): ScriptedExecuteResult {
   const onStdout = input.onStdout;
+  // DEP-023 — the echo is validated OUTSIDE the channel guard, deliberately (Codex P2, PR #602).
+  // Inside it, a caller that supplies no `onStdout` would skip the lookup AND the refusal, and the
+  // provider would return a success for a plant that never happened — a silently vacuous control,
+  // which is exactly what every other scripting flag on this module fails closed to prevent. Two
+  // refusals, in the order a reader needs them:
+  if (plan.echoEnvName !== undefined) {
+    // (a) NO CHANNEL, NO ECHO. The stdout channel is the echo's only delivery; asking for an echo
+    // a caller cannot receive is a scripting error, not a no-op.
+    if (onStdout === undefined) {
+      throw new ScriptedCommandError(
+        `${SCRIPT_FLAG_PREFIX}echo-env=${plan.echoEnvName} needs the stdout stream channel; ` +
+          "this provider will not accept an echo request it has nowhere to deliver",
+      );
+    }
+    // (b) NO VALUE, NO ECHO. A named variable that is not in the sandbox env means the plant did
+    // not happen, and a silently-skipped echo would make the clause-5 case pass over a stream that
+    // never carried the value.
+    const value = input.env[plan.echoEnvName];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new ScriptedCommandError(
+        `${SCRIPT_FLAG_PREFIX}echo-env=${plan.echoEnvName} names an environment variable the sandbox does not carry; ` +
+          "this provider will not report an echo it did not perform",
+      );
+    }
+    // FIRST, never last: `parseClaudeStreamJsonUsage` reads the FINAL non-empty line and nothing
+    // else, so an echo written last would displace the result line and suppress the run's usage.
+    onStdout(`${RUN_OUTPUT_PROBE_TAG} ${plan.echoEnvName}=${value}
+`);
+  }
   if (onStdout !== undefined) {
     for (const chunk of buildScriptedStdoutChunks(plan, options.usage)) onStdout(chunk);
   }

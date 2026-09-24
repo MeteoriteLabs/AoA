@@ -101,8 +101,10 @@ import {
   composeServiceLogs,
   queryJobEventPayloadText,
   seedSpineWorkerDrivenJob,
+  queryOrganizationEventText,
   awaitSpineWorkerDrivenTerminal,
   REDACTION_MARKER,
+  RUN_OUTPUT_PROBE_TAG,
   queryDeployedWorker,
   SPINE_DEPLOYED_TARGET_ID,
   // DEP-021 — the two cases DEP-020 routed away, built keylessly here.
@@ -1193,47 +1195,63 @@ test("fault-matrix: redemption on a DIFFERENT lease is refused — with an own-l
 // ★ NOTHING SECRET REACHES THE BUNDLE. Only booleans and byte counts are recorded — never the
 // canary, never the twin, never a stream excerpt.
 
-test("fault-matrix: THE CLAUSE-5 BLOCKER, measured live — this lane emits no redeemed credential, so the scrubber has nothing to substitute", { skip: SKIP }, () => {
-  // ★★★ THIS TEST IS NOT THE CLAUSE-5 CASE. It is the live PROOF of that case's `pendingReason`,
-  // and it exists because this programme's worst failure class is a `pending` reason that is false
-  // of the lane it excuses — the exact defect the `M1-D1-SPINE` `a2` record graded `SPINE-MATRIX-3`.
-  // It therefore `record()`s NOTHING: `d1.redaction.planted_canary_scrubbed` is declared `pending`,
-  // and a bundle that reported evidence for a pending case is REFUSED by design.
+test("fault-matrix: a planted credential canary is SCRUBBED from both streams, and the scrubber's own marker is observed there", { skip: SKIP }, () => {
+  // ★★★ WHAT CHANGED, and why this is no longer a `pending` declaration's blocker proof.
   //
-  // WHAT WAS ATTEMPTED, over three live campaigns on this branch:
-  //   35933605253  the case as first written; fell over earlier (a wrong `job_events` column).
-  //   35936498467  fixed. The unregistered TWIN carried through the workload args appeared on
-  //                NEITHER stream.
-  //   35938378052  twin replaced by the scrubber's own `REDACTION_MARKER`. The MARKER appeared on
-  //                neither stream either.
+  // Until DEP-023 this position held a test called "THE CLAUSE-5 BLOCKER, measured live", which
+  // recorded NOTHING and asserted the opposite of this case: that neither the canary nor the
+  // marker ever appeared. That was TRUE and its measurement stands — three campaigns (35933605253,
+  // 35936498467, 35938378052) and DEP-021's link-by-link read established that nothing on this
+  // lane emitted the redeemed value, so `scrubEventStrings` had nothing to substitute and a clean
+  // stream was VACUOUS. The blocker was one layer deeper than an echo flag: the tail's only
+  // consumer was `createUsageObserver`, which returns four integers and never populated
+  // `obs.logs`, because the log that would have carried it was DROPPED by ruling F2 (E4-F019).
   //
-  // WHAT THAT MEASURES — a fact about the lane, not about redaction: the canary is absent because
-  // **nothing on this lane ever emits the redeemed value**, so `scrubEventStrings` has nothing to
-  // substitute and its marker never appears. A clean stream here is therefore VACUOUS — the very
-  // thing clause 5's control exists to exclude — and reporting it as a scrub would be the failure
-  // this whole exercise is about.
+  // DEP-023 restores the SAFE half of that surface, so the case can fire:
+  //   - `--aoa-fake-echo-env=<NAME>` on the reference provider plants the leak (the redeemed value
+  //     is echoed on ONE tagged stdout line);
+  //   - the adapter-manager's `createRunOutputCapture` scrubs it before it crosses the wire, and
+  //     the daemon's own capture scrubs it again on arrival, both FAIL-CLOSED;
+  //   - `AOA_WORKER_RUN_OUTPUT_PROBE=1` (this lane's override only) forwards that ONE bounded,
+  //     already-scrubbed tagged line to BOTH declared streams — as a `log` EVENT (scrubbed a third
+  //     time by `EventSequencer.#emit`, over the whole envelope, below every key) and as ONE worker
+  //     log line (scrubbed at the pino DESTINATION, below the `msg`/`time`/`level` the sink adds,
+  //     which is what keeps the `E4-F019` collision class out of this surface).
   //
-  // WHY: the reference provider EXECUTES a deterministic scripted transcript
-  // (`packages/sandbox-fake-provider/src/scripted-command.ts`) that is a pure function of
-  // `(args, usage)`. It never reads the sandbox env, and an argument outside the `--aoa-fake-`
-  // namespace is passed over without comment — which is also why the twin vanished silently. On the
-  // KEYED lane the echo exists BY DESIGN: `DEP-017`'s env probe performs a *"planted execute, so any
-  // echo of them is scrubbed"* (`packages/worker-daemon/src/supervisor/env-probe.ts`), and the
-  // mechanism record's `plantedControl.red: true` is that echo being caught.
+  // ★ F10 — MULTI-TENANT, and the shape of it was MEASURED rather than assumed. Run 35996740740
+  // ran this case over BOTH enabled tenants and tenant B's attempt stayed `pending` forever with no
+  // events: the DEPLOYED worker's execution target is ORGANIZATION-DEDICATED to tenant A
+  // (docker/d1/m1-spine-worker.profile.json, `organizationId` …000a), which is exactly the
+  // isolation `queryForeignPlacementOnDeployedTarget` asserts elsewhere in this same matrix. So a
+  // per-tenant EXECUTION arm is impossible on this lane BY CONSTRUCTION, and a case that kept it
+  // would be permanently red for a reason that says nothing about redaction. The cross-tenant arm
+  // is therefore the one this lane can actually make: the OTHER tenant's whole event stream must
+  // not carry the planted canary, asserted over a NON-EMPTY stream, beside the same-tenant
+  // positive control (tenant A's own stream carrying the scrubber's marker). The dedication itself
+  // is asserted here rather than trusted, so the narrowing cannot silently stop being true.
   //
-  // SO IT IS UNBUILT HERE, NOT UNAVAILABLE — stated that way deliberately, because "unavailable" is
-  // what the two wrongly-excused spine cases claimed. It needs ONE `--aoa-fake-echo-env=<NAME>`
-  // scripting flag on the reference provider, a provider-package change with its own typecheck and
-  // build. Filed in the declaration's `pendingReason`, not smuggled in here.
-  const [A] = M1_SPINE_TENANTS.enabled;
+  // ★ NOTHING SECRET REACHES THE BUNDLE. Only booleans and byte counts are recorded — never a
+  // canary, never a stream excerpt.
   const deployed = step(queryDeployedWorker({}), "deployed worker");
   assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
-  assert.ok(deployed.workerId, "the blocker probe needs the DEPLOYED worker, which is what redeems");
+  assert.ok(deployed.workerId, "the clause-5 case needs the DEPLOYED worker, which is what redeems");
+
+  const [A, B] = M1_SPINE_TENANTS.enabled;
+  assert.equal(
+    deployed.target.organizationId,
+    A.organizationId,
+    "the deployed worker's target is expected to be dedicated to the FIRST enabled tenant; if that changed, this case's single-executing-tenant narrowing must be revisited rather than quietly kept",
+  );
+
+  // SUPPRESSED: the echo flag is withheld, so nothing plants the leak. Everything else runs, the
+  // case still records, and `injectionFired` is decided by the observation below — which is how
+  // this case appears in the lane's suppressed-injection reds instead of passing vacuously.
+  const workloadArgs = SUPPRESS_INJECTION ? [] : ["--aoa-fake-echo-env=ANTHROPIC_API_KEY"];
 
   const canary = `m1fmcanary${randomBytes(20).toString("hex")}`;
   const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
   const seeded = step(seedSpineWorkerDrivenJob({
-    tenant: A, ...ids, target: deployed.target, workloadArgs: [],
+    tenant: A, ...ids, target: deployed.target, workloadArgs,
     secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`, secretValue: canary,
   }), "canary worker-driven seed");
   assert.equal(seeded.ok, true, `canary job seed: ${truncate(seeded)}`);
@@ -1241,23 +1259,66 @@ test("fault-matrix: THE CLAUSE-5 BLOCKER, measured live — this lane emits no r
   const observation = step(awaitSpineWorkerDrivenTerminal({ jobId: ids.jobId }), "canary run terminal");
   const events = step(queryJobEventPayloadText({ jobId: ids.jobId }), "event stream");
   const logs = composeServiceLogs("worker-b");
+  const foreign = step(queryOrganizationEventText({ organizationId: B.organizationId }), "cross-tenant event stream");
   assert.equal(events.ok, true, `event stream read: ${truncate({ ok: events.ok, error: events.error ?? null })}`);
   assert.equal(logs.ok, true, `worker log read: status=${logs.status}`);
+  assert.equal(foreign.ok, true, `cross-tenant event stream read: ${truncate({ ok: foreign.ok, error: foreign.error ?? null })}`);
 
-  // ★ NON-VACUITY FIRST. A blocker proved over empty streams proves nothing either: the run must
-  // actually have produced events and the worker must actually have logged.
+  // ★ NON-VACUITY FIRST, per stream: a scan over an empty stream is "clean" and proves nothing.
   assert.ok((events.events ?? 0) > 0, `the run produced no events, so nothing below is a measurement: ${truncate(observation)}`);
   assert.ok((logs.bytes ?? 0) > 0, "the worker container log is empty, so nothing below is a measurement");
+  assert.ok((foreign.bytes ?? 0) > 0, "the OTHER tenant's event stream is empty, so its cross-tenant clean arm is vacuous");
 
-  const canaryPresent = events.text.includes(canary) || logs.text.includes(canary);
-  const markerPresent = events.text.includes(REDACTION_MARKER) || logs.text.includes(REDACTION_MARKER);
+  // ★ THE MARKER IS CORRELATED TO THIS RUN'S PROBE LINE, not merely present somewhere on the stream
+  // (Codex P2 on PR #602, and the finding was right). `composeServiceLogs` returns the WHOLE worker
+  // container log — every run the stack has done — so a bare `includes(REDACTION_MARKER)` would let
+  // an unrelated earlier scrub satisfy the log arm while THIS run's probe line never arrived. The
+  // arm therefore requires ONE LINE carrying BOTH the probe tag and the marker, which only this
+  // surface produces. The event stream is already per-job, but it is checked the same way so the
+  // two arms cannot drift apart.
+  const markedProbeLine = (text) =>
+    text.split(/\r?\n/).some((line) => line.includes(RUN_OUTPUT_PROBE_TAG) && line.includes(REDACTION_MARKER));
+  const markerOnEvents = markedProbeLine(events.text);
+  const markerOnLogs = markedProbeLine(logs.text);
+  const ownEventsClean = !events.text.includes(canary);
+  const logsClean = !logs.text.includes(canary);
+  const crossTenantClean = !foreign.text.includes(canary);
+  const redactedOnAllStreams = ownEventsClean && logsClean && crossTenantClean;
 
-  // Asserted in BOTH directions so the declaration cannot go stale unnoticed: if the canary or the
-  // marker EVER appears, this lane does emit the value / the scrubber is acting, the clause-5 case
-  // becomes buildable here, and THIS TEST REDS — which is how the `pending` declaration gets
-  // revisited instead of quietly outliving its reason.
-  assert.equal(canaryPresent, false, "the redeemed value APPEARED on a stream: this lane now emits it, so d1.redaction.planted_canary_scrubbed is buildable here and its pending declaration is stale");
-  assert.equal(markerPresent, false, `the scrubber's marker APPEARED: it is acting on this lane after all, so d1.redaction.planted_canary_scrubbed's pendingReason is stale. events=${events.events} logBytes=${logs.bytes}`);
+  // ★ WHAT DECIDES "FIRED". The marker is the scrubber's OWN substitution, so its presence means
+  // the planted value reached a scrubber and was replaced — i.e. the plant happened. A clean
+  // stream cannot decide it (that is the vacuity this case exists to exclude), and the harness
+  // asserting its own intent would not be an observation at all.
+  const injectionFired = markerOnEvents && markerOnLogs;
+  const observedClassification = injectionFired && redactedOnAllStreams
+    ? "canary_scrubbed_while_unseeded_twin_leaks"
+    : injectionFired
+      ? "canary_leaked_on_a_stream"
+      : "no_scrubber_marker_observed";
+
+  record("d1.redaction.planted_canary_scrubbed", {
+    injectionFired,
+    observedClassification,
+    redactedOnAllStreams,
+    scrubberMarkerObservedOnStream: { events: markerOnEvents, logs: markerOnLogs },
+    streamBytesObserved: { events: events.bytes ?? 0, logs: logs.bytes ?? 0 },
+    detail: {
+      executingTenant: A.key,
+      crossTenant: { tenant: B.key, events: foreign.events ?? 0, bytes: foreign.bytes ?? 0, canaryAbsent: crossTenantClean },
+      events: events.events ?? 0,
+      ownEventsClean,
+      logsClean,
+      attemptStatus: observation.attemptStatus ?? null,
+      suppressed: SUPPRESS_INJECTION,
+    },
+  });
+
+  if (SUPPRESS_INJECTION) return;
+  assert.equal(ownEventsClean, true, "the planted canary survived onto its own tenant's event stream");
+  assert.equal(crossTenantClean, true, "the planted canary appeared on the OTHER tenant's event stream");
+  assert.equal(logsClean, true, "the planted canary survived onto the worker's container log");
+  assert.equal(markerOnEvents, true, "the scrubber's marker was not observed on the event stream");
+  assert.equal(markerOnLogs, true, `the scrubber's marker was not observed on the worker log (bytes=${logs.bytes})`);
 });
 
 test("fault-matrix: cancelling an UNLEASED attempt cancels it directly", { skip: SKIP }, () => {

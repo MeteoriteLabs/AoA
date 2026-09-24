@@ -19,6 +19,7 @@ import { MIN_PROTOCOL_VERSION, PROTOCOL_VERSION } from "@armyofagents/worker-pro
 import { loadWorkerConfig, WORKER_VERSION, type WorkerConfig } from "../config/config.js";
 import type { Env } from "../config/env.js";
 import { createWorkerLogger, type Logger } from "../logging/logger.js";
+import { createRunCanaryCoordinator } from "../supervisor/run-canaries.js";
 import { createMetrics, type Metrics } from "../metrics/metrics.js";
 import { startHealthServer, type HealthServerHandle } from "../health/health-server.js";
 import type { HostStateRecord } from "../control/host-state.js";
@@ -223,7 +224,15 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
   const makeMetrics = deps.createMetricsFn ?? createMetrics;
   const startHealth = deps.startHealth ?? startHealthServer;
 
-  const logger = makeLogger({ filePath: deps.logFilePath });
+  // DEP-023 — the per-lease canary coordinator is created HERE, before the logger, because the
+  // logger's transport-boundary scrubber reads it live and the dispatch runtime that seeds it is
+  // composed much later. One coordinator, two readers; `snapshot()` is empty until a run redeems,
+  // and an empty canary set leaves every log byte exactly as it was.
+  const canaryCoordinator = createRunCanaryCoordinator();
+  const logger = makeLogger({
+    filePath: deps.logFilePath,
+    redactionCanaries: () => canaryCoordinator.snapshot(),
+  });
 
   // Fail-closed on invalid config: exit non-zero BEFORE any socket is opened
   // (no health server, no signal handlers).
@@ -577,6 +586,12 @@ export async function bootstrapWorkerDaemon(deps: BootstrapDeps): Promise<Bootst
           metrics,
           // DEP-017 — the live env-absence probe (default off; the shipped-boot overlay sets it).
           envProbe: config.envProbe,
+          // DEP-023 — the bounded run-output redaction probe (default off; the D1 fault-matrix
+          // overlay sets it), and the SAME canary coordinator the logger's transport scrubber
+          // reads, so a run's redeemed values are scrubbed out of the serialized log record below
+          // every key the pino sink adds (E4-F019 closure route 2).
+          runOutputProbe: config.runOutputProbe,
+          canaryCoordinator,
         });
         runtime = composed;
         // Wave-4 — seed the heartbeat, and start the poll loop ONLY after the first SUCCESSFUL beat.

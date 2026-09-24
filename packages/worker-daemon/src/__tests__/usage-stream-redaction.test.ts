@@ -14,7 +14,7 @@ import {
   scrubLogRecord,
 } from "../supervisor/run-output.js";
 import { createSupervisor, type RunObservation, type SupervisorDeps } from "../supervisor/supervisor.js";
-import { PARSED_USAGE_LOG_MESSAGE, createUsageObserver } from "../supervisor/usage-observer.js";
+import { createUsageObserver } from "../supervisor/usage-observer.js";
 import { createFakeSandboxProvider } from "./support/fake-provider.js";
 import { compatibleOffer } from "./support/poll-fixtures.js";
 import { collectingSink, makeHandoff, SUPERVISOR_IDENTITY } from "./support/supervisor-fixtures.js";
@@ -434,6 +434,14 @@ describe("WRK-018 — the logger-key hazard the dropped line exposed (E4-F019, p
     // E4-F019: `msg`/`time`/`level` are added by the sink AFTER `scrubLogRecord` has run, so a
     // canary equal to one of them - or a digit string inside the epoch `time` - reaches the line
     // on a surface no caller can reach. This case exists so that property is measured, not argued.
+    //
+    // ★ STILL TRUE, AND STILL THE RIGHT ASSERTION, after DEP-023 closed the finding. The sink's
+    // behaviour is unchanged: what changed is that the PRODUCTION logger is now built with a
+    // `redactionCanaries` source, so `createRedactingDestination`
+    // (`packages/worker-daemon/src/logging/redacting-destination.ts`) scrubs the serialized record
+    // BELOW these keys. This logger is deliberately built WITHOUT that source, so it keeps
+    // measuring the raw sink - which is what makes it the positive control for the closure rather
+    // than a test that would have to be deleted by it.
     const lines: string[] = [];
     const logger = createWorkerLogger({ destination: { write: (chunk: string) => void lines.push(chunk) } });
     logger.info({ leaseId: "lease-1" }, "probe");
