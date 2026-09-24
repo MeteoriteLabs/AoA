@@ -6,7 +6,15 @@
 **Implementer:** Claude Opus 5 (M1 build agent)
 **Start SHA:** `3966a01f9f` (`origin/docs/replatform-program`)
 **PR:** #603 (base `docs/replatform-program`)
-**Reviewed revision:** `FINALSHA`
+**Reviewed revision:** `c0ffdb9fa25a7a9f2f413045f14c89eec8551d39`
+
+> **On the revisions, stated precisely.** `c0ffdb9fa` is the revision the FINAL live lane evidence in
+> §7/§9 was produced on (run `36027175548`, both `Bring up the D1 stack` and `Run the E6F campaign
+> (live)` green, 47/47 + 9/9). The only commit after it is the one that writes THIS paragraph and the
+> `36027175548` rows into this record — documentation only, touching no workflow, no Dockerfile, no
+> compose file and no test. Saying the evidence rests on a code-bearing later commit would be exactly
+> the records-disagreeing-with-code defect this programme keeps paying for, and saying it rests on a
+> docs-only delta when it did not would be the same defect mirrored.
 
 > `Status` is `gate_review` and may be set to `complete` only by a DISTINCT reviewer, never by this
 > author.
@@ -176,7 +184,14 @@ two builds' request handling rather than their versions.
 | run | head | image | *Bring up the D1 stack* | *Run the E6F campaign (live)* |
 |---|---|---|---|---|
 | `36022608037` | `7b133079aa` | Chainguard-derived, MinIO `RELEASE.2026-09-22T19-25-18Z` | **success** | **failure** — E6F-05, E6F-14 |
-| **`36025567413`** | `bb2835a98d` | source-built, MinIO `RELEASE.2025-09-07T16-13-09Z` | **success** | **success** |
+| `36025567413` | `bb2835a98d` | source-built amd64, MinIO `RELEASE.2025-09-07T16-13-09Z` | **success** | **success** |
+| **`36027175548`** | **`c0ffdb9fa2`** | **the pinned multi-arch INDEX, same release** | **success** | **success** |
+
+`36027175548` is the run on the FINAL pin: `36025567413` proved the version hypothesis on the
+amd64-only cut, and the arm64 half (a Codex finding, §9.2) then changed the digest. A green on a
+digest that is no longer the one the compose file resolves would have been evidence for a
+configuration that does not exist, so the lane was re-dispatched rather than the earlier run
+re-labelled.
 
 ★ **The first run is kept in this record on purpose.** It is the one that satisfies the brief's
 literal acceptance, and it is also the one that falsified "any MinIO will do" — a cycle that KILLS a
@@ -212,9 +227,9 @@ reproduce the very defect it exists to fix. Checked; it does not.
 
 ## 9. Evidence
 
-**Acceptance — run `36025567413`, job `d1-merge-train`, conclusion `success`** (head
-`bb2835a98d27d32f8fe60db338625e4e189196c1`). Cited by job and step, not by run conclusion alone,
-because `E6-F023` records that a run conclusion can be blind to its jobs:
+**Acceptance — run `36027175548`, job `d1-merge-train`, conclusion `success`** (head
+`c0ffdb9fa25a7a9f2f413045f14c89eec8551d39`, the pinned multi-arch index). Cited by job and step, not
+by run conclusion alone, because `E6-F023` records that a run conclusion can be blind to its jobs:
 
 | step | conclusion |
 |---|---|
@@ -226,8 +241,8 @@ because `E6-F023` records that a run conclusion can be blind to its jobs:
 | Tear down the D1 stack | success |
 
 **Executed counts, non-zero** (a campaign that ran nothing would report the same green):
-**47 pass / 0 fail / 0 skipped** and **9 pass / 0 fail / 0 skipped**. The two tests that the wrong
-MinIO version broke are individually green:
+**47 pass / 0 fail / 0 skipped** and **9 pass / 0 fail / 0 skipped** — identical on `36027175548` and
+on `36025567413`. The two tests that the wrong MinIO version broke are individually green:
 
 ```
 ✔ E6F-05 … live MinIO: grant(upload) -> PUT -> commit -> grant(download) -> GET round-trip
