@@ -13,9 +13,9 @@ at the tip it reported 22 wired / 12 dormant.
 (a **tree-equivalent** revision: every product subtree hash is identical to the candidate's; the sole
 delta is one added docs file). `M1a-D2-MECHANISM` = run `35920425288`, job `shipped-boot`, at the
 candidate exactly.
-★ **BOTH gate records carry `Result: fail`** — spine `a16`, mechanism `a21` —
+★ **BOTH gate records carry `Result: fail`** — spine `a16`, mechanism `a22` —
 `../qa/2026-09-24-m1-d1-spine-m1a-candidate-7be35ae6b771-a16.md` and
-`../qa/2026-09-24-m1a-d2-mechanism-m1a-candidate-7be35ae6b771-a21.md`.
+`../qa/2026-09-24-m1a-d2-mechanism-m1a-candidate-7be35ae6b771-a22.md`.
 ★★★ **The `M1a-D2-MECHANISM` profile of `tests/d1/fault-matrix.json` declares 23 cases and ALL 23 are
 `evidence: "pending"` at the candidate**, and `.github/workflows/m1-shipped-boot.yml` contains no
 fault-matrix step, so the keyed run fired none of them. Wherever a row below says a clause is
