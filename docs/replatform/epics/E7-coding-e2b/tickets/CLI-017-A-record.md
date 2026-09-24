@@ -196,7 +196,7 @@ the "different test each run" pattern.
 import is involved; a boot break would fail every server suite, and 662 of 663 test files pass. The
 base branch's own `verify (1)` is **success** on the same shard.
 
-**Not fixed here, and FILED with the diagnosis so nobody re-derives it: `E7-F043`** (`findings.md`,
+**Not fixed here, and FILED with the diagnosis so nobody re-derives it: `E7-F045`** (`findings.md`,
 LOW, open, declared `unowned` in `scripts/finding-ownership.json`, carrying both port numbers). It is
 a harness defect in a file no chartered ticket owns; naming `CLI-017` would be the invented
 ownership `check-finding-ownership` exists to prevent. The closure route is written into the entry:

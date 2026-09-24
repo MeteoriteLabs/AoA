@@ -13,7 +13,7 @@ before `M1b`'s campaign**, not optional and not deferred
 **Acceptance rows carried:** **2, 6, 6b, 7, 8** and the **export half of 5**
 **Findings touched:** `E7-F039` (SD-5 arm, outcome (ii)), `E7-F040` (**resolved** — flip + ownership
 key deleted in one commit), `E7-F038` (**stays open**, and this slice does not close it),
-`E7-F043` (**filed `unowned`** — the harness port collision)
+`E7-F045` (**filed `unowned`** — the harness port collision)
 
 ★★★ **A RECORD, NOT A RESULT.** See `CLI-017-A-record.md` §preamble. The aggregate
 `tickets/CLI-017-result.md` is written only after **both** slice records are approved by a distinct
@@ -457,7 +457,7 @@ control, with the non-vacuity check that both files were really attempted. M-B14
 | `packages/adapter-manager/src/server.ts` | the classification computed + logged BEFORE the modelled early return (round 3) |
 | `packages/worker-daemon/src/lease/artifact-export.ts` | `exportFailureReasonCode`, and the `fail("export", …)` site uses it (round 3) |
 | `packages/worker-daemon/src/__tests__/artifact-export-sequencer.test.ts` | the helper arms **and** the call-site behavioural arm that reds M-B14 |
-| `docs/replatform/epics/E7-coding-e2b/findings.md`, `scripts/finding-ownership.json` | `E7-F040` resolved (key deleted in the same commit); `E7-F043` filed `unowned` |
+| `docs/replatform/epics/E7-coding-e2b/findings.md`, `scripts/finding-ownership.json` | `E7-F040` resolved (key deleted in the same commit); `E7-F045` filed `unowned` |
 | `scripts/test-inventory.json` | pins bumped for the new test files |
 | `docs/architecture/distributed-execution-threat-controls.json` | `e2b-provider.ts` citation re-pointed by symbol; census stays **397** |
 
@@ -494,7 +494,7 @@ the "different test each run" pattern.
 import is involved; a boot break would fail every server suite, and 662 of 663 test files pass. The
 base branch's own `verify (1)` is **success** on the same shard.
 
-**Not fixed here, and FILED with the diagnosis so nobody re-derives it: `E7-F043`** (`findings.md`,
+**Not fixed here, and FILED with the diagnosis so nobody re-derives it: `E7-F045`** (`findings.md`,
 LOW, open, declared `unowned` in `scripts/finding-ownership.json`, carrying both port numbers). It is
 a harness defect in a file no chartered ticket owns; naming `CLI-017` would be the invented
 ownership `check-finding-ownership` exists to prevent. The closure route is written into the entry:

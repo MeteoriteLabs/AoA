@@ -4423,7 +4423,7 @@ prevent. Recorded as unowned **on the record** so the next ticket touching
 verified at source, and **filed rather than fixed** by the planning session's standing ruling that
 after the round-5 push anything further on `#576` becomes a named finding rather than another fix.
 
-## E7-F043 — the distributed-execution startup suite probes the REQUESTED port while the server binds the next free one, so a port collision reads as a boot timeout
+## E7-F045 — the distributed-execution startup suite probes the REQUESTED port while the server binds the next free one, so a port collision reads as a boot timeout
 
 **Status:** open · **Owner:** `unowned` · **Severity:** LOW
 
@@ -4478,6 +4478,8 @@ still boots and is still detected — otherwise the fix is unproven against the 
 produced it.
 
 **Blocks gate:** no.
+
+★ *Re-minted from `E7-F043` to `E7-F045` on 2026-09-24 before merge: the original id was computed from a worktree that was two commits behind the base, and `CLI-013` (PR #589) had already taken `E7-F043` and `E7-F044`. `check-register-id-uniqueness` caught the collision in the `policy` job on the merge ref. No record outside this ticket had cited the old id.*
 
 **Filed:** 2026-09-24 by `CLI-017-B`, diagnosed from the captured child output on PR #592 rather
 than retried away, and filed **unowned** on the planning session's ruling that a real harness defect
