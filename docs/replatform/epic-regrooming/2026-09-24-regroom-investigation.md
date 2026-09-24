@@ -214,9 +214,24 @@ frame exists and simply omits the field the clause reads.
 
 | Bucket | Count | How measured |
 |---|---|---|
-| machine-readable `**Status:** \`complete\`` or `\`gate_review\`` | **77** | `grep -E '^\*\*Status:\*\* \`(complete\|gate_review)\`'` |
-| a line-anchored `**Status:**` field, but **prose** (`✅ complete`, `COMPLETE — CI GREEN`, `SHIPPED`, `PARTIAL`) | **46** | `grep -E '^\*\*Status:\*\*'`, fails the pattern above |
-| **no line-anchored `**Status:**` field at all** | **54** | |
+| machine-readable `**Status:** \`complete\`` or `\`gate_review\`` | **77** | command **M1** below |
+| a line-anchored `**Status:**` field, but **prose** (`✅ complete`, `COMPLETE — CI GREEN`, `SHIPPED`, `PARTIAL`) | **46** | has `^**Status:**`, fails **M1** |
+| **no line-anchored `**Status:**` field at all** | **54** | fails both |
+
+The commands, outside the table so that no cell escaping reaches them:
+
+```sh
+# M1 — the machine-readable set (77)
+find docs/replatform/epics -path '*/tickets/*-result.md' \
+  | xargs grep -lE '^\*\*Status:\*\* `(complete|gate_review)`' | wc -l
+```
+
+★ *Corrected 2026-09-24 (Codex P2, second round), reproduced at source: the `|` in that alternation
+was written `\|` to survive a markdown table cell, and in ERE `\|` is a **literal pipe** — the
+displayed command returned **0**, not 77. The counts were always measured with the real command; it
+was the published one that was wrong, which is the worse of the two failures, because a reader
+checking my work would have concluded the whole census was fabricated. Commands now live in a fenced
+block.*
 
 ★ *Corrected 2026-09-24 (Codex P2, PR #601), verified at source. **Superseded text:** "179 …
 **79** … **64** … **36**", with a parenthetical claiming the two-file delta was M1a work that had
@@ -272,9 +287,17 @@ the register now reads `wired`).
 - **own gate never cited:** `DEP-012-unit-a`, `-b1`, `-b2` each say "SHIPPED, **CI pending**", and
   no follow-up run id ever appears.
 - **expiring or transient evidence:** `W7U1-output-probe` and `W10B-egress-enforcement` rest on
-  dispatched runs whose artifacts carry **90-day retention** and measure a live E2B/provider network
-  tier — not re-derivable from code. `BRW-003d-5` says *"End SHA: see the `feat(BRW-003d-5)`
-  commit"* and does not identify it.
+  dispatched runs that measure a live E2B/provider network tier — not re-derivable from code.
+  ★★★ **Their artifacts are NOT gone, and §3.2 said they were.** *Corrected 2026-09-24 (Codex P2,
+  second round), verified at source: both runs started **2026-09-07** (`34087197668`, `34085130892`)
+  — **17 days before this measurement**, against 90-day retention, so both are retrievable until
+  roughly 2026-12-06. And `W10B` states in terms that "this ticket record is **not time-limited**",
+  because its runbook required the verdict to be copied into the record precisely so a keyed lane's
+  result would not live only in a job log (`E7-F025`).* They stay in (c) on the *transient-tier*
+  ground alone — a live provider network tier is not re-derivable whatever the artifact retention —
+  and **the window to retrieve the raw evidence is open now and closes in December**, which makes
+  them a deadline rather than a loss.
+  `BRW-003d-5` says *"End SHA: see the `feat(BRW-003d-5)` commit"* and does not identify it.
 
 ★ Recorded uncertainty: E3's (a) records all rest on **local Windows embedded-PG** runs and defer
 formal authority to Linux CI *without citing a run*. They are checkable (test names and counts are
@@ -370,18 +393,45 @@ because each is cheap only if the one before it landed.
 
 **Job A — make completion an AGGREGATE over a ticket's result files, not a filename match. 1 ticket,
 ~1–2 agent-days.**
-Change `findCompletedTicketIds` so an id counts as complete only when **every** `<ID>*-result.md`
-on disk asserts completion and none disclaims. Reading the body is necessary and, per the correction
-in §2.3, **not sufficient**: `DAT-007-S3-result.md` supplies a valid `complete` token for a parent
-whose own record says `PARTIAL`, so a per-file rule closes nothing.
+Change `findCompletedTicketIds` so an id counts as complete only when the ticket's result files
+**taken together** assert completion. Reading the body is necessary and, per the correction in §2.3,
+**not sufficient**: `DAT-007-S3-result.md` supplies a valid `complete` token for a parent whose own
+record says `PARTIAL`, so a per-file rule closes nothing.
 
-Positive control, and it must be this one: assert the guard goes red for `DAT-007` **while
-`DAT-007-S3-result.md` still carries its honest `complete`**. A control that only exercises a
-missing token would pass against the per-file rule too, and so would not distinguish the fix from
-the thing it replaces.
+★★★ **But "every file must agree" is ALSO wrong, in the opposite direction.** *Corrected 2026-09-24
+(Codex P1, second round), verified at source.* A ticket's ledger is **append-only over time**, so a
+later result routinely completes what an older one recorded as partial — and the older one is
+**frozen** and can never be updated to say so. `MIG-009` is the live case and this document already
+relies on it: `MIG-009-drain-result.md` records `E10-1-drain` as honestly **`unwired`**, and
+`MIG-009-wiring-result.md` (`**Status:** \`complete\``) is what wired it, which is why §1.3 reports
+the register at `wired`. Unanimity would hold `MIG-009` **permanently incomplete** on evidence that
+is correct-as-of-its-date, and it would do so on exactly the tickets that did the most work. I wrote
+the rule one round after citing the counter-example in my own §1.3.
 
-This must land **first**: after Job B, the same false completions would be re-minted through the new
-tokens.
+★ **And supersession cannot be derived from the files**, which is the measurement that settles the
+design: `MIG-009-wiring-result.md` carries **no `Supersedes` field** — that field belongs to the
+QA/handoff templates, not to ticket results. Neither filename order nor mtime is a record of intent.
+**So the aggregate must read the supersession relation from Job B's index**, where a reviewer
+declares which result is current for a ticket and which are historical. That is the second reason
+Job B is an index rather than a backfill: it is the only artefact in the design that can *hold* this
+relation, and Job A is not implementable without it.
+
+★ **Consequence for the ordering in this section:** Job A still lands first as a *guard*, but its
+aggregate can only be made **sound** once the index exists. Land Job A reading a per-ticket rule
+that defaults to *not complete* when the files disagree and no index entry resolves them — the
+fail-closed direction — then let Job B's entries lift the ids that a reviewer has adjudicated.
+
+Positive controls, and it needs **two**, because the rule can now fail in either direction: (i)
+assert the guard goes red for `DAT-007` **while `DAT-007-S3-result.md` still carries its honest
+`complete`** — a control that only exercises a missing token would pass against the per-file rule
+too, and so would not distinguish the fix from the thing it replaces; and (ii) assert `MIG-009`
+**stays green** with `MIG-009-drain-result.md`'s `unwired` on disk and its index entry naming
+`MIG-009-wiring-result.md` as current. Without (ii) the guard trades a false-complete class for a
+false-incomplete one and nobody notices until a milestone cannot exit.
+
+It must land **before any token work**: a backfill landing first would re-mint the same false
+completions through the new tokens. It is nevertheless **not complete without Job B's index** — see
+the ordering note above.
 
 ★ It will red the register on the ids in §2.3. That is the finding, not a regression, and each red
 is a real ownership question someone has to answer. **Budget for the answers, not just the change.**
@@ -404,6 +454,8 @@ ticket id, which Job A's aggregate reads. It has three further advantages over t
 why it is not merely the fallback:
 
 - it is **per ticket**, which is the grain Job A needs and the grain a filename cannot express;
+- it is **the only place supersession can be declared** — ticket results carry no `Supersedes`
+  field, so without it Job A has no sound way to prefer a later result over a frozen earlier one;
 - it **cannot rewrite approved evidence**, so it is available without a gate-owner ruling; and
 - it is one reviewed artefact rather than 88 edits across ten epics, so a distinct reviewer can
   actually read it.
@@ -415,8 +467,17 @@ index cites it**; the index is a machine-readable view of the ledger, never a se
 **Job C — the 12 records in class (c). 1 ticket, ~1 agent-day, and it is a filing job.**
 Do **not** re-measure them. Mark each `unverifiable` with its named cause (§2.2's three causes) and,
 where the claim still matters to a milestone, file the re-measurement as its own ticket against that
-milestone. Two of the twelve (`W7U1-output-probe`, `W10B-egress-enforcement`) rest on 90-day
-artifacts that are already gone; pretending otherwise is the more expensive option.
+milestone.
+
+★★★ **With ONE part that is urgent rather than filing, and I had it backwards.** *Corrected
+2026-09-24 (Codex P2, second round).* **Superseded text:** *"Two of the twelve
+(`W7U1-output-probe`, `W10B-egress-enforcement`) rest on 90-day artifacts that are already gone;
+pretending otherwise is the more expensive option."* Both runs are dated **2026-09-07** and the
+retention window **runs to about 2026-12-06** (§2.2). So the cheap action is the opposite of the one
+I proposed: **pull those two artifacts into the repo now**, while they exist, rather than filing
+them as lost. That is hours, not a ticket, and it expires. ★ Writing off recoverable evidence on an
+unchecked assumption is the same error as claiming evidence that was never taken — and it is the
+one I was least likely to catch, because it only looks conservative.
 
 **Total: 3 tickets, ~4–5 agent-days**, plus the unbudgeted tail of answering Job A's reds. ★ *Was
 "8 tickets, ~5 agent-days" before the Job B rewrite above: six of the eight were the per-epic
@@ -484,3 +545,7 @@ Stated explicitly, because a negative audit is only as good as the set it enumer
     the record, which no current policy contemplates in either direction. `artifact-policy.md`
     forbids rewriting a frozen result; it says nothing about a derived index citing one. I read that
     as permitted, and it is a reading, not a rule I found written down.
+11. **Which of the 124 ids have a supersession relation to declare.** The `MIG-009` case was found
+    by counter-example, not by a sweep. I did not measure how many ticket ledgers contain a later
+    result that completes an earlier partial one, so I cannot size Job B's adjudication load — only
+    say that it is not zero and that Job A is unsound without it.
