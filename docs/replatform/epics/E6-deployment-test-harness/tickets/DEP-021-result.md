@@ -32,7 +32,7 @@ source**, and closes it.
 |---|---|
 | `--aoa-fake-delay` on the reference provider | **DONE** (§1) |
 | The boundary guard's INBOUND arm | **DONE** (§2) |
-| `d1.reconcile.worker_startup_lease_probe` fires | **DONE** (§3), `pending` → `required` |
+| `d1.reconcile.worker_startup_lease_probe` fires | **NOT DONE** — declared `pending`/`structural` on a blocker measured TWICE (§9.2), with the blocker proven live in both directions (§9.4) |
 | `d1.provider.worker_terminal_mapping` fires | **DONE** (§4), `pending` → `required` — and it needed NO new mechanism |
 | `--aoa-fake-echo-env` | **DELIBERATELY NOT ADDED** (§5) — the brief's premise for it is false at `HEAD`, measured at source |
 | ★ `E3-F041` — a HIGH **production** defect, found because the case could not fire | **FILED and RULED** (§5b). Explicitly NOT the cause of this ticket's own failures |
@@ -693,6 +693,7 @@ Per-step conclusions are read from the jobs API and never from the run conclusio
 | 4 | **`35960080927`** | **the slot precondition went GREEN** — `settledAttemptStatus: "succeeded"`, `slotFree: true` — and the injection arm's job was STILL never leased in 150 s, on an IDLE worker that had just finished another job of the same tenant. ★ The only difference between the two jobs is WHEN THEY WERE PLACED: a placement carries the target's `registered_profile_hash` and provider `digest`, the control arm's job was placed before any restart, and the injection arm's used a target captured at the top of the case and TWO restarts stale. `DEP-020` cycle 2 recorded the same family from the other side. The target is now re-read PER SEED, and what was read is recorded so a cycle that still fails is distinguishable without a second run |
 | 5 | **`35962071988`** | **The staleness theory is FALSIFIED, exactly as predicted.** Both recorded `placement` blocks are IDENTICAL — `generation: 1`, same worker, same `profileHash`, same `providerDigest`. A restart with a persisted identity does NOT bump the generation; the `refreshSelfHello` reading holds and the per-seed re-read is correct hygiene but **not** the cure. ARM 1 passed in full for the third time; ARM 2 still never leased |
 | 6 | **`35964102214`** | **THE PROBE, and it is CONCLUSIVE.** `failing: []` — all ELEVEN eligibility conjuncts hold (`attemptPending`, `dispositionSelected`, `modeActive`, `leaseEligible`, `jobQueued`, `availableNow`, `targetEnabled`, `generationMatches`, `profileHashMatches`, `providerConstraintMatches`, `noRejectionCertificate`), with `certificates: []`, `capacity: {cap: null, held: 0}` and `capacityClaimState: "unclaimed"`. **The attempt was FULLY ELIGIBLE and was simply never offered.** The widening is what made that answerable: `workers[0].seenRecently: FALSE`, `lastSeenAt` 06:39:06 — *older than the job's own `availableAt` of 06:39:09* and ~2.5 min stale at probe time. **The worker was not polling.** `worker-b`'s container log names the cause at two boots (06:39:07, 06:42:57): *"already enrolled; skipping control-plane enrollment"* → *"worker session terminal: operator re-enrollment required (fresh enrollment code needed)"* (`enroll_unauthorized`, HTTP 401) → *"session terminal at boot; running idle"* → *"no live session for this device; re-enrol THIS device (its session lapsed past the enrolment code-route boundary — WRK-010 §3.2)"* |
+| 7 | **`35966651671`** | **THE SINGLE-INTERRUPTION REDESIGN — the hypothesis was HALF right, and that half settles it.** Predicted: if right, `seenRecently: true` and the attempt leases. **It leased on poll 1** (`inFlight: {ok: true, polls: 1}`) and **`injectionFired: true` for the first time in seven cycles** — the kill and restart both succeeded and the lease was live. And still **no reconciler arm**, `expiryMovedForward: false`. The worker's log carries two boots: the lane's own (`startup: running startup-reconcile` … `dispatch COMPOSED … leasing through the poll loop`) and the post-kill one — *"already enrolled; skipping control-plane enrollment"* → *"worker session terminal: operator re-enrollment required"* → *"session terminal at boot; running idle"*. **The restarted daemon never reached `composeDispatchRuntime`, and the startup reconciler runs INSIDE it.** |
 
 ★ **Each cycle cost ONE cycle and not three because every case records every conjunct of its
 injection separately.** Cycle 1's retained bundle answered *"which half did not happen"* — the
@@ -715,50 +716,76 @@ abandoned attempt would end (it is re-run first); and that a placement stays val
 (it does not). Each cycle converted one assumption into an assertion, which is why the case now
 fails LOUDLY and specifically rather than timing out.
 
-### 9.2 ★★★ The measured blocker, and what it is NOT
+### 9.2 ★★★ The blocker, measured twice, and the case declared `pending`
 
-**The case's remaining half is blocked, and the blocker is measured rather than inferred.**
+**The case is `pending` / `structural`, and the reason rests on TWO measurements rather than one
+inference** — which is the standard set for this flip rather than a convenience taken when the runs
+ran out.
 
-**What is proven.** The injection arm's attempt satisfied **every** condition the control plane places
-on a lease candidate — all eleven conjuncts, no rejection certificate, no capacity pressure. It was
-never offered because **the deployed worker had no live session and was running idle**: it never beat
-(`seenRecently: false`, `last_seen_at` predating the job's own creation) and therefore never polled.
-The daemon's own log states the mechanism: it skips enrolment because it is already enrolled, its
-session refresh is answered **401** on the enrol route (`enroll_unauthorized`), and it declares the
-session terminal at boot — *"its session lapsed past the enrolment code-route boundary — WRK-010
-§3.2"*. The D1 lane's enrolment ticket is **one-time and already consumed**, so nothing on the lane
-can supply the fresh code the daemon asks for.
+| Measurement | Run | What it establishes |
+|---|---|---|
+| The eligibility probe | `35964102214` | `failing: []` — **all eleven** lease-candidate conjuncts hold, no rejection certificate, no capacity pressure. The attempt was **fully eligible**; `workers[0].seenRecently: false` — the worker was not polling |
+| The single-interruption redesign | `35966651671` | The outstanding untried option, tried. The attempt **leased on poll 1** and the injection **fired** — and still no reconciler arm, and `expires_at` never moved |
 
-**What this is NOT, stated because each would be a convenient misreading.**
+**The cause, in the daemon's own words.** After a kill it boots *"already enrolled; skipping
+control-plane enrollment"* → *"worker session terminal: operator re-enrollment required (fresh
+enrollment code needed)"* (`enroll_unauthorized`, HTTP 401) → *"session terminal at boot; running
+idle"* → *"its session lapsed past the enrolment code-route boundary — WRK-010 §3.2"*.
 
-- **NOT a product defect.** The daemon is doing what `WRK-010 §3.2` documents, and it says so in the
-  log in plain words. A worker whose session lapses past that boundary is *designed* to run idle and
-  wait for an operator. Filing that as a finding would be inflating a documented decision, which is
-  the opposite error to the one this ticket kept making.
-- **NOT `E3-F041`.** The generation matched (`generationMatches: true`); this is a session failure,
-  not a placement one. §5b.1 already refuses that conflation and cycle 6 confirms it independently.
-- **NOT "structural on this lane"**, and this is the important one. The blocker is **my case's
-  TWO-INTERRUPTION DESIGN**: it restarts the worker for the control arm and then kills it for the
-  injection arm, and the lane's worker cannot re-establish a session for the second one. **A
-  single-interruption design is untried and might well fire.** Declaring this case structurally
-  unavailable would therefore be a FALSE excuse of exactly the kind the `M1a` QA owner graded
-  `SPINE-MATRIX-3`, and it is not claimed.
+★ **And that is why the case cannot fire here, precisely.** The startup reconciler runs **inside**
+`composeDispatchRuntime`, and composition is reached only on the branch where a session was
+established. A worker that comes back **without** one never composes dispatch, so it never runs the
+reconciler at all — no arm is logged and no `lease_renew` fires. The lane's enrolment ticket is
+**one-time and already consumed**, so nothing here can supply the fresh code the daemon asks for.
 
-**What is unseparated, and honestly so.** Precisely when the session lapsed relative to the control
-arm's completion — and therefore whether one interruption survives where two do not — is **not
-measured**. It is one cycle away, and this ticket did not spend it.
+### 9.3 The three refusals, each a convenient answer declined
 
-**The control half is proven four times over.** ARM 1 — a graceful restart reporting
-`lease_candidate_store_empty` and adding no fence line, on a run observed in flight — passed in
-cycles 2, 3, 4 and 5. What is unproven is only the kill arm.
+- **NOT a product defect.** The daemon does exactly what `WRK-010 §3.2` documents and says so in
+  plain words. Filing it would inflate a documented decision — the opposite error to the one this
+  ticket kept making.
+- **NOT `E3-F041`.** `generationMatches: true` on the probe, which confirms §5b.1's refusal
+  independently rather than by assertion.
+- **NOT "unbuildable anywhere."** The declaration says unbuildable **ON THIS LANE**, and names what
+  would unblock it: a worker that can re-establish a session after a restart — a renewable or
+  re-issuable enrolment ticket, or a session TTL that outlives a campaign.
 
+**Unseparated, and said so in the declaration itself:** exactly when the session lapses relative to a
+campaign's start is not measured; run `35966651671`'s two boots are ten minutes apart.
+
+### 9.4 The blocker is proven live, in both directions, and records nothing
+
+Flipping the case to `pending` while the driver still recorded a row would red the lane on
+`evidence:pending_case_reported` — *"a pending case that DID produce evidence means the declaration
+is stale, and inheriting the pass would be exactly the silent drift this matrix exists to stop."* So
+the test is rebuilt in the shape `DEP-020` established for clause 5: **it `record()`s nothing** and
+instead asserts the blocker. It parks a real run **in flight** first, so a candidate row genuinely
+exists and the absence of a reconciler arm is a measurement rather than a vacuum, and it **REDS** if
+the killed worker ever re-establishes a session **or** if a startup-reconcile arm ever appears. The
+day this lane can drive the case, this test fails and forces the declaration back open — which is
+`SPINE-MATRIX-3` closed at the point where it is generated.
+
+### 9.5 ★ What is NOT verified, stated rather than left for a reader to assume
+
+**The lane has not been observed green with this declaration.** Cycles 2–7 each failed on this case
+*before* the verdict step ran, so the `m1-fault-matrix` verdict has never been seen passing with
+`d1.provider.worker_terminal_mapping` required and the reconcile case pending. The reasoning that it
+will is stated so it can be checked rather than trusted: the case no longer records a row (so
+`pending_case_reported` cannot fire), `required` drops 32 → 31, and the only newly-required case,
+`worker_terminal_mapping`, **fired and classified exactly as declared on cycle 1**. The next campaign
+on this lane is what confirms it, and this ticket did not spend an eighth cycle to do so.
 
 ---
 
 ## 10. What awaits what, exactly
 
 - **Firing keylessly on `M1-D1-SPINE` as of this ticket:**
-  `d1.reconcile.worker_startup_lease_probe`, `d1.provider.worker_terminal_mapping`.
+  `d1.provider.worker_terminal_mapping` — proven on run `35954159711`, first live attempt,
+  `injectionFired: true` with the declared classification exactly and its positive control passed.
+- **Awaits a LANE-LEVEL enrolment change, NOT a keyed run and NOT a driver change:**
+  `d1.reconcile.worker_startup_lease_probe`. `pending`/`structural` on a blocker measured twice
+  (§9.2) and proven live in both directions (§9.4). What unblocks it: a worker that can
+  re-establish a session after a restart — a renewable or re-issuable enrolment ticket, or a session
+  TTL that outlives a campaign. **Every driver-side option was tried and each is recorded** (§9.1).
 - **Awaits a RULING, not code — `d1.redaction.planted_canary_scrubbed`.** It needs an observable
   channel for scrubbed run output on a D1 stream, which ruling F2 (2026-09-23, `E4-F019`) removed.
   Owner: the planning session, which owns that ruling. **No provider flag unblocks it** (§5).

@@ -2144,173 +2144,105 @@ function parkRunInFlight(tenant, label, { attempts = 75, windowMs = RECONCILE_WI
   };
 }
 
-test("fault-matrix: a worker KILLED mid-run FENCES its own prior lease when it comes back", { skip: SKIP }, () => {
-  const [A] = M1_SPINE_TENANTS.enabled;
-  const deployed = step(queryDeployedWorker({}), "deployed worker");
-  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
-  assert.ok(deployed.workerId, "this case needs the DEPLOYED worker — it is that worker's reconciler under test");
+/** The daemon's own words when it comes back without a session (`WRK-010 §3.2`). ASCII
+ * substrings only, for the same encoding reason as the reconciler arms above. */
+const SESSION_TERMINAL_MARKERS = Object.freeze({
+  message: "worker session terminal: operator re-enrollment required",
+  idle: "session terminal at boot; running idle",
+  reason: "enroll_unauthorized",
+});
 
-  // ── ONE INTERRUPTION, and cycle 6 is why ──────────────────────────────────────────────────
+test("fault-matrix: THE RECONCILE BLOCKER, measured live — a KILLED worker comes back without a session, so its startup reconciler never runs", { skip: SKIP }, () => {
+  // ★★★ THIS TEST IS NOT THE RECONCILE CASE. It is the live PROOF of that case's `pendingReason`,
+  // and it exists for the reason `DEP-020` built the clause-5 blocker the same way: this
+  // programme's worst failure class is a `pending` reason that is false of the lane it excuses —
+  // the defect the `M1-D1-SPINE` `a2` record graded `SPINE-MATRIX-3`. It therefore `record()`s
+  // NOTHING: `d1.reconcile.worker_startup_lease_probe` is declared `pending`, and
+  // `evaluateFaultMatrixEvidence` REFUSES a bundle that reports a row for a pending case.
   //
-  // ★★★ THE GRACEFUL NEGATIVE CONTROL IS NOT DROPPED FOR CONVENIENCE; IT IS BANKED AND MOVED OUT.
-  // It passed IN FULL on FOUR consecutive live cycles — runs `35956091950`, `35957846155`,
-  // `35960080927` and `35962071988`, each recording `inFlight: true`, `reportedStoreEmpty: true`
-  // and (from cycle 4) `addedNoFenceLine: true`. What it proves is settled: a GRACEFUL restart
-  // drains, settles the handoff, prunes the candidate via `trackHandoff`'s `finally` →
-  // `recordCandidate("remove", offer)` (`poll-loop.ts`), and therefore reports
-  // `lease_candidate_store_empty` and adds NO fence line.
+  // WHAT WAS TRIED, over seven live campaigns on this branch:
+  //   35954159711  a GRACEFUL restart — the candidate is PRUNED by the clean drain, correctly.
+  //   35956091950  slot: the abandoned attempt holds the worker; 35957846155 it is RE-RUN.
+  //   35960080927  slot free, and the injection arm's job STILL never leased.
+  //   35962071988  the placement-staleness theory FALSIFIED — identical generations at both seeds.
+  //   35964102214  THE PROBE: `failing: []`, all ELEVEN eligibility conjuncts hold, and
+  //                `workers[0].seenRecently: false` — the attempt was eligible and the worker was
+  //                not polling.
+  //   35966651671  the SINGLE-INTERRUPTION redesign: the attempt WAS leased (poll 1) and the
+  //                injection DID fire — and still no reconciler arm appeared.
   //
-  // It is removed from THIS case because it was the cause of the case's own failure, measured on
-  // cycle 6 (`35964102214`): the eligibility probe returned `failing: []` — the injection arm's
-  // attempt satisfied ALL ELEVEN conjuncts — while `workers[0].seenRecently` was FALSE and
-  // `worker-b`'s log read *"session terminal at boot; running idle — operator re-enrollment
-  // required"*, *"its session lapsed past the enrolment code-route boundary — WRK-010 §3.2"*. The
-  // lane's enrolment ticket is one-time and already consumed, so a worker interrupted TWICE cannot
-  // re-establish a session for the second interruption. One interruption is the hypothesis under
-  // test here.
+  // WHAT THAT MEASURES. On the last run the worker's log carries two boots: the lane's own
+  // (`startup: running startup-reconcile` … `dispatch COMPOSED … leasing through the poll loop`)
+  // and the post-kill one, which reads *"already enrolled; skipping control-plane enrollment"* →
+  // *"worker session terminal: operator re-enrollment required (fresh enrollment code needed)"*
+  // (`enroll_unauthorized`, HTTP 401) → *"session terminal at boot; running idle"* → *"its session
+  // lapsed past the enrolment code-route boundary — WRK-010 §3.2"*.
   //
-  // ★ WHAT THE CASE LOSES BY THAT, STATED RATHER THAN GLOSSED. The graceful arm was a
-  // SAME-MECHANISM negative control: it separated *"the fence line is caused by the daemon DYING
-  // with the lease"* from *"the fence line is caused by a restart having happened"*. Without it the
-  // attribution rests on THREE arms rather than four — absent-before / present-after by COUNT, this
-  // run's lease id in the line, and neither sibling arm of the same three-way branch naming this
-  // lease. That is weaker, and it is weaker in a NAMED way: a reader should know the fourth arm
-  // lives in the four runs above and not in this one.
+  // ★ AND THAT IS WHY THE CASE CANNOT FIRE HERE, precisely: the startup reconciler runs INSIDE
+  // `composeDispatchRuntime`, and composition is only reached on the branch where a session was
+  // established. A worker that comes back WITHOUT one never composes dispatch, so it never runs the
+  // reconciler at all — no arm is logged and no `lease_renew` fires. The lane's enrolment ticket is
+  // ONE-TIME and already consumed, so nothing here can supply the fresh code the daemon asks for.
+  //
+  // ★ IT IS THE LANE, NOT THE PRODUCT. The daemon does exactly what `WRK-010 §3.2` documents and
+  // says so in plain words. This is not filed as a defect, and calling it one would be inflating a
+  // documented decision.
+  const [A] = M1_SPINE_TENANTS.enabled;
+  const deployed = step(queryDeployedWorker({}), "blocker: deployed worker");
+  assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
+
   const logsStart = composeServiceLogs("worker-b");
   const fenceAtStart = countIn(logsStart.text, STARTUP_RECONCILE_ARMS.fenced);
 
-  // THE INJECTION: park a run in flight, then KILL the worker holding its lease.
-  const killed = SUPPRESS_INJECTION ? null : parkRunInFlight(A, "reconcile-kill");
-  const killRuntimeBefore = composeServiceRuntime("worker-b");
-  const hardKilled = SUPPRESS_INJECTION ? { ok: false, status: null } : killComposeService("worker-b", { signal: "KILL" });
-  const started = SUPPRESS_INJECTION || hardKilled.ok !== true ? { ok: false, status: null } : startComposeService("worker-b");
-  const cameBack = SUPPRESS_INJECTION
-    ? { ok: false, last: killRuntimeBefore, polls: 0 }
-    : waitFor(
-      () => composeServiceRuntime("worker-b"),
-      (r) => r.ok === true && r.running === true && r.startedAt !== killRuntimeBefore.startedAt,
-      { attempts: 60, everyMs: 2000 },
-    );
+  // A run parked in flight, so a candidate row EXISTS when the worker dies. Without this the
+  // absence of a reconciler arm would be vacuous — nothing to reconcile.
+  const killed = parkRunInFlight(A, "reconcile-blocker");
+  const runtimeBefore = composeServiceRuntime("worker-b");
+  const hardKilled = killComposeService("worker-b", { signal: "KILL" });
+  const started = hardKilled.ok === true ? startComposeService("worker-b") : { ok: false, status: null };
+  const cameBack = waitFor(
+    () => composeServiceRuntime("worker-b"),
+    (r) => r.ok === true && r.running === true && r.startedAt !== runtimeBefore.startedAt,
+    { attempts: 60, everyMs: 2000 },
+  );
 
-  // The injection FIRED iff the run was in flight, its lease was live, the container was really
-  // KILLED (not asked to stop) and it really came back on a NEW start. Each conjunct is its own
-  // measurement: `hardKilled.ok` alone would be true for a kill of an already-finished run.
-  const injectionFired =
-    !SUPPRESS_INJECTION &&
-    killed !== null &&
-    killed.inFlight.ok === true &&
-    killed.leaseWasLive &&
-    hardKilled.ok === true &&
-    started.ok === true &&
-    cameBack.ok === true;
-
-  // ── The observation ───────────────────────────────────────────────────────────────────────
-  const killLeaseId = killed?.lease?.id ?? null;
-  const fenceSeen = waitFor(
+  // Wait for the post-kill boot to say what it does, either way: the session-terminal marker, OR a
+  // reconciler arm if the blocker has lifted.
+  const settled = waitFor(
     () => composeServiceLogs("worker-b"),
     (l) =>
       l.ok === true &&
-      countIn(l.text, STARTUP_RECONCILE_ARMS.fenced) > fenceAtStart &&
-      l.text.includes(LEASE_CANDIDATE_FENCED_REASON) &&
-      (killLeaseId === null || l.text.includes(killLeaseId)),
-    { attempts: 60, everyMs: 2000 },
+      (l.text.includes(SESSION_TERMINAL_MARKERS.message) ||
+        countIn(l.text, STARTUP_RECONCILE_ARMS.fenced) > fenceAtStart),
+    { attempts: 45, everyMs: 2000 },
   );
-  const logsAfter = fenceSeen.last;
-  const leasesAfter = killed === null
-    ? { leases: [] }
-    : step(queryLeaseExpiries({ jobId: killed.ids.jobId }), "lease expiry after kill");
-  const leaseAfter = (leasesAfter.leases ?? []).find((l) => l.id === killLeaseId) ?? null;
+  const logsAfter = settled.last ?? composeServiceLogs("worker-b");
+  const sessionTerminal = logsAfter?.ok === true && logsAfter.text.includes(SESSION_TERMINAL_MARKERS.message);
+  const ranIdle = logsAfter?.ok === true && logsAfter.text.includes(SESSION_TERMINAL_MARKERS.idle);
+  const reasonSeen = logsAfter?.ok === true && logsAfter.text.includes(SESSION_TERMINAL_MARKERS.reason);
+  const fenceAfter = countIn(logsAfter?.text, STARTUP_RECONCILE_ARMS.fenced);
 
-  const fenceAfterKill = countIn(logsAfter?.text, STARTUP_RECONCILE_ARMS.fenced);
-  const killAddedFence = fenceAfterKill > fenceAtStart;
-  const reasonSeen = logsAfter?.ok === true && logsAfter.text.includes(LEASE_CANDIDATE_FENCED_REASON);
-  const leaseIdSeen = logsAfter?.ok === true && killLeaseId !== null && logsAfter.text.includes(killLeaseId);
-  const prunedArmSeen = logsAfter?.ok === true && logsAfter.text.includes(STARTUP_RECONCILE_ARMS.ended);
-  const unreachableArmSeen = logsAfter?.ok === true && logsAfter.text.includes(STARTUP_RECONCILE_ARMS.unreachable);
+  // ★ NON-VACUITY FIRST, on every conjunct the blocker rests on.
+  assert.equal(killed.inFlight.ok, true, `the run must be IN FLIGHT, or there is no candidate to reconcile and the absence below proves nothing: ${truncate(killed.inFlight.last)}`);
+  assert.equal(killed.leaseWasLive, true, `the lease must be live at kill time: ${truncate(killed.lease)}`);
+  assert.equal(hardKilled.ok, true, `worker-b must be KILLED: exit status ${hardKilled.status}`);
+  assert.equal(started.ok, true, `worker-b must be started again: exit status ${started.status}`);
+  assert.equal(cameBack.ok, true, `worker-b must come back on a NEW container start: ${truncate(cameBack.last)}`);
+  assert.equal(logsAfter?.ok, true, "the worker log must be readable after the kill");
+  assert.ok((logsAfter?.bytes ?? 0) > 0, "the worker log is empty after the kill, so nothing below is a measurement");
 
-  // The probe is exactly ONE `lease_renew`, and `renewLease` extends `leases.expires_at` and
-  // nothing else. Corroboration, not attribution: the pre-kill renewal loop moved the same column.
-  // What it does prove alone is that the probe's `live` arm was reachable.
-  const expiryMovedForward =
-    killed?.lease != null && leaseAfter !== null && Date.parse(leaseAfter.expiresAt) > Date.parse(killed.lease.expiresAt);
-
-  const fencedItsOwnLease =
-    fenceAtStart === 0 && killAddedFence && reasonSeen && leaseIdSeen && !prunedArmSeen && !unreachableArmSeen;
-
-  record("d1.reconcile.worker_startup_lease_probe", {
-    injectionFired,
-    observedClassification: fencedItsOwnLease
-      ? "startup_reconciler_fences_its_own_prior_lease"
-      : `fenceAtStart_${fenceAtStart}_addedFence_${killAddedFence}_reason_${reasonSeen}_leaseId_${leaseIdSeen}_pruned_${prunedArmSeen}_unreachable_${unreachableArmSeen}`,
-    // The attribution baseline: no fence line existed before this kill, across every boot the
-    // retained tail covers.
-    positiveControlPassed: fenceAtStart === 0,
-    detail: {
-      jobId: killed?.ids.jobId ?? null,
-      windowMs: RECONCILE_WINDOW_MS,
-      inFlight: { ok: killed?.inFlight.ok ?? null, polls: killed?.inFlight.polls ?? null },
-      notOfferedBecause: killed?.eligibility?.failing ?? null,
-      eligibility: killed?.eligibility ?? null,
-      placement: killed?.placement ?? null,
-      lease: {
-        id: killLeaseId,
-        statusBefore: killed?.lease?.status ?? null,
-        liveBefore: killed?.lease?.live ?? null,
-        statusAfter: leaseAfter?.status ?? null,
-        liveAfter: leaseAfter?.live ?? null,
-        expiryMovedForward,
-      },
-      kill: {
-        requested: hardKilled.ok,
-        status: hardKilled.status ?? null,
-        startRequested: started.ok,
-        startStatus: started.status ?? null,
-        startedAtChanged: cameBack.ok,
-        polls: cameBack.polls,
-      },
-      log: {
-        okStart: logsStart.ok ?? null,
-        bytesStart: logsStart.bytes ?? null,
-        bytesAfter: logsAfter?.bytes ?? null,
-        fenceCountAtStart: fenceAtStart,
-        fenceCountAfterKill: fenceAfterKill,
-        reasonSeen,
-        leaseIdSeen,
-        prunedArmSeen,
-        unreachableArmSeen,
-        polls: fenceSeen.polls,
-      },
-      gracefulControl:
-        "BANKED, NOT DROPPED. The same-mechanism graceful-restart negative control passed in full on runs 35956091950, 35957846155, 35960088927 and 35962071988 (inFlight true, reportedStoreEmpty true, addedNoFenceLine true from cycle 4). It is out of THIS case because a second worker interruption lapses the session past the WRK-010 section 3.2 code-route boundary and the lane's one-time enrolment ticket is consumed -- measured on run 35964102214, where the eligibility probe returned failing:[] with seenRecently false. Attribution here therefore rests on three arms, not four, and that is a real reduction rather than a presentational one.",
-    },
-  });
-
-  // ★ NON-VACUITY: the log must be readable and non-empty, or every count is a measurement of
-  //   nothing.
-  assert.equal(logsStart.ok, true, `the worker log must be readable: status=${logsStart.status}`);
-  assert.ok((logsStart.bytes ?? 0) > 0, "the worker log is empty, so the counts below are not measurements");
-  assert.equal(fenceAtStart, 0, `a fence line was ALREADY in the worker log before this kill (count ${fenceAtStart}), so its later presence would not be attributable to this case`);
-
-  if (!SUPPRESS_INJECTION) {
-    assert.equal(
-      killed?.inFlight.ok,
-      true,
-      `the run must be IN FLIGHT, else nothing is interrupted. Failing eligibility conjuncts: `
-        + `${JSON.stringify(killed?.eligibility?.failing ?? null)} (an EMPTY list means the attempt was fully eligible and the worker did not poll — `
-        + `check workers[].seenRecently, which is what cycle 6 used to reach WRK-010 §3.2) -- ${truncate(killed?.inFlight.last)}`,
-    );
-    assert.equal(killed?.leaseWasLive, true, `the lease must be live at kill time, else the probe has no live candidate: ${truncate(killed?.lease)}`);
-    assert.equal(hardKilled.ok, true, `worker-b must be KILLED — a graceful stop prunes the candidate, which is why the graceful arm is a control and not the injection: exit status ${hardKilled.status}`);
-    assert.equal(started.ok, true, `worker-b must be started again after the kill: exit status ${started.status}`);
-    assert.equal(cameBack.ok, true, `worker-b must come back on a NEW container start: ${truncate(cameBack.last)}`);
-    assert.ok((logsAfter?.bytes ?? 0) > 0, "the worker log is empty after the kill, so the fence assertion is not a measurement");
-    assert.equal(
-      fencedItsOwnLease,
-      true,
-      `the restarted daemon must FENCE its own prior lease (a NEW fence line — count ${fenceAtStart} -> ${fenceAfterKill} — plus reason ${LEASE_CANDIDATE_FENCED_REASON}, this lease id, and neither sibling arm): `
-        + `addedFence=${killAddedFence} reason=${reasonSeen} leaseId=${leaseIdSeen} pruned=${prunedArmSeen} unreachable=${unreachableArmSeen}`,
-    );
-  }
+  // THE BLOCKER, asserted in BOTH directions so the declaration cannot outlive its reason.
+  assert.equal(
+    sessionTerminal && ranIdle && reasonSeen,
+    true,
+    `the killed worker must come back SESSION-TERMINAL and idle (${SESSION_TERMINAL_MARKERS.reason}); if it now re-establishes a session, this lane can drive the reconcile case and d1.reconcile.worker_startup_lease_probe's pending declaration is STALE: `
+      + `terminal=${sessionTerminal} idle=${ranIdle} reason=${reasonSeen}`,
+  );
+  assert.equal(
+    fenceAfter,
+    fenceAtStart,
+    `a startup-reconcile FENCE arm APPEARED after a kill (count ${fenceAtStart} -> ${fenceAfter}): the reconciler ran, so the blocker has LIFTED and d1.reconcile.worker_startup_lease_probe must be re-declared \`required\` and built`,
+  );
 });
 
 // ═══ 10. the matrix's own verdict ════════════════════════════════════════════
