@@ -115,7 +115,53 @@ test("DEP-014 boots nothing: no adapter-manager service in D1, no provider crede
   const compose = codeOnly(read("docker-compose.d1.yml"));
   assert.ok(!/adapter-manager/.test(compose), "docker-compose.d1.yml must not gain an adapter-manager service here");
   const wf = codeOnly(read(".github/workflows/d1-merge-train.yml"));
-  assert.ok(!/E2B_API_KEY|secrets\./.test(wf), "d1-merge-train must stay keyless");
+  assert.deepEqual(laneSecretRefs(wf), ["GITHUB_TOKEN"], "d1-merge-train must stay keyless");
+});
+
+// The assertion above used to be `!/E2B_API_KEY|secrets\./.test(wf)`, and that was BROADER than
+// this test's own name and comment: it banned every `secrets.` reference, including the run's own
+// automatic `GITHUB_TOKEN`, which is not a provider credential and cannot reach a provider.
+//
+// E6-F021's 2026-09-24 amendment needs exactly that token: the MinIO service is now this
+// organisation's GHCR mirror, a repo-scoped GHCR package is not anonymously pullable, so the three
+// jobs that bring the stack up each `docker login ghcr.io` with it.
+//
+// So the guard is NARROWED TO ITS STATED INTENT rather than dodged — writing `github.token` to slip
+// past the old regex would have kept a check that no longer says what it means. It is narrowed by
+// ALLOWLIST, not by subtraction: every `secrets.X` other than `GITHUB_TOKEN` still reds, so a
+// provider key cannot arrive under a name nobody predicted. The controls below are the proof.
+function laneSecretRefs(src) {
+  const names = new Set();
+  for (const m of src.matchAll(/secrets\.([A-Za-z_][A-Za-z0-9_]*)/g)) names.add(m[1]);
+  // E2B_API_KEY is named explicitly because it is the credential F8 bounds spend with, and it must
+  // red even if it ever reaches the lane by some route other than a `secrets.` expression.
+  if (/E2B_API_KEY/.test(src)) names.add("E2B_API_KEY");
+  return [...names].sort();
+}
+
+test("CONTROL: the keyless assertion still reds for a provider credential, under any name", () => {
+  const real = codeOnly(read(".github/workflows/d1-merge-train.yml"));
+  assert.deepEqual(laneSecretRefs(real), ["GITHUB_TOKEN"], "precondition: the real lane is keyless");
+
+  // Non-vacuity: the real lane really does reference the token, so the allowlist arm is exercised
+  // rather than trivially satisfied by an empty set.
+  assert.match(real, /secrets\.GITHUB_TOKEN/);
+
+  const mutants = {
+    "an E2B key via secrets": real.replace("secrets.GITHUB_TOKEN", "secrets.E2B_API_KEY"),
+    "an E2B key bare, not via secrets": `${real}
+# E2B_API_KEY
+`,
+    "a model key added alongside the GHCR login": `${real}
+          token: \${{ secrets.ANTHROPIC_API_KEY }}
+`,
+    "a plausibly-innocent extra secret": `${real}
+          pw: \${{ secrets.REGISTRY_PASSWORD }}
+`,
+  };
+  for (const [name, mutant] of Object.entries(mutants)) {
+    assert.notDeepEqual(laneSecretRefs(mutant), ["GITHUB_TOKEN"], `mutant "${name}" must NOT pass`);
+  }
 });
 
 // ---------------------------------------------------------------------------
