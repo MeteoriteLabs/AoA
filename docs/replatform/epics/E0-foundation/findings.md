@@ -3003,3 +3003,43 @@ built by finding-driven hardening rather than by a ticket, and naming any shippe
 the invented ownership the manifest exists to prevent.
 
 **Filed:** 2026-09-24 by the class sweep (PR #584), after the second collision of the day.
+
+## E0-F022 - the review protocol's "reviewed revision must be an ancestor of HEAD" test is unsatisfiable once the PR squash-merges
+
+**Status:** open - **Severity:** MEDIUM - **Owner:** `unowned`
+**Filed:** 2026-09-24 by the M1 planning session.
+
+**What.** The step-4 review protocol (`epics/E4-worker-daemon/implementation-plan.md`, the review
+section) requires a record's reviewed 40-hex revision to be **an ancestor of the reviewer's HEAD**.
+This program squash-merges every PR, which **discards the branch commits**. So the moment a record's
+PR merges, its cited revision stops being an ancestor of anything.
+
+Measured at tip `ec91e1f13`: `c3f71519ee` (`CLI-013`), `2aaeb1169` and `6441fa9b63` (`CLI-017-B`)
+are each **NOT** an ancestor of `origin/docs/replatform-program`, though all three were genuine
+ancestors of their PR heads when reviewed.
+
+**Why it matters.** The test is meaningful pre-merge and vacuous post-merge - and post-merge is when
+the record becomes permanent. Worse, it fails in the *safe* direction only by accident: a reader who
+re-runs the ancestry check on a merged record gets a negative answer that says nothing about whether
+the record describes the code. It is an assertion that silently stops asserting at exactly the moment
+it would be relied on.
+
+**The compensating control already in use, unnamed.** The reviewer of `CLI-013` and both `CLI-017`
+slices did the right thing without the protocol asking: it verified **blob identity** of the named
+product files between the cited revision and the tip. That is what makes its disposition sound.
+Re-measured independently: `packages/adapter-manager/src/op-failure-classification.ts` is
+`4e79e482845ce8b2c617db504afd8a6888f40051` at both `2aaeb1169` and the tip.
+
+★ **A caution learned while measuring this.** Comparing paths with `git rev-parse <rev>:<path>` reports
+nothing when the path is absent, and a naive script reads two absent paths as "differs". The planning
+session made exactly that error here and nearly recorded a false accusation against a correct review.
+**Any blob-identity check must first assert both paths EXIST at both revisions** - a comparison of two
+failures is not a comparison.
+
+**Resolving it.** Amend the protocol so a revision citation is validated by:
+- **pre-merge:** ancestry of the PR head, as today; and
+- **post-merge:** **blob identity** of the record's named product files between the cited revision and
+  the tip, with the **squash commit recorded alongside** the pre-merge revision.
+
+A guard could enforce the post-merge half mechanically, and would need a positive control that reds
+when a named file's blob differs, plus one that reds when a named path is absent at either revision.
