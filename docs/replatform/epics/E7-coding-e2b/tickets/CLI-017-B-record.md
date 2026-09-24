@@ -306,7 +306,8 @@ messages are vocabulary the wire is free to change.
 | **M-B12** | Drop the classifier's refusal-cause derivation | **RED** — `4 failed | 210 passed` |
 
 Covered in **three** places, because the codec alone would be the "tested the provider directly"
-gap Codex named: `provider-wire`'s `cli-017-b-export-refusal-wire.test.ts` (both directions, plus a
+gap Codex named (★ but see **§11b** — the classifier arms are reachable only by a DIRECT caller, not
+on the production path, and that is an OPEN round-2 finding, not a claim this section makes good): `provider-wire`'s `cli-017-b-export-refusal-wire.test.ts` (both directions, plus a
 positive control that an **unmodelled** error still degrades, so the predicate is not "always
 true"); `op-failure-classification.test.ts` (each cause, the refusal winning over an incidental
 code beneath it, a genuine `fetch_failed` on the **same** op still distinguishable, and an unknown
@@ -323,6 +324,55 @@ by PC-12. The `heartbeat.ts` source-pin class was then swept:
 `grep -rln "readFileSync.*heartbeat\|HEARTBEAT_SRC" server/src/__tests__/` → 4 files, of which one
 (`cli-006-seam-suppression`) was affected and is fixed; the other three do not window the
 `buildTaskRunBatchWorkload` call and are green unedited.
+
+## 11b. Codex round 2 (PR #592, P2) — OPEN, verified, and NOT fixed: the two-round cap
+
+★★★ **THIS RECORD'S §11a OVERCLAIMED, AND THE CORRECTION IS HERE RATHER THAN QUIETLY IN THE PROSE
+ABOVE.** §11a says the classifier covers the refusal causes on the production path. **It does not.**
+Codex's round-2 finding is **real in both halves**, verified at source at `e610a5a72` before writing
+this:
+
+1. **The round-1 classifier branches are DEAD on the production path — and my own round-1 fix is
+   what killed them.** `packages/adapter-manager/src/server.ts` reads
+   `if (isModelledWireError(err)) { sendJson(res, 200, encodeErrResponse(err)); return; }` and only
+   then calls `classifyOpFailure(op, err)`. Round 1 added all three refusals to
+   `isModelledWireError`, so the early return now fires for exactly the errors whose new cause
+   branches were added. They are reachable only by a direct caller — which is how the new
+   `op-failure-classification.test.ts` arms reach them. **That is this programme's
+   `check-that-nothing-runs` class, produced by a fix for a different instance of the same class.**
+2. **The surviving class is flattened one layer up.** `packages/worker-daemon/src/lease/artifact-export.ts`
+   fails an export with `fail("export", error instanceof Error ? error.name : "export failed",
+   "export_failed")` — the class name lands in `detail`, while the per-file **`reason` code** is the
+   hard-coded `export_failed` for every export error. So a file refused for carrying a credential and
+   a file refused because the store was unreachable still record the **same** reason on the
+   sequencer's per-file result, which is the surface `E5-D07`'s per-file policy is read from.
+
+**It is NOT fixed, and that is a rule, not a judgement.** `M1-BUILD-RULES.md` §C caps a PR at **two
+Codex rounds**: *"After two rounds on a PR, STOP and report — do not attempt a third fix … A ticket
+is not the place to converge on a property that keeps regenerating."* This is round 2. The finding
+goes to the planning session to rule on: fix it, file it as a finding, or descope.
+
+**The proposed fix, for whoever rules on it** — recorded so the ruling has something concrete:
+
+- **`artifact-export.ts`:** map the three refusal class names to distinct reason codes
+  (`export_secret_refused`, `export_secret_set_unavailable`, `export_scanner_unavailable`) at the
+  `fail("export", …)` site, instead of the blanket `export_failed`. The reason vocabulary is already
+  closed by `exportReasonCode`, so this is additive inside it and leaks nothing: the names are fixed
+  class vocabulary.
+- **`server.ts`:** call `onOpFailure(classifyOpFailure(op, err))` **before** the
+  `isModelledWireError` early return, so the adapter-manager's own operator log keeps a cause for
+  **every** failure including the modelled ones. That makes the round-1 branches genuinely reachable
+  and closes the dead-branch half **at its cause** rather than by deleting the branches.
+- The alternative — deleting the round-1 classifier branches — is worse: it would leave the AM's
+  operator log with no cause at all for the one class of failure an operator most needs to
+  distinguish.
+
+**What round 1 DID deliver, and still stands:** the refusal's **class** now survives the
+adapter-manager hop intact, proven over the real `NetworkedProviderDriver` → HTTP → adapter-manager →
+provider path with nothing uploaded (`server-artifact-export.test.ts`), and both codec directions are
+pinned with mutants M-B10/M-B11. A consumer that reads `err.name` — which is the shape the DEP-008
+conformance suite and the duck-typed callers use — gets the real classification today. What remains
+open is the **sequencer's per-file `reason` code** and the **AM's operator log** for these classes.
 
 ## 12. Files
 
