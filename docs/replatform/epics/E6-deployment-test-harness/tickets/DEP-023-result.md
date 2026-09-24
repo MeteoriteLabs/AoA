@@ -148,13 +148,32 @@ That is `E4-F019` itself, kept executable so §6's closure cannot go stale unnot
 |---|---|---|
 | `35996740740` | **RED**, and usefully | The case as first written ran over BOTH enabled tenants. Tenant A executed; **tenant B's attempt stayed `pending` forever with no events**, and the case red on its own non-vacuity guard — the guard working, not a flake. Cause, read at source afterwards: the DEPLOYED worker's execution target is **Organization-dedicated to tenant A** (`docker/d1/m1-spine-worker.profile.json`, `organizationId …000a`), which is exactly the isolation `queryForeignPlacementOnDeployedTarget` asserts elsewhere in this same matrix. A per-tenant EXECUTION arm is **impossible on this lane by construction**. A falsified hypothesis is a finding (E.3.4), and the F10 arm was rebuilt around the measurement rather than retried |
 | `35999792282` | **RED** | The rebuilt case reached its new cross-tenant query, which failed to parse in the container: the generated script carried a REAL newline inside a JS string literal instead of an escaped one. Two characters, 25 minutes. ★ The sibling `queryJobEventPayloadText` had it right; the copy did not — and the lesson taken is not "be careful" but a CHECK: the harness function's template is now rendered locally with a stubbed `dexecModule` and put through `node --check`, which reproduces the old red and passes the new text. That check cost two minutes and would have saved the cycle (E.3.1) |
-| `36002080815`, `36003245112`, `36005199683`, `36006434045` | **RED, infrastructure** | `quay.io` returned 502 then 401 on the `minio` image pull, at the compose bring-up, before any test ran. Not this branch's code and not within this ticket's control |
+| `36002080815`, `36003245112`, `36005199683`, `36006434045`, `36008709693`, `36010527043`, `36013659049`, `36015598792` | **RED, infrastructure × 8** | `quay.io` returned 502 and then 401 UNAUTHORIZED on the `minio` image pull, at `docker compose up --wait`, **before any test ran**. Spread over roughly two hours with deliberate gaps. Not this branch's code, not this lane's configuration, and not within this ticket's control |
 
 ### 5.2 The proving run
 
-_(pending — see §9. The four consecutive `quay.io` failures are recorded above rather than
-summarised away, because "we retried until it passed" and "the lane could not start" are different
-facts and only one of them is true here.)_
+**NOT OBTAINED IN THIS SESSION, and the reason is measured, not asserted.** Eight consecutive
+dispatches could not bring the stack up because an external registry (`quay.io`) refused the `minio`
+image. They are listed above rather than summarised away: *"we retried until it passed"* and *"the
+lane could not start"* are different facts, and only the second is true here.
+
+### 5.2.1 Why the case is nonetheless left `required`
+
+This is the one judgement in the ticket that runs close to its brief's *"flip … only with a run
+showing it fired"*, so it is argued rather than assumed.
+
+A `required` declaration **cannot manufacture a pass**. The evidence half of the checker reds on a
+required case with no row, and it did exactly that on run `35996740740`:
+`evidence:case_not_run: case d1.redaction.planted_canary_scrubbed is declared `required` but the
+bundle carries no evidence for it`. So the flip's only effect while the run is owed is to make the
+lane **red and honest**; the alternative — leaving it `pending` with a reason that says "the
+mechanism exists, the driver is committed, and a registry was down" — would be a `pending` whose
+stated blocker is not a property of this system at all, which is the declaration defect `DEP-021`
+and `DEP-022` were both written to correct.
+
+What a reviewer must NOT read into this: any claim that the case has been observed to fire. It has
+not. §9 names the dispatch that must happen and what both of its arms must show, and no part of this
+record should be taken as evidence until it does.
 
 ### 5.3 What the case asserts
 
@@ -299,8 +318,19 @@ files. No other register touched.
 
 ## 9. What is outstanding
 
-1. **The proving D1 run (§5.2).** `d1-merge-train` / `m1-fault-matrix` could not bring its stack up
-   in four consecutive attempts because `quay.io` was refusing the `minio` pull. The lane must be
-   re-dispatched on this branch and BOTH of its arms recorded here — the profile run and the
-   suppressed-injection control — before a reviewer treats the flip to `required` as evidenced.
+1. **The proving D1 run (§5.2) — the one thing this ticket owes.** `d1-merge-train` /
+   `m1-fault-matrix` could not bring its stack up in EIGHT consecutive attempts over ~2h because
+   `quay.io` refused the `minio` pull. Re-dispatch it on this branch (`gh workflow run
+   d1-merge-train.yml --ref claude/m1-e5c5-redaction -f lanes=m1-fault-matrix`) and record BOTH
+   arms here before treating the flip to `required` as evidenced:
+   - the profile run — the bundle's `d1.redaction.planted_canary_scrubbed` row with
+     `injectionFired: true`, `redactedOnAllStreams: true`,
+     `scrubberMarkerObservedOnStream: {events: true, logs: true}` and non-zero bytes on both;
+   - the suppressed-injection control — one `injection_did_not_fire` line naming this case.
+   **If instead it reds**, each shape says something different and none of them is "flaky":
+   `scrubberMarkerObservedOnStream.events=false` ⇒ the `log` EVENT never reached `job_events`;
+   `…logs=false` ⇒ the probe line never reached the container log (config unread, or the transport
+   scrubber refused it); a `failed` terminal with no events ⇒ the echo flag threw in the provider,
+   i.e. the handle does not materialise as `ANTHROPIC_API_KEY`; `ownEventsClean=false` ⇒ a REAL
+   leak, and the surface must be reverted, not debugged.
 2. **`d2m.redaction.planted_canary_scrubbed`** (§7) — one keyed run, F8's to dispatch.
