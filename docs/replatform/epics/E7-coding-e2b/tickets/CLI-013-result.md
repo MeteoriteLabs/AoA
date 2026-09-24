@@ -272,17 +272,20 @@ announcement path runs only when both export deps are present. Already recorded 
 *To be completed by a DISTINCT reviewer. `complete` requires EVERY acceptance item met.*
 
 **Reviewer:** `M1b independent reviewer (Claude Opus 5)`
-**Reviewed revision (40-hex):** `a88966c23d306cf52b1c4b2cd6cff7def45432ce`
-**Disposition:** `approved` — see review attempt 1 below.
+**Reviewed revision (40-hex):** `c3f71519eef55035ebc80a97e0e704b1055b01f8`
+**Disposition:** `approved` — see review attempts 1–3 below.
 
 ### Review attempt 1 — independent reviewer
 
 **Reviewer:** `M1b independent reviewer (Claude Opus 5)` — distinct from the implementer; built none
 of this work.
 **Date (UTC):** `2026-09-24`
-**Reviewed revision (40-hex):** `a88966c23d306cf52b1c4b2cd6cff7def45432ce` — the squash of PR #589
-onto `docs/replatform-program`, and a genuine ancestor of this review's HEAD. The record's own cited
-revision `c3f71519eef55035ebc80a97e0e704b1055b01f8` is a genuine ancestor of the PR head
+**Reviewed revision (40-hex):** `c3f71519eef55035ebc80a97e0e704b1055b01f8` — the implementation
+revision the record itself cites. ★ *Corrected at attempt 3 (Codex round 2, PR #595): attempts 1 and
+2 declared `a88966c23d306cf52b1c4b2cd6cff7def45432ce`, the squash of PR #589, while the rerun was
+performed at `c3f71519ee` — the protocol asks for the exact revision checked out, so the field now
+names that one. Both are genuine ancestors of this review's HEAD and the superseded id is kept here
+as written.* `c3f71519eef55035ebc80a97e0e704b1055b01f8` is a genuine ancestor of the PR head
 `7d187de1e4`, and **the code has not moved since it**: `events.ts`, `supervisor.ts` and
 `events-artifact-prepared.test.ts` are **blob-identical** at `c3f71519ee` and at the current program
 tip `eb8458bb35` (checked by `git rev-parse <rev>:<path>`), and the only delta from `c3f71519ee` to
@@ -384,3 +387,29 @@ Dependencies installed in the review worktree
 **Disposition after the rerun: `approved`, unchanged.** The rerun and the mutation both pass at the
 reviewed revision, so nothing in attempt 1's reasoning moves — the defect was the missing evidence,
 not the conclusion.
+
+#### ★ Review attempt 3 — the COMPLETE five-command ledger, at the declared revision
+
+*Appended 2026-09-24 by the same reviewer. Codex round 2 on PR #595 raised two things and both are
+**real**, verified against `implementation-plan.md` before acting: the `CLI-013` focused command
+(`implementation-plan.md`, §"Focused command" table row `CLI-013`) is **five** commands and attempt 2
+recorded three of them; and the review's declared reviewed revision (`a88966c23…`) was not the
+revision the rerun was performed at (`c3f71519ee`). The status flip was reverted a second time
+(`cc6e2c51e`), the field is corrected above, and the full sequence is below. Attempts 1 and 2 keep
+their text.*
+
+All five run at `c3f71519eef55035ebc80a97e0e704b1055b01f8`, checked out detached in the review
+worktree with dependencies installed, in the order the ledger gives them:
+
+| # | command | result |
+|---|---|---|
+| 1 | `pnpm --filter @armyofagents/worker-protocol build` | **pass** (`tsc`, no diagnostics) |
+| 2 | `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts` | **1 file, 9 tests passed** |
+| 3 | `pnpm check:frozen-worker-protocol-v1` | **`OK`** (`sourceSha b7a842870ce7509d8baa75409e0ab19da375c88a`, zod 3.24.2, esbuild 0.28.1) |
+| 4 | `pnpm --filter @armyofagents/worker-daemon typecheck` | **pass** (`tsc --noEmit`, no diagnostics) |
+| 5 | `pnpm --filter @armyofagents/worker-daemon build` | **pass** (`tsc`, no diagnostics) |
+
+Shell exit status for the chained sequence: `0`. Platform win32, vitest 3.2.6.
+
+**Disposition after the complete ledger: `approved`, unchanged.** Attempt 2's mutation re-execution
+(the M6-class anti-vacuity red) stands and is not repeated here.
