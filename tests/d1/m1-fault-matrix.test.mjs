@@ -101,6 +101,7 @@ import {
   composeServiceLogs,
   queryJobEventPayloadText,
   seedSpineWorkerDrivenJob,
+  queryOrganizationEventText,
   awaitSpineWorkerDrivenTerminal,
   REDACTION_MARKER,
   queryDeployedWorker,
@@ -1216,9 +1217,17 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
   //     log line (scrubbed at the pino DESTINATION, below the `msg`/`time`/`level` the sink adds,
   //     which is what keeps the `E4-F019` collision class out of this surface).
   //
-  // ★ F10 — MULTI-TENANT. Both enabled tenants plant their OWN canary and are asserted
-  // independently (the same-tenant positive control), and each tenant's canary is then required
-  // ABSENT from the OTHER tenant's event stream. One tenant proving it would be a single-org claim.
+  // ★ F10 — MULTI-TENANT, and the shape of it was MEASURED rather than assumed. Run 35996740740
+  // ran this case over BOTH enabled tenants and tenant B's attempt stayed `pending` forever with no
+  // events: the DEPLOYED worker's execution target is ORGANIZATION-DEDICATED to tenant A
+  // (docker/d1/m1-spine-worker.profile.json, `organizationId` …000a), which is exactly the
+  // isolation `queryForeignPlacementOnDeployedTarget` asserts elsewhere in this same matrix. So a
+  // per-tenant EXECUTION arm is impossible on this lane BY CONSTRUCTION, and a case that kept it
+  // would be permanently red for a reason that says nothing about redaction. The cross-tenant arm
+  // is therefore the one this lane can actually make: the OTHER tenant's whole event stream must
+  // not carry the planted canary, asserted over a NON-EMPTY stream, beside the same-tenant
+  // positive control (tenant A's own stream carrying the scrubber's marker). The dedication itself
+  // is asserted here rather than trusted, so the narrowing cannot silently stop being true.
   //
   // ★ NOTHING SECRET REACHES THE BUNDLE. Only booleans and byte counts are recorded — never a
   // canary, never a stream excerpt.
@@ -1226,43 +1235,45 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
   assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
   assert.ok(deployed.workerId, "the clause-5 case needs the DEPLOYED worker, which is what redeems");
 
+  const [A, B] = M1_SPINE_TENANTS.enabled;
+  assert.equal(
+    deployed.target.organizationId,
+    A.organizationId,
+    "the deployed worker's target is expected to be dedicated to the FIRST enabled tenant; if that changed, this case's single-executing-tenant narrowing must be revisited rather than quietly kept",
+  );
+
   // SUPPRESSED: the echo flag is withheld, so nothing plants the leak. Everything else runs, the
   // case still records, and `injectionFired` is decided by the observation below — which is how
   // this case appears in the lane's suppressed-injection reds instead of passing vacuously.
   const workloadArgs = SUPPRESS_INJECTION ? [] : ["--aoa-fake-echo-env=ANTHROPIC_API_KEY"];
 
-  const perTenant = [];
-  for (const tenant of M1_SPINE_TENANTS.enabled) {
-    const canary = `m1fmcanary${randomBytes(20).toString("hex")}`;
-    const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
-    const seeded = step(seedSpineWorkerDrivenJob({
-      tenant, ...ids, target: deployed.target, workloadArgs,
-      secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`, secretValue: canary,
-    }), `${tenant.key} canary worker-driven seed`);
-    assert.equal(seeded.ok, true, `${tenant.key} canary job seed: ${truncate(seeded)}`);
+  const canary = `m1fmcanary${randomBytes(20).toString("hex")}`;
+  const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
+  const seeded = step(seedSpineWorkerDrivenJob({
+    tenant: A, ...ids, target: deployed.target, workloadArgs,
+    secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`, secretValue: canary,
+  }), "canary worker-driven seed");
+  assert.equal(seeded.ok, true, `canary job seed: ${truncate(seeded)}`);
 
-    const observation = step(awaitSpineWorkerDrivenTerminal({ jobId: ids.jobId }), `${tenant.key} canary run terminal`);
-    const events = step(queryJobEventPayloadText({ jobId: ids.jobId }), `${tenant.key} event stream`);
-    assert.equal(events.ok, true, `${tenant.key} event stream read: ${truncate({ ok: events.ok, error: events.error ?? null })}`);
-    // ★ NON-VACUITY FIRST, per stream: a scan over an empty stream is "clean" and proves nothing.
-    assert.ok((events.events ?? 0) > 0, `${tenant.key}: the run produced no events, so nothing below is a measurement: ${truncate(observation)}`);
-    perTenant.push({ tenant, canary, jobId: ids.jobId, events });
-  }
-
-  // The LOG half is one stream for the whole worker, read ONCE after both runs so a single scan
-  // covers both tenants' lines.
+  const observation = step(awaitSpineWorkerDrivenTerminal({ jobId: ids.jobId }), "canary run terminal");
+  const events = step(queryJobEventPayloadText({ jobId: ids.jobId }), "event stream");
   const logs = composeServiceLogs("worker-b");
+  const foreign = step(queryOrganizationEventText({ organizationId: B.organizationId }), "cross-tenant event stream");
+  assert.equal(events.ok, true, `event stream read: ${truncate({ ok: events.ok, error: events.error ?? null })}`);
   assert.equal(logs.ok, true, `worker log read: status=${logs.status}`);
-  assert.ok((logs.bytes ?? 0) > 0, "the worker container log is empty, so nothing below is a measurement");
+  assert.equal(foreign.ok, true, `cross-tenant event stream read: ${truncate({ ok: foreign.ok, error: foreign.error ?? null })}`);
 
-  const eventBytes = perTenant.reduce((sum, t) => sum + (t.events.bytes ?? 0), 0);
-  const markerOnEvents = perTenant.every((t) => t.events.text.includes(REDACTION_MARKER));
+  // ★ NON-VACUITY FIRST, per stream: a scan over an empty stream is "clean" and proves nothing.
+  assert.ok((events.events ?? 0) > 0, `the run produced no events, so nothing below is a measurement: ${truncate(observation)}`);
+  assert.ok((logs.bytes ?? 0) > 0, "the worker container log is empty, so nothing below is a measurement");
+  assert.ok((foreign.bytes ?? 0) > 0, "the OTHER tenant's event stream is empty, so its cross-tenant clean arm is vacuous");
+
+  const markerOnEvents = events.text.includes(REDACTION_MARKER);
   const markerOnLogs = logs.text.includes(REDACTION_MARKER);
-  // Every canary, on every stream — including the OTHER tenant's event stream (F10).
-  const ownCanaryClean = perTenant.every((t) => !t.events.text.includes(t.canary));
-  const crossTenantClean = perTenant.every((t) => perTenant.every((o) => o === t || !o.events.text.includes(t.canary)));
-  const logsClean = perTenant.every((t) => !logs.text.includes(t.canary));
-  const redactedOnAllStreams = ownCanaryClean && crossTenantClean && logsClean;
+  const ownEventsClean = !events.text.includes(canary);
+  const logsClean = !logs.text.includes(canary);
+  const crossTenantClean = !foreign.text.includes(canary);
+  const redactedOnAllStreams = ownEventsClean && logsClean && crossTenantClean;
 
   // ★ WHAT DECIDES "FIRED". The marker is the scrubber's OWN substitution, so its presence means
   // the planted value reached a scrubber and was replaced — i.e. the plant happened. A clean
@@ -1280,28 +1291,26 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
     observedClassification,
     redactedOnAllStreams,
     scrubberMarkerObservedOnStream: { events: markerOnEvents, logs: markerOnLogs },
-    streamBytesObserved: { events: eventBytes, logs: logs.bytes ?? 0 },
+    streamBytesObserved: { events: events.bytes ?? 0, logs: logs.bytes ?? 0 },
     detail: {
-      tenants: perTenant.map((t) => ({
-        tenant: t.tenant.key,
-        events: t.events.events ?? 0,
-        eventBytes: t.events.bytes ?? 0,
-        ownCanaryAbsentFromOwnEvents: !t.events.text.includes(t.canary),
-        ownCanaryAbsentFromWorkerLog: !logs.text.includes(t.canary),
-        markerOnOwnEvents: t.events.text.includes(REDACTION_MARKER),
-      })),
-      crossTenantClean,
+      executingTenant: A.key,
+      crossTenant: { tenant: B.key, events: foreign.events ?? 0, bytes: foreign.bytes ?? 0, canaryAbsent: crossTenantClean },
+      events: events.events ?? 0,
+      ownEventsClean,
+      logsClean,
+      attemptStatus: observation.attemptStatus ?? null,
       suppressed: SUPPRESS_INJECTION,
     },
   });
 
   if (SUPPRESS_INJECTION) return;
-  assert.equal(ownCanaryClean, true, "a planted canary survived onto its own tenant's event stream");
-  assert.equal(crossTenantClean, true, "a planted canary appeared on ANOTHER tenant's event stream");
-  assert.equal(logsClean, true, "a planted canary survived onto the worker's container log");
-  assert.equal(markerOnEvents, true, "the scrubber's marker was not observed on every tenant's event stream");
+  assert.equal(ownEventsClean, true, "the planted canary survived onto its own tenant's event stream");
+  assert.equal(crossTenantClean, true, "the planted canary appeared on the OTHER tenant's event stream");
+  assert.equal(logsClean, true, "the planted canary survived onto the worker's container log");
+  assert.equal(markerOnEvents, true, "the scrubber's marker was not observed on the event stream");
   assert.equal(markerOnLogs, true, `the scrubber's marker was not observed on the worker log (bytes=${logs.bytes})`);
 });
+
 test("fault-matrix: cancelling an UNLEASED attempt cancels it directly", { skip: SKIP }, () => {
   const [A] = M1_SPINE_TENANTS.enabled;
   const ids = { ...newScenarioIds(), issueId: randomUUID(), runId: randomUUID() };

@@ -3807,6 +3807,40 @@ export function composeServiceLogs(service, { tail = 5000, timeout = 120_000 } =
   return { ok: res.status === 0, status: res.status, text, bytes: Buffer.byteLength(text, "utf8") };
 }
 
+/**
+ * DEP-023 — every `job_events` row of ONE ORGANIZATION, as one text blob plus its byte length: the
+ * CROSS-TENANT half of clause 5 (ruling F10).
+ *
+ * ★ WHY THIS SHAPE AND NOT "run the case on both tenants". MEASURED on run 35996740740: the second
+ * enabled tenant's attempt stayed `pending` forever with no events, because the DEPLOYED worker's
+ * execution target (`SPINE_DEPLOYED_TARGET_ID`, docker/d1/m1-spine-worker.profile.json) is
+ * ORGANIZATION-DEDICATED to tenant A -- which is precisely the isolation
+ * `queryForeignPlacementOnDeployedTarget` asserts elsewhere in this same matrix. So a per-tenant
+ * EXECUTION arm is impossible on this lane by construction, and the honest cross-tenant arm is
+ * this one: the OTHER tenant's whole event stream must not carry the planted canary, with its own
+ * byte count so the scan is not vacuously clean.
+ */
+export function queryOrganizationEventText({ organizationId }) {
+  const params = { organizationId };
+  const script = `
+import postgres from "postgres";
+${embedParams(params)}
+const report = (value) => console.log("${RESULT_MARKER}" + JSON.stringify(value));
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+try {
+  const rows = await sql\`SELECT event_type AS "eventType", event FROM job_events
+    WHERE organization_id = \${P.organizationId} ORDER BY created_at ASC\`;
+  const text = rows.map((r) => r.eventType + " " + JSON.stringify(r.event ?? null)).join("\n");
+  report({ ok: true, events: rows.length, text, bytes: Buffer.byteLength(text, "utf8") });
+} catch (error) {
+  report({ ok: false, error: String(error && error.message ? error.message : error) });
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`;
+  return dexecModule("control-plane", script);
+}
+
 /** Every `job_events` row for one job, as ONE text blob plus its byte length — the EVENT half of
  * clause 5's two streams.
  *
