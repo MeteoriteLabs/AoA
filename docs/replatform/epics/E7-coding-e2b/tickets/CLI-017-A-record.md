@@ -213,6 +213,66 @@ produced it.
 
 *(to be completed by a distinct reviewer — the implementer may not set `complete`)*
 
-**Reviewer:**
-**Date (UTC):**
-**Decision:**
+**Reviewer:** `M1b independent reviewer (Claude Opus 5)`
+**Date (UTC):** `2026-09-24`
+**Decision:** `approved`; `Status` stays `gate_review` (keyed items) — see review attempt 1 below.
+
+### Review attempt 1 — independent reviewer
+
+**Reviewer:** `M1b independent reviewer (Claude Opus 5)` — distinct from the implementer.
+**Date (UTC):** `2026-09-24`
+**Reviewed revision (40-hex):** `d9b25579d…` (the squash of PR #592, an ancestor of this review's
+HEAD). ★ **The re-point is genuine and current for THIS slice.** `147d5454c9161e7b401064e232100299b334a6e9`
+**is** an ancestor of the PR head `2aaeb1169b6adbd37e3ac77ff7a230f68bb1b077` (`git merge-base
+--is-ancestor`), and the pre-rebase id is kept as written. Every product file this slice owns —
+`sandbox-output-root.ts`, `heartbeat.ts`, `cli-017-output-root-directive.test.ts`,
+`check-sandbox-output-root.mjs` and its lib + controls, `pr.yml` — is **unchanged** between
+`147d5454c9` and the PR head; the one later edit to a slice-A-caused pin
+(`cli-006-seam-suppression.test.ts`) is disclosed in slice B's §11a. So the cited revision describes
+this slice's code as it now stands.
+**Disposition:** `approved` (code and record). **`Status` stays `gate_review`** — see below.
+
+#### Verified at source
+
+- **★ PC-12 exists and it REDS — it is not a search result.** `cli-017-output-root-directive.test.ts`
+  carries the byte-for-byte directive pin, a staged-prompt-bytes arm through the **real**
+  `buildTaskRunBatchWorkload`, an empty-base arm, the `codex_local` arm, a non-distributed arm, the
+  F10 arm, **and** three call-site arms that read `heartbeat.ts` and anchor on
+  `buildTaskRunBatchWorkload({` rather than searching the whole file — so leaving the helper called
+  dead elsewhere would not keep them green. At source, `heartbeat.ts:5351` is
+  `currentTaskMarkdown: applySandboxOutputRootDirective({ adapterType: agent.adapterType,
+  runTargetsSandbox, currentTaskMarkdown: context.currentTaskMarkdown })`, i.e. both gates inside the
+  pinned expression. **M-A1** (restore the raw context) necessarily reds the two anchored arms; that
+  is `E7-D11`'s required positive control, so PC-12 is present and mandatory-satisfying.
+  ★ I record the shape honestly: the call-site half is a **source-text** pin, not a behavioural one,
+  and the behavioural arm proves the helper's output. Together they meet the ruling's requirement
+  (a pin at the SD-1 site whose positive control is that deleting the directive reds it); the record
+  says as much in its own M-A1 row.
+- **★ M-A4 RE-EXECUTED, not taken on trust.** I mutated `SANDBOX_OUTPUT_ROOT` to
+  `/home/user/aoa-out` in the real tree and ran the guard:
+  `check-sandbox-output-root: SD-4 violated (E7-D11 §1, CLI-017-A)` with both a `mismatch:` and an
+  `unruled:` problem, **exit 1**; reverted → `OK — one R … on both sides`, exit 0. Its 8 controls also
+  pass here (`node --test … sandbox-output-root-check.test.mjs` → `pass 8`), and the guard is wired
+  into `pr.yml`'s `policy` job (lines 214–215) with `guard-inventory.json` status `ci`. A guard that
+  runs and that reds: acceptance row 3 is met.
+- **Row 4** — the codex arm goes through the real builder, and the two census pin files are
+  **unedited** in the diff (confirmed against the PR range), which is the row's own evidence.
+- **The new-module design decision** is the task's own stated alternative, taken to avoid auto-firing
+  `keyed-e2b-unit-d.yml` (keyed spend is F8's), and it is recorded rather than silently absorbed.
+- **The `E7-F045` re-mint** is handled correctly: the id was re-minted from `E7-F043` after `CLI-013`
+  took it, the collision was caught by `check-register-id-uniqueness` on the merge ref, and the
+  superseded id is quoted rather than rewritten.
+- **CI:** `ci-required` is `success` on the final head `2aaeb1169b`, and no check on that head is
+  non-success. ★ The record's closing "verify (1) is RED on the final head" section is therefore
+  **stale as written** — it describes `87005e7b0`, not `2aaeb1169b`. The diagnosis it records is
+  sound and is filed as `E7-F045`; I flag only that a reader will take "final head" literally.
+
+#### Why `Status` stays `gate_review`
+
+The code is approved and every **unit** row this slice carries is met. `CLI-017`'s acceptance also
+includes the plan's *"Real-run acceptance — it PAIRS WITH `CLI-012`"* — a distributed real-E2B run
+whose agent writes under `R`, with one `committed` `job_artifacts` row and the SD-5 refusal exercised
+on a planted canary in the same lane — and the `E7-D11` template precondition (`S-P0` + `A-neg`,
+`-f arms=a-neg-only`). **Neither has run.** Keyed dispatch is the planning session's under ruling F8
+and is not this ticket's or this review's to fire, so the flip is not mine to make. §8 of this record
+states the same thing, which is what the plan requires of it.

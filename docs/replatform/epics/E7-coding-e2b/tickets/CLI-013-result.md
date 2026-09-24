@@ -271,6 +271,82 @@ announcement path runs only when both export deps are present. Already recorded 
 
 *To be completed by a DISTINCT reviewer. `complete` requires EVERY acceptance item met.*
 
-**Reviewer:**
-**Reviewed revision (40-hex):**
-**Disposition:**
+**Reviewer:** `M1b independent reviewer (Claude Opus 5)`
+**Reviewed revision (40-hex):** `a88966c23d306cf52b1c4b2cd6cff7def45432ce`
+**Disposition:** `approved` — see review attempt 1 below.
+
+### Review attempt 1 — independent reviewer
+
+**Reviewer:** `M1b independent reviewer (Claude Opus 5)` — distinct from the implementer; built none
+of this work.
+**Date (UTC):** `2026-09-24`
+**Reviewed revision (40-hex):** `a88966c23d306cf52b1c4b2cd6cff7def45432ce` — the squash of PR #589
+onto `docs/replatform-program`, and a genuine ancestor of this review's HEAD. The record's own cited
+revision `c3f71519eef55035ebc80a97e0e704b1055b01f8` is a genuine ancestor of the PR head
+`7d187de1e4`, and **the code has not moved since it**: `events.ts`, `supervisor.ts` and
+`events-artifact-prepared.test.ts` are **blob-identical** at `c3f71519ee` and at the current program
+tip `eb8458bb35` (checked by `git rev-parse <rev>:<path>`), and the only delta from `c3f71519ee` to
+the PR head is this record's own §10. So the certified revision describes the code as it now stands.
+**Disposition:** `approved`
+
+#### What I verified at source, not from the record
+
+- **The emitter.** `EventSequencer.artifactPrepared` (`supervisor/events.ts`) is one line:
+  `#emit("artifact_prepared", { artifactId: input.artifactId, kind: input.kind })` — the projection
+  is in the emitter, so a path handed in cannot ride along. Sibling-shaped, no frozen-package edit;
+  `check:frozen-worker-protocol-v1` runs in `policy` and I ran
+  `check-frozen-worker-protocol-consumer.mjs --source-sha b7a8428…` locally: **OK**.
+- **The placement.** `runLifecycle` emits `for (const announcement of prepared) await
+  events.artifactPrepared(announcement)` **after** `runExportWindow` returns and **before**
+  `events.terminal`, outside the window's catch. `announcementsFor(raced.exported, requests)` is the
+  window's **last** statement, after both `report` arms and outside the `try`, so its fail-closed
+  throw escapes — the §8a P2 fix is really there and is not a comment.
+- **The `kind`.** `announcementsFor` joins on `r.path` from `requests` and throws when a committed
+  path has no request; the payload is `artifactPreparedPayloadV1Schema.parse(…)`, not a cast.
+  `E7-D08`'s `other` is the request's, never invented.
+- **The 8 mutations.** Each is a real inversion of a distinct decision in the diff (the emit loop, the
+  partial-exit return, the swallow, the kind, the ordering, the `requests`/`exported` source, the
+  projection, the catch boundary), and each expected red maps onto a test that asserts exactly that
+  property. I could not re-execute them — this worktree has no installed `node_modules` — so the
+  mutants' **shape and reachability** are verified at source and their REDs are taken from the
+  implementer's recorded runs.
+- **★ The anti-vacuity claim is TRUE at GREEN, and M6 does establish it.** `nothing committed ⇒ NO
+  announcement` sets `resolveExportArtifacts: async () => [REQ_A]` — **a request is present** — while
+  `exportArtifacts` returns `exported: []`, and asserts the **exact** stream
+  `["attempt_started","terminal"]`. So M6 (build announcements from `requests` instead of `exported`)
+  makes that case emit one `artifact_prepared` and reds the equality. The author's honesty about the
+  RED being vacuous is correct, and the GREEN non-vacuity is proven rather than asserted.
+- **The three contradictions of the task section.** (a) The undecided contiguity decision is recorded
+  as `E7-D12` (option 1, FATAL) with its reasons measured at source — confirmed against
+  `decisions.md`. (b) *"fails the attempt"* is **not** a rejection out of `accept()`: `createSupervisor`
+  catches everything out of `runLifecycle` by design, so the test asserts abort + no-terminal-past-the-hole
+  + escalated cleanup, which is what the mechanism has. Correct, and correctly carried into `E7-D12`.
+  (c) ★ **Partly unrecorded, and I say so rather than let it pass.** The task's *Files* line names only
+  `events.ts`, the new test and `findings.md`, while its placement clause mandates the supervisor path —
+  so `supervisor.ts` is required by the task and absent from its file list. The record declares
+  `supervisor.ts` in §2 but does **not** flag the omission as a contradiction. A documentation gap, not
+  a defect, and not a bar to approval: the placement taken is the one the task directs.
+- **`E7-F043` and `E7-F044` are correctly scoped, and neither is unfixed work wearing a finding's
+  name.** `E7-F043` (`observeRun`'s three emits under one swallowing catch, terminal below) is a
+  DECLARED contract (`CLI-003` D3/D5, `WRK-018` 1(b)) whose reversal needs a decision at `E7-D12`'s
+  level and touches every run — out of an `S` ticket, `unowned` with that reason. `E7-F044` (a
+  timed-out window loses announcements for files it had already committed) is real and is confirmed at
+  source: the `raced === TIMEOUT` arm `return []`s, and the accumulated `exported` is unreachable
+  because the sequencer only surfaces it on resolve — closing it needs an incremental-progress signal
+  on the **E5-owned** seam. Both carry a closure route in `findings.md` and an ownership entry.
+- **Register hygiene.** `E7-F024`'s disposition is added and the finding stays open against the `log`
+  route; `E7-F043`/`E7-F044` exist in `findings.md` and in `scripts/finding-ownership.json`.
+
+#### Why `complete`, and what it does not certify
+
+`CLI-013`'s acceptance list carries **no keyed item** — it is the emitter, its placement, the
+contiguity decision, the frozen-consumer check and the typecheck/build, all of which are met, and
+`ci-required` is `success` on the PR head `7d187de1e4`. So unlike `CLI-012`/`CLI-016`/`CLI-017`, this
+ticket has nothing pending that a keyed run must supply, and I set `Status: complete` in a separate
+commit.
+
+**Not certified by this approval:** anything about supply or about `capabilityProven` — the record is
+right that this flips no counter; `E7-F043`, `E7-F044` and `E7-F024` all stay open; the
+`supervisor-hung-stage-input` flake is pre-existing and unrelated (I confirmed the announcement path
+is unreachable without both export deps); and the mutation REDs are the implementer's recorded runs,
+not re-executed here.
