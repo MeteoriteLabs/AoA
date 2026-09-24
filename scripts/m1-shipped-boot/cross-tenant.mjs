@@ -324,8 +324,36 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   // ── 2. events + read ───────────────────────────────────────────────────────
   // POSITIVE CONTROL FIRST. The owner's own usage batch is what later gives the cost case a real
   // charge to read, so it is load-bearing twice.
+  //
+  // ★★★ `attempt_started` IS LOAD-BEARING FOR THE `activity_log` ARM, and its absence is the
+  // measured cause of E6-F031 — the `{"own":0,"foreign":0,"unscoped":0,"ownActions":[]}` that
+  // reded this phase byte-identically on runs 36047740323 and 36051455003.
+  //
+  // E3-D-AUDIT-SET (`server/src/services/job-accepted-activity-audit.ts`,
+  // `ACCEPTED_ACTIVITY_AUDIT_ACTIONS`) is CLOSED at `attempt_started` and `terminal`. `usage` is
+  // deliberately NOT audited to `activity_log` — it has its own durable record (the `cost_events`
+  // row plus its `authoritative_cost` receipt). So a batch carrying only `usage` writes a cost row
+  // and NO activity row, which is exactly the asymmetry the two runs observed: the `cost_events`
+  // arm passed on this very batch while the `activity_log` arm saw nothing at all.
+  //
+  // ★ WHY THE CASE MUST EARN THE ROW RATHER THAN BORROW ONE. The D1 twin
+  // (`tests/d1/m1-fault-matrix.test.mjs`) reads `journeyA.ids.jobId` — the REAL journey's job,
+  // whose attempt ran `attempt_started`/`terminal` through the ingest. This lane's port passed its
+  // OWN raw-SQL-seeded fixture job (`seedSpineJob` inserts `issues`/`jobs`/`job_attempts`
+  // directly), and the shipped lane never retains the journey's job id in `state`. Submitting the
+  // audited event here is STRONGER than plumbing the journey's id through: the arm then certifies
+  // the live JOB-017 audit write on the fence it owns, instead of depending on a row another phase
+  // happened to leave behind. `terminal` is deliberately NOT used — it would end the attempt and
+  // every later arm needs this fence live; `attempt_started` drives leased→running and keeps it.
+  //
+  // Sequence numbers shift accordingly (usage 1→2, hostile 2→3). They must stay DISTINCT: a
+  // duplicate seq is rejected by the ingest as a replay, which would make the hostile refusal
+  // indistinguishable from a tenant denial — the DEP-016 lesson this file already carries.
   const ownEvents = [makeEvent(victim.ids, A, victim.offer, {
-    eventType: "usage", seq: 1,
+    eventType: "attempt_started", seq: 1,
+    payload: { sandboxId: `d2m-xtenant-${victim.ids.jobId}` },
+  }), makeEvent(victim.ids, A, victim.offer, {
+    eventType: "usage", seq: 2,
     payload: { inputTokens: 1_000, outputTokens: 1_000, cachedInputTokens: 0, runtimeMillis: 1 },
   })];
   const ownDigested = step(H.computeEventDigests({ events: ownEvents }), "own digests");
@@ -344,7 +372,7 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
   // identity check (the DEP-016 lesson).
   const hostileIds = { ...victim.ids, workerId: hostile.ids.workerId };
   const hostileEvents = [makeEvent(hostileIds, A, victim.offer, {
-    eventType: "usage", seq: 2,
+    eventType: "usage", seq: 3,
     payload: { inputTokens: 999_999, outputTokens: 999_999, cachedInputTokens: 0, runtimeMillis: 1 },
   })];
   const hostileUpload = hostileOrSkip(() => {
