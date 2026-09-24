@@ -475,11 +475,14 @@ vacuously.**
 |---|---|---|---|
 | `d1-merge-train` / `m1-fault-matrix` — **trigger positive control** | `35932452315` | **`success`** | live campaign + its suppression control; `m1-spine` and `d1-merge-train` **`skipped`** (the selector's negative arm) |
 | `d1-merge-train` / `m1-fault-matrix` — **the accepting run** | **`35940077444`** | **`success`** | live matrix **23 pass / 0 fail**; verdict **27/27 required fired**, 4 pending; declaration checker + **32** unit tests in the static preflight; suppression control red as required |
+| `d1-merge-train` / `m1-fault-matrix` — **the RE-PROOF on the post-Codex tree** | **`35943329782`** | **`success`** | live matrix **23 pass / 0 fail**; verdict **27/27 required fired**, 4 pending; **32** unit tests; suppression control red. Dispatched at `ab9dba7da`, after which only the two scratch-script deletions and this record changed (`git diff --name-only ab9dba7da..HEAD`) — so the live claim rests on the tree that ships |
 | `pr.yml` / `policy` → *Campaign fault matrix declaration (DEP-018)* | `35940081282` | **`success`** | `check-campaign-fault-matrix.mjs` + **32** unit tests |
 | `pr.yml` / `ci-required` | `35940081282` | **`pass`** | aggregator over the gate suite |
 
-All four are on this PR's branch; the last two are on the reviewed revision
-`97ddb8cd32d8f2ee7415bcfc2bd729e23fdb69f4`.
+All are on this PR's branch. **Two live runs, deliberately:** `35940077444` proved the cases on
+`97ddb8cd3`, and `35943329782` re-proved them after the Codex review changed the evidence verdict and
+the harness's `record()` helper. A single run on a superseded tree would have been a claim about code
+that no longer ships.
 
 **Guards, locally, before every push:** the 38 pure-node `pr.yml` guards plus
 `node scripts/check-evidence-immutability.mjs --base origin/docs/replatform-program` — `failures: 0`.
