@@ -87,18 +87,27 @@ services:
     #
     # WHAT THIS IS NOW. `ghcr.io/meteoritelabs/aoa-d1-minio`, built by
     # `.github/workflows/d1-image-mirror.yml` from `docker/d1/minio.Dockerfile`, which
-    # lifts the real MinIO server binary from a build that IS public and re-homes it on
-    # Debian so NOTHING in this service had to be softened: it still runs as root (so
-    # /root/.minio/certs below is readable), still ships curl (so the healthcheck below
-    # works), and its ENTRYPOINT is the binary (so the `command:` below is unchanged).
-    # Verified locally before the mirror was cut: the container logs
-    # `API: https://127.0.0.1:9000` and the EXACT healthcheck command below returns 200.
+    # builds MinIO FROM UPSTREAM SOURCE at RELEASE.2025-09-07T16-13-09Z — the SAME release
+    # this line used to name — onto a Debian base, so NOTHING in this service had to be
+    # softened: it still runs as root (so /root/.minio/certs below is readable), still
+    # ships curl (so the healthcheck below works), and its ENTRYPOINT is the binary (so
+    # the `command:` below is unchanged). Verified on the published digest: the container
+    # logs `Version: RELEASE.2025-09-07T16-13-09Z` and `API: https://127.0.0.1:9000`, and
+    # the EXACT healthcheck command below returns 200.
+    #
+    # ★ THE VERSION IS NOT A FREE VARIABLE, and this was measured rather than assumed. An
+    # earlier cut of this mirror carried RELEASE.2026-09-22T19-25-18Z (the only version a
+    # public third-party build offers). Run `36022608037` brought the stack up and then
+    # failed E6F-05 and E6F-14 with
+    # `400 AccessDenied: There were headers present in the request which were not signed`
+    # on the presigned PUT — the DAT-002 slice-7 path. A newer MinIO is stricter about
+    # presigning, so the harness gets the harness's MinIO.
     #
     # Pinned by DIGEST, not by tag. A tag we own is still a tag; the `:d1` tag exists for
     # humans and the digest is what this lane resolves, so a re-cut mirror cannot silently
     # change what the gate brings up. To refresh: dispatch d1-image-mirror.yml, then
     # replace the digest here with the one it prints.
-    image: ${AOA_D1_MINIO_IMAGE:-ghcr.io/meteoritelabs/aoa-d1-minio@sha256:e22381966a3256a05c7f2b8dbedd0498b22ff8eafc8d3bc5040604fb57f8f35e}
+    image: ${AOA_D1_MINIO_IMAGE:-ghcr.io/meteoritelabs/aoa-d1-minio@sha256:407cbf7543a0018031a1319c5aefafe7edb0bdca351c3bd3b58cfa5153eec5db}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: "aoa-d1"
