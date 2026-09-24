@@ -592,15 +592,15 @@
             "observedBy": "A's own worker's renew on the same lease succeeds"
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "The hostile case must run against the SHIPPED boot's own control plane and two real daemons; the D1 profile proves the same surface keylessly, and this gate's record needs its own run.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "lease",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) The hostile case must run against the SHIPPED boot's own control plane and two real daemons; the D1 profile proves the same surface keylessly, and this gate's record needs its own run.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.cross.read",
@@ -611,15 +611,15 @@
             "observedBy": "the same read under A's own scope returns rows"
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Same as the lease surface: this gate's record needs its own shipped-boot run.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "read",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Same as the lease surface: this gate's record needs its own shipped-boot run.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.cross.cancel",
@@ -630,15 +630,15 @@
             "observedBy": "the same call under A's own scope cancels A's job"
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Same as the lease surface.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "cancel",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Same as the lease surface.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.cross.events",
@@ -649,15 +649,15 @@
             "observedBy": "A's own worker's identical upload is accepted"
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Same as the lease surface.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "events",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Same as the lease surface.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.cross.secrets",
@@ -668,15 +668,15 @@
             "observedBy": "A's own worker's redemption of the same handle succeeds"
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "On this gate the handle carries a real provider key, so the case is only meaningful on a keyed run.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "secrets",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) On this gate the handle carries a real provider key, so the case is only meaningful on a keyed run.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.cross.staged_inputs",
@@ -687,15 +687,15 @@
             "observedBy": "A's own worker's identical request succeeds"
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Same as the lease surface.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "staged_inputs",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Same as the lease surface.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.cross.outputs",
@@ -706,15 +706,15 @@
             "observedBy": "A's own worker's commit on the same attempt succeeds"
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Same as the lease surface.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "outputs",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Same as the lease surface.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.cross.cost_rows",
@@ -722,18 +722,18 @@
           "injection": {
             "mechanism": "hostile.cost_read",
             "target": "B's companyId reads A's charges from the real keyed run",
-            "observedBy": "A's own companyId reads a non-zero charge through the same reader"
+            "observedBy": "A's own companyId reads a NON-ZERO charge for its own agent through the production cost reader (costService.byAgent), while B's identical read returns none of them. The owner's charge is priced by the production JOB-016 projector from a usage batch the FENCED ingest accepted on this control plane, so the control is non-vacuous in both modes; on a KEYED run the same agent additionally carries the journey's real provider charge, which this read includes rather than excludes."
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "The charges this gate asserts are the REAL provider's, which only a keyed run produces.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "cost_rows",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) The charges this gate asserts are the REAL provider's, which only a keyed run produces.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.cross.tool_calls",
@@ -744,15 +744,15 @@
             "observedBy": "the same resolver admits A's own run under A's own companyId"
           },
           "expectedClassification": "denied_with_same_tenant_positive_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "The tool surface is disarmed for M1a (the freeze checklist), so an ARMED cross-tenant case cannot run on this gate at all; it is recorded here so the surface is never silently dropped from the matrix, and it is M1b/CLI-016 work.",
-          "pendingOwner": "CLI-016 (M1b); the M1a posture — the surface OFF on every replica — is asserted by the DEP-016 m1-spine profile",
+          "evidence": "required",
           "tenantCase": {
             "kind": "cross_tenant_denial",
             "surface": "tool_calls",
             "positiveControl": true
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) The tool surface is disarmed for M1a (the freeze checklist), so an ARMED cross-tenant case cannot run on this gate at all; it is recorded here so the surface is never silently dropped from the matrix, and it is M1b/CLI-016 work.",
+          "$supersededPendingOwner": "CLI-016 (M1b); the M1a posture — the surface OFF on every replica — is asserted by the DEP-016 m1-spine profile",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.control_refused",
@@ -774,20 +774,20 @@
           "injection": {
             "mechanism": "legacy_table.foreign_read",
             "target": "cost_events on the shipped boot",
-            "observedBy": "the predicate-removed read returns the foreign charge"
+            "observedBy": "the predicate-removed read returns the owner's charge (anti-vacuity), the owner's own read returns it, and the foreign Company's identical read through the SAME production reader returns none. The charge is priced by the production projector from a fenced usage batch; a keyed run adds the journey's real provider charge."
           },
           "expectedClassification": "filtered_by_query_predicate_not_rls",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "The charge under test is the real provider's; the keyless proof of the same predicate is the M1-D1-SPINE case.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "legacy_table_isolation",
             "table": "cost_events",
             "positiveControl": true,
             "antiVacuityControl": true,
             "productionPath": "server/src/services/costs.ts costService(db).byAgent / .summary"
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) The charge under test is the real provider's; the keyless proof of the same predicate is the M1-D1-SPINE case.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.legacy.activity_log",
@@ -798,17 +798,17 @@
             "observedBy": "the predicate-removed read returns the foreign audit row"
           },
           "expectedClassification": "filtered_by_query_predicate_not_rls",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Same as above; the keyless proof is the M1-D1-SPINE case.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "legacy_table_isolation",
             "table": "activity_log",
             "positiveControl": true,
             "antiVacuityControl": true,
             "productionPath": "server/src/services/activity.ts activityService(db).list({companyId})"
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Same as above; the keyless proof is the M1-D1-SPINE case.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.legacy.task_outputs",
@@ -819,17 +819,17 @@
             "observedBy": "the predicate-removed read returns the foreign output row"
           },
           "expectedClassification": "filtered_by_query_predicate_not_rls",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Same as above; the keyless proof is the M1-D1-SPINE case.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "legacy_table_isolation",
             "table": "task_outputs",
             "positiveControl": true,
             "antiVacuityControl": true,
             "productionPath": "server/src/services/task-outputs.ts taskOutputService(db).listForIssue(companyId, issueId)"
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Same as above; the keyless proof is the M1-D1-SPINE case.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.tenant.legacy.provider_credentials",
@@ -840,17 +840,17 @@
             "observedBy": "the predicate-removed read returns the foreign credential row"
           },
           "expectedClassification": "filtered_by_query_predicate_not_rls",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Same as above; the keyless proof is the M1-D1-SPINE case.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane",
+          "evidence": "required",
           "tenantCase": {
             "kind": "legacy_table_isolation",
             "table": "provider_credentials",
             "positiveControl": true,
             "antiVacuityControl": true,
             "productionPath": "packages/db/src/repositories/tenant/job-control.ts resolveExecutionSecret (the device_local arm)"
-          }
+          },
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Same as above; the keyless proof is the M1-D1-SPINE case.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.credential.production_reader_company_predicate",
@@ -895,10 +895,10 @@
             "observedBy": "the presented leaseId differs from the attempt's own (recorded), and the resolve is refused — while the IDENTICAL request with the attempt's own lease resolves. The pair is the observation: the route is deliberately not an oracle for which lease exists, so the case does not depend on WHICH refusal reason comes back; it depends on the control resolving, which is what makes the refusal attributable to the lease binding."
           },
           "expectedClassification": "redemption_refused_on_foreign_lease_with_own_lease_control",
-          "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Needs a real sandbox-bearing attempt on the keyed DEP-015 lane, and the lane's fault-matrix step (added 2026-09-24) emits rows only for the three cases the journey itself observes. The clause-4 pair is PROVEN KEYLESSLY on M1-D1-SPINE at this revision; this is its real-provider mirror and is not what the E5 clause-4 floor depends on.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+          "evidence": "required",
+          "$supersededPendingReason": "(was `pending`/`keyed`, until DEP-022 built its driver) Needs a real sandbox-bearing attempt on the keyed DEP-015 lane, and the lane's fault-matrix step (added 2026-09-24) emits rows only for the three cases the journey itself observes. The clause-4 pair is PROVEN KEYLESSLY on M1-D1-SPINE at this revision; this is its real-provider mirror and is not what the E5 clause-4 floor depends on.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane",
+          "$drivenBy": "scripts/m1-shipped-boot/cross-tenant.mjs (DEP-022), run as the `cross-tenant` phase of .github/workflows/m1-shipped-boot.yml in BOTH modes; the injections are the D1 lane's own helpers from tests/d1/lib/e6f-harness.mjs, addressed at the shipped stack through the harness's parameterised binding."
         },
         {
           "case": "d2m.redaction.planted_canary_scrubbed",
@@ -918,9 +918,11 @@
           },
           "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
           "evidence": "pending",
-          "pendingKind": "keyed",
-          "pendingReason": "Needs a real E2B run whose redeemed credential is a planted canary. ★ THE ECHO MECHANISM ALREADY EXISTS ON THIS LANE, which is what makes the case provable here rather than on D1: DEP-017 env probe performs a \"planted execute, so any echo of them is scrubbed\" (packages/worker-daemon/src/supervisor/env-probe.ts), and the M1a-D2-MECHANISM a2 record measured plantedControl.red: true with three canaries each detected as its expected class -- that IS the echo being caught. What is still missing is a case asserting that the run OWN event and log streams carry the scrubber REDACTION_MARKER and not the value. NOTE the lane existing \"Scan the evidence AND the job log for job secrets\" step is NOT this case: it scrubs the uploaded bundle, seeds no per-run canary, and has no control (E5 exit-gate audit a2 section 4, clause 5). The keyless D1 mirror is blocked on a reference-provider echo flag -- see d1.redaction.planted_canary_scrubbed. CORRECTED BY DEP-021, 2026-09-24: the final sentence above -- \"The keyless D1 mirror is blocked on a reference-provider echo flag\" -- is FALSE, and is superseded rather than deleted. An echo flag is necessary but NOT sufficient there: measured at source, the echoed value would be scrubbed by the adapter-manager's own createRunOutputCapture before it crossed the wire, scrubbed again by the supervisor, and then handed to createUsageObserver, which returns four integers and never populates the obs.logs field that becomes a log event -- because the log that would have carried it was DROPPED by ruling F2 (2026-09-23, filed E4-F019). So the D1 mirror is blocked on a DECISION about that ruling, not on a provider flag. THIS case, on the keyed lane, is unaffected: the DEP-017 probe's planted execute is a real echo whose detection the mechanism a2 record already measured, and what remains missing here is still only the case that asserts the run's own streams.",
-          "pendingOwner": "planning session (F8), on the DEP-015 lane"
+          "pendingKind": "structural",
+          "pendingReason": "SUPERSEDED IN PLACE BY DEP-022, 2026-09-24 (the previous text is kept verbatim in $supersededPendingReason and is NOT deleted). Its remedy -- \"a keyed run asserting the run's own streams\" -- is FALSE, for the same reason DEP-021 measured on the D1 twin, and the blocker is one layer deeper than a keyed run. Re-measured at source on THIS lane's code path, at this revision, link by link rather than inherited: (1) an echo's only channel out of a sandbox is ExecuteInput.onStdout (packages/sandbox-provider/src/provider.ts, the per-op port); (2) on THIS lane that callback IS createRunOutputCapture, composed by executeRelayingStdout (packages/adapter-manager/src/server.ts), whose canaries are Object.values(env) -- so a planted credential is one of them -- and which returns only the SCRUBBED stdoutTail; the E2B provider runs behind the SAME adapter-manager as the reference provider, so nothing about a keyed run changes this link; (3) the daemon scrubs that tail again (packages/worker-daemon/src/supervisor/supervisor.ts, the observeRun call site); (4) the tail's ONLY consumer is createUsageObserver (packages/worker-daemon/src/supervisor/usage-observer.ts), which returns { usage } -- four integers -- and never populates obs.logs, the one field the supervisor turns into a log event; (5) the log that WOULD have carried it was built and then DROPPED by the M1 planning session under ruling F2, 2026-09-23, filed E4-F019, whose own in-code note records \"acceptance 1(b) is not live-provable\"; (6) the DEP-017 env probe is no alternative surface on this lane either -- envProbeLogMessage serialises NAMES and DIGESTS (envProbeExpectedDigests, packages/worker-daemon/src/supervisor/env-probe.ts), never values, so neither the canary nor the scrubber's REDACTION_MARKER can appear in it. The superseded text's claim that \"the DEP-017 probe's planted execute is a real echo whose detection the mechanism a2 record already measured\" is true about DETECTION inside the sandbox and false about the two declared STREAMS, which is what this case asserts on. So the scrubber's marker terminates in an integer parser and reaches NEITHER `events` NOR `logs`, and no keyed run can make it appear. Unblocking this is a DECISION to revisit F2, not a build task; DEP-022 therefore leaves the case pending, with the measurement above as its reason, rather than flipping it to `required` on optimism and spending a keyed run to learn it.",
+          "pendingOwner": "planning session (F2), which owns the WRK-018 1(b) ruling that removed the only channel this case could be observed on -- the same owner DEP-021 re-pointed the D1 twin to",
+          "$supersededPendingReason": "Needs a real E2B run whose redeemed credential is a planted canary. ★ THE ECHO MECHANISM ALREADY EXISTS ON THIS LANE, which is what makes the case provable here rather than on D1: DEP-017 env probe performs a \"planted execute, so any echo of them is scrubbed\" (packages/worker-daemon/src/supervisor/env-probe.ts), and the M1a-D2-MECHANISM a2 record measured plantedControl.red: true with three canaries each detected as its expected class -- that IS the echo being caught. What is still missing is a case asserting that the run OWN event and log streams carry the scrubber REDACTION_MARKER and not the value. NOTE the lane existing \"Scan the evidence AND the job log for job secrets\" step is NOT this case: it scrubs the uploaded bundle, seeds no per-run canary, and has no control (E5 exit-gate audit a2 section 4, clause 5). The keyless D1 mirror is blocked on a reference-provider echo flag -- see d1.redaction.planted_canary_scrubbed. CORRECTED BY DEP-021, 2026-09-24: the final sentence above -- \"The keyless D1 mirror is blocked on a reference-provider echo flag\" -- is FALSE, and is superseded rather than deleted. An echo flag is necessary but NOT sufficient there: measured at source, the echoed value would be scrubbed by the adapter-manager's own createRunOutputCapture before it crossed the wire, scrubbed again by the supervisor, and then handed to createUsageObserver, which returns four integers and never populates the obs.logs field that becomes a log event -- because the log that would have carried it was DROPPED by ruling F2 (2026-09-23, filed E4-F019). So the D1 mirror is blocked on a DECISION about that ruling, not on a provider flag. THIS case, on the keyed lane, is unaffected: the DEP-017 probe's planted execute is a real echo whose detection the mechanism a2 record already measured, and what remains missing here is still only the case that asserts the run's own streams.",
+          "$supersededPendingOwner": "planning session (F8), on the DEP-015 lane"
         }
       ]
     },

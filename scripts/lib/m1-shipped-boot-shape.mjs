@@ -30,7 +30,7 @@ export const JOB_LOG_TEE = ' 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs 
  * state, so neither writes to it; everything that could print a secret does. */
 export const TEED_PHASES = [
   "prepare", "boot-core", "seed", "apply-rollout", "assert-tenants", "provision-targets",
-  "boot-workers", "await-workers", "reconcile", "probe-presign", "dispatch", "collect",
+  "boot-workers", "await-workers", "reconcile", "probe-presign", "dispatch", "cross-tenant", "collect",
 ];
 
 /** The markers the CANDIDATE's own copy of the lane must carry, or its run would be judged by a
@@ -56,6 +56,16 @@ export const CANDIDATE_CONTROL_MARKERS = [
   // ★ BEHAVIOURAL markers, not merely symbols (Codex P1, PR #574): an ancestor carrying every
   // symbol above still had the one-line joined window and the latch's length floor, so greps for
   // names alone would admit a candidate that republishes a wrapped key.
+  // DEP-022 — the CROSS-TENANT drivers. A candidate that predates them would reach the
+  // `cross-tenant` step with no such phase and die there; on a KEYED dispatch that is after the
+  // journey has already spent. Rejecting it in the candidate gate costs nothing. Behavioural, not
+  // merely nominal: the harness binding is what lets the D1 drivers address THIS stack, and a
+  // candidate carrying the phase without it would address a stack that is not running.
+  ["scripts/m1-shipped-boot/journey.mjs", "crossTenant(loadState"],
+  ["scripts/m1-shipped-boot/cross-tenant.mjs", "runCrossTenantCases"],
+  ["scripts/m1-shipped-boot/cross-tenant.mjs", "suppressInjection"],
+  ["tests/d1/lib/e6f-harness.mjs", "composeBaseArgs"],
+  ["tests/d1/lib/e6f-harness.mjs", "HTTP_SERVICE"],
   ["scripts/lib/m1-shipped-boot.mjs", "carry = joined.slice("],
   ["scripts/lib/m1-shipped-boot.mjs", "ACCUMULATES: a prefix may span"],
   ["scripts/lib/m1-shipped-boot.mjs", "LENGTH floor"],

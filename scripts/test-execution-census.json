@@ -482,6 +482,16 @@
       "status": "runs",
       "workflow": "pr.yml",
       "step": "Sandbox output root is ONE value (SD-4)"
+    },
+    "scripts/lib/__tests__/e6f-harness-binding.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
+    },
+    "scripts/lib/__tests__/d2m-cross-tenant-coverage.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
     }
   }
 }

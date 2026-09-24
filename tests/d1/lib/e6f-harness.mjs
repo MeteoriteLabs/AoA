@@ -101,6 +101,63 @@ export const SKIP = LIVE
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const COMPOSE_FILE = path.join(repoRoot, "docker-compose.d1.yml");
 
+// -----------------------------------------------------------------------------
+// DEP-022 — THE STACK BINDING, MADE A PARAMETER (default-identical to what it replaced).
+//
+// Every `docker compose` call below was hardcoded to `-f docker-compose.d1.yml` with no project
+// name, and every HTTP client dexec'd into the D1-only `test-runner` service. That is why the nine
+// `d2m.tenant.cross.*` cases had no driver: their drivers already EXIST here, proven on the D1
+// lane, and the only thing stopping the shipped-boot lane (`docker-compose.staging.yml` +
+// `docker/m1-boot/docker-compose.m1-boot.yml`, project `aoa-m1-boot`, no `test-runner`) from
+// reusing them was this binding.
+//
+// ★ DEFAULT-IDENTICAL, DELIBERATELY. With neither variable set, `composeBaseArgs()` returns
+// exactly `compose -f <the D1 compose file>` and `HTTP_SERVICE` is `"test-runner"` — byte-for-byte
+// the argv the D1 lane already runs. `scripts/lib/__tests__/e6f-harness-binding.test.mjs` is the
+// positive control: it asserts the default argv AND that an override changes it, so a regression
+// that ignored the override (or, worse, changed the default) reds in pure node.
+//
+// ★ WHY THE HTTP CLIENTS CAN EXEC INTO `control-plane`. The worker-control surface authenticates
+// a device proof plus a session JWT (`server/src/services/worker-device-proof.ts`); there is no
+// loopback or origin trust anywhere on that path, so a client running inside the control-plane
+// container is exactly as unprivileged as one running in `test-runner`. What the container gives
+// us is a seat on the compose network that resolves `http://control-plane:3100` and a `node` with
+// the `postgres` dependency already present — the same two things `test-runner` gives the D1 lane.
+// -----------------------------------------------------------------------------
+
+/** The compose files this harness addresses, in order. Overridden by `AOA_E6F_COMPOSE_FILES`
+ * (a `path.delimiter`-separated list); defaults to the D1 stack alone. */
+const COMPOSE_FILES = (process.env.AOA_E6F_COMPOSE_FILES ?? "")
+  .split(path.delimiter)
+  .map((f) => f.trim())
+  .filter((f) => f.length > 0);
+
+/** The compose project name, if the stack under test uses one (`AOA_E6F_COMPOSE_PROJECT`). The
+ * D1 lane uses compose's directory-derived default, so this is absent there. */
+const COMPOSE_PROJECT = (process.env.AOA_E6F_COMPOSE_PROJECT ?? "").trim();
+
+/** The `--env-file` the stack's interpolations need (`AOA_E6F_COMPOSE_ENV_FILE`). The shipped-boot
+ * render is full of `${…:?}` required variables, so a compose call WITHOUT it does not merely lose
+ * defaults — it fails the render outright. The D1 stack needs none. */
+const COMPOSE_ENV_FILE = (process.env.AOA_E6F_COMPOSE_ENV_FILE ?? "").trim();
+
+/** The leading `docker` argv shared by every compose call in this file. Order matches the
+ * shipped-boot driver's own `composeArgs` (`scripts/m1-shipped-boot/journey.mjs`) so the two
+ * address one stack identically. */
+export function composeBaseArgs() {
+  const files = COMPOSE_FILES.length > 0 ? COMPOSE_FILES : [COMPOSE_FILE];
+  return [
+    "compose",
+    ...(COMPOSE_PROJECT ? ["-p", COMPOSE_PROJECT] : []),
+    ...(COMPOSE_ENV_FILE ? ["--env-file", COMPOSE_ENV_FILE] : []),
+    ...files.flatMap((f) => ["-f", f]),
+  ];
+}
+
+/** The service the HTTP clients run inside. `test-runner` on the D1 stack; the shipped-boot lane
+ * sets `AOA_E6F_HTTP_SERVICE=control-plane`, which has no such service. */
+export const HTTP_SERVICE = (process.env.AOA_E6F_HTTP_SERVICE ?? "").trim() || "test-runner";
+
 // In-stack service endpoints (see docker-compose.d1.yml networks matrix).
 export const CONTROL_PLANE_URL = "http://control-plane:3100";
 export const FAKE_PROVIDER_API_URL = "http://fake-provider:8080";
@@ -244,7 +301,7 @@ export function buildWorkerHello({ workerId, targetId, deviceGeneration = 1 }) {
 export function dexecModule(service, scriptSource, { timeout = 60_000, secrets = [] } = {}) {
   const res = spawnSync(
     "docker",
-    ["compose", "-f", COMPOSE_FILE, "exec", "-T", service, "node", "--input-type=module"],
+    [...composeBaseArgs(), "exec", "-T", service, "node", "--input-type=module"],
     { input: scriptSource, encoding: "utf8", timeout, maxBuffer: 16 * 1024 * 1024 },
   );
   // Longest first, so a value that contains another is not partly revealed by the shorter
@@ -491,7 +548,7 @@ const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
 const text = await res.text();
 report({ status: res.status, session: res.headers.get("aoa-worker-session"), body: safeJson(text) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Poll for a lease offer. Bearer session JWT + a fresh device proof; returns
@@ -523,7 +580,7 @@ const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
 const text = await res.text();
 report({ status: res.status, body: safeJson(text) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Acknowledge a lease. The ack URL carries the leaseId (route asserts
@@ -568,7 +625,7 @@ const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
 const text = await res.text();
 report({ status: res.status, body: safeJson(text) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Generic single JSON fetch from a container (used to drive the fake provider). */
@@ -1035,7 +1092,7 @@ report({
   drain: drainResults,
 });
 `;
-  return dexecModule("test-runner", script, { timeout });
+  return dexecModule(HTTP_SERVICE, script, { timeout });
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1044,7 +1101,7 @@ report({
 // runReplicaRace is a clone of runLeaseRace whose poll/ack requests each carry their OWN
 // control-plane base (replica A `http://control-plane:3100` or B `http://control-plane-b:3100`),
 // so a single test-runner exec can race concurrent traffic across BOTH replicas over the one
-// shared PostgreSQL. ALL concurrency lives INSIDE this one `dexecModule("test-runner")` exec â€”
+// shared PostgreSQL. ALL concurrency lives INSIDE this one `dexecModule(HTTP_SERVICE)` exec â€”
 // the campaign is `--test-concurrency=1` serial, so a test must not fan out its own
 // `docker exec` calls. Every poll and every ack signs a FRESH single-use device proof
 // (randomBytes-per-call is concurrency-safe), so overlapping in-process requests never reuse
@@ -1170,7 +1227,7 @@ const results = await Promise.all(P.requests.map(async (spec) => {
 
 report({ results });
 `;
-  return dexecModule("test-runner", script, { timeout });
+  return dexecModule(HTTP_SERVICE, script, { timeout });
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1427,7 +1484,7 @@ const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
 const text = await res.text();
 report({ status: res.status, body: safeJson(text) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Commit a verified artifact manifest. Bearer session JWT + a fresh device proof;
@@ -1479,7 +1536,7 @@ const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
 const text = await res.text();
 report({ status: res.status, body: safeJson(text) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Self-provision the artifact bucket using the control-plane's OWN S3 client (the
@@ -1545,7 +1602,7 @@ const res = await fetch(P.url, { method: "PUT", headers, body: bodyBytes });
 const text = await res.text();
 report({ status: res.status, sha256Hex, sha256B64, sizeBytes: bodyBytes.length, body: text.slice(0, 2000) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Direct GET from a presigned download URL. Runs in test-runner. Returns
@@ -1560,7 +1617,7 @@ const res = await fetch(P.url, { method: "GET" });
 const buf = Buffer.from(await res.arrayBuffer());
 report({ status: res.status, bodyBase64: buf.toString("base64"), sizeBytes: buf.length });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Read the committed job_artifacts row back under the OWNER DB (control-plane), to
@@ -1707,7 +1764,7 @@ try {
   report({ ok: false, status: 0, body: String(error && error.message ? error.message : error) });
 }
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Remove a runtime toxic (DELETE /proxies/<proxy>/toxics/<name>). Idempotent: a
@@ -1726,7 +1783,7 @@ try {
   report({ ok: false, status: 0, error: String(error && error.message ? error.message : error) });
 }
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Fault-tolerant raw-bytes PUT to a presigned upload URL. Identical wire shape to
@@ -1758,7 +1815,7 @@ try {
   report({ threw: true, error: String(error && error.message ? error.message : error), sha256Hex, sha256B64, sizeBytes: bodyBytes.length });
 }
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1903,7 +1960,7 @@ const res = await fetch(P.url, {
 const text = await res.text();
 report({ status: res.status, body: safeJson(text) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Enable/disable a whole Toxiproxy proxy (clean bidirectional link sever/restore) via
@@ -1929,7 +1986,7 @@ try {
   report({ ok: false, status: 0, body: String(error && error.message ? error.message : error) });
 }
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** The in-compose LISTEN address of each Toxiproxy-fronted link (host:port reachable
@@ -1967,7 +2024,7 @@ try {
   clearTimeout(timer);
 }
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Fill each event's `eventDigest` = sha256hex(canonicalEventDigestInputV1(event))
@@ -2027,7 +2084,7 @@ const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
 const text = await res.text();
 report({ status: res.status, body: safeJson(text) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** One-shot owner-DB probe of the WHOLE convergence picture for a job: its lease rows,
@@ -2747,7 +2804,7 @@ try {
 export function runDistributedDrainCli({ operator, timeout = 180_000 }) {
   const res = spawnSync(
     "docker",
-    ["compose", "-f", COMPOSE_FILE, "exec", "-T", "control-plane",
+    [...composeBaseArgs(), "exec", "-T", "control-plane",
       "node", `${CP_DIST}/cli/drain-distributed-execution.js`, "--operator", operator],
     { encoding: "utf8", timeout, maxBuffer: 16 * 1024 * 1024 },
   );
@@ -3086,7 +3143,7 @@ try {
  * is what makes a RESTART observable: a restart that did not happen leaves it unchanged, so the
  * case cannot pass without the injection firing. */
 export function composeServiceRuntime(service) {
-  const idRes = spawnSync("docker", ["compose", "-f", COMPOSE_FILE, "ps", "-q", service], { encoding: "utf8", timeout: 60_000 });
+  const idRes = spawnSync("docker", [...composeBaseArgs(), "ps", "-q", service], { encoding: "utf8", timeout: 60_000 });
   const containerId = (idRes.stdout ?? "").trim().split("\n")[0] ?? "";
   if (!containerId) return { ok: false, error: `no container for service ${service}`, stderr: idRes.stderr ?? "" };
   const inspect = spawnSync(
@@ -3121,7 +3178,7 @@ export function composeServiceRuntime(service) {
 export function killComposeService(service, { signal = "KILL", timeout = 120_000 } = {}) {
   const res = spawnSync(
     "docker",
-    ["compose", "-f", COMPOSE_FILE, "kill", "-s", signal, service],
+    [...composeBaseArgs(), "kill", "-s", signal, service],
     { encoding: "utf8", timeout },
   );
   // Only the exit STATUS is returned, never the streams: `docker compose` is not the dexec
@@ -3134,7 +3191,7 @@ export function killComposeService(service, { signal = "KILL", timeout = 120_000
 export function startComposeService(service, { timeout = 300_000 } = {}) {
   const res = spawnSync(
     "docker",
-    ["compose", "-f", COMPOSE_FILE, "start", service],
+    [...composeBaseArgs(), "start", service],
     { encoding: "utf8", timeout },
   );
   return { ok: res.status === 0, status: res.status };
@@ -3145,7 +3202,7 @@ export function startComposeService(service, { timeout = 300_000 } = {}) {
 export function restartComposeService(service, { timeout = 300_000 } = {}) {
   const res = spawnSync(
     "docker",
-    ["compose", "-f", COMPOSE_FILE, "restart", "--timeout", "30", service],
+    [...composeBaseArgs(), "restart", "--timeout", "30", service],
     { encoding: "utf8", timeout },
   );
   return { ok: res.status === 0, status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
@@ -3170,7 +3227,7 @@ const result = await new Promise((resolve) => {
 });
 report(result);
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Renew a lease over the REAL /worker-control/leases/:id/renew. The cross-tenant `lease`
@@ -3210,7 +3267,7 @@ const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
 const text = await res.text();
 report({ status: res.status, body: safeJson(text) });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Redeem an execution-secret handle over the REAL fenced
@@ -3238,7 +3295,21 @@ report({ status: res.status, body: safeJson(text) });
  * fence is still refused. What changes is that the route arm is now exercised past schema
  * validation for the first time on this lane. The stale sentence is left where it stands, in that
  * case's own comment, because this file does not rewrite a record in place; it is corrected here,
- * dated, at the helper the claim was made about. */
+ * dated, at the helper the claim was made about.
+ *
+ * ★ DEP-022, 2026-09-24 — THE REPLY IS NARROWED, and this is the ONLY client here that narrows.
+ * THE CLASS: *a control-plane reply that MATERIALISES a credential, reported WHOLE out of the
+ * container, where any caller's failure path or evidence write can publish it.* A `resolved` reply
+ * carries the redeemed provider key. No caller reads anything but `outcome`, `reason` and `code` —
+ * swept, not assumed: every `.body` use on a resolve result in `tests/d1/m1-fault-matrix.test.mjs`
+ * and `scripts/m1-shipped-boot/cross-tenant.mjs`. Reported whole, ONE unparsed stdout — a container
+ * that died mid-call, a syntax error, a non-JSON 502 — put the key into a test assertion message
+ * and, on the shipped-boot lane, into an UPLOADED evidence file.
+ *
+ * The other HTTP clients in this file are deliberately NOT narrowed, and that was checked rather
+ * than assumed: `enroll` must return the session and `artifactTransferGrant` must return the
+ * presigned url, because their callers use exactly those. Those two narrow at the RECORDING
+ * boundary instead (`responseFacts`, in both lanes' drivers). */
 export function resolveExecutionSecretHttp({ session, workerId, jobId, attempt, leaseId, fenceToken, handleId, deviceKey }) {
   const url = `${CONTROL_PLANE_URL}/api/worker-control/execution-secrets/resolve`;
   const params = { url, session, workerId, jobId, attempt, leaseId, fenceToken, handleId, privateKeyPem: deviceKey.privateKeyPem, publicKeyDer: deviceKey.publicKeyDer };
@@ -3270,9 +3341,14 @@ headers["content-type"] = "application/json";
 headers["authorization"] = "Bearer " + P.session;
 const res = await fetch(P.url, { method: "POST", headers, body: bodyString });
 const text = await res.text();
-report({ status: res.status, body: safeJson(text) });
+// DEP-022: NARROWED before it leaves the container -- see this function's docstring.
+const parsed = safeJson(text);
+const narrowed = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+  ? { outcome: parsed.outcome ?? null, reason: parsed.reason ?? null, code: parsed.code ?? null }
+  : null;
+report({ status: res.status, body: narrowed });
 `;
-  return dexecModule("test-runner", script);
+  return dexecModule(HTTP_SERVICE, script);
 }
 
 /** Mint ONE `job_secret_handles` row for an attempt, so the secrets surface has a durable row to
@@ -3724,7 +3800,7 @@ export const REDACTION_MARKER = "«redacted»";
 export function composeServiceLogs(service, { tail = 5000, timeout = 120_000 } = {}) {
   const res = spawnSync(
     "docker",
-    ["compose", "-f", COMPOSE_FILE, "logs", "--no-color", "--tail", String(tail), service],
+    [...composeBaseArgs(), "logs", "--no-color", "--tail", String(tail), service],
     { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 },
   );
   const text = `${res.stdout ?? ""}${res.stderr ?? ""}`;

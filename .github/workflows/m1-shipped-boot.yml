@@ -170,6 +170,17 @@ jobs:
           grep -q "directiveJoined" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor does not run a mask directive PAYLOAD through the joined window, so a wrapped key masked by its first fragment publishes the rest (missing 'directiveJoined' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
           grep -q "randomUUID" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its capture sentinels carry no unpredictable id, so a producer line can forge a close (missing 'randomUUID' in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
           grep -q "never closed" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan counts sentinels instead of pairing them by id (missing 'never closed' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          # ★ DEP-022. The `cross-tenant` step below is MODE-INDEPENDENT, and checkout replaces the
+          # workspace with the candidate — so a candidate that predates DEP-022 would reach it with
+          # no such phase. On a KEYED dispatch that is after the journey has already spent. These
+          # greps name the driver, its suppression arm, and the harness binding that lets the D1
+          # drivers address THIS stack; a candidate with the phase but not the binding would
+          # address a stack that is not running.
+          grep -q "crossTenant(loadState" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates DEP-022: its driver has no cross-tenant phase, so the step below would fail after the keyed journey had already spent (missing crossTenant(loadState in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "runCrossTenantCases" scripts/m1-shipped-boot/cross-tenant.mjs || { echo "::error::the candidate predates DEP-022: it has no cross-tenant driver (missing runCrossTenantCases in scripts/m1-shipped-boot/cross-tenant.mjs)"; exit 1; }
+          grep -q "suppressInjection" scripts/m1-shipped-boot/cross-tenant.mjs || { echo "::error::the candidate predates DEP-022: its cross-tenant driver has no suppression arm, so the lane's positive control would have nothing to invert (missing suppressInjection in scripts/m1-shipped-boot/cross-tenant.mjs)"; exit 1; }
+          grep -q "composeBaseArgs" tests/d1/lib/e6f-harness.mjs || { echo "::error::the candidate predates DEP-022: its E6F harness hardcodes the D1 compose file, so every cross-tenant driver would address a stack that is not running (missing composeBaseArgs in tests/d1/lib/e6f-harness.mjs)"; exit 1; }
+          grep -q "HTTP_SERVICE" tests/d1/lib/e6f-harness.mjs || { echo "::error::the candidate predates DEP-022: its E6F harness dexecs every HTTP client into the D1-only test-runner service, which this stack does not have (missing HTTP_SERVICE in tests/d1/lib/e6f-harness.mjs)"; exit 1; }
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -275,6 +286,24 @@ jobs:
       - name: Run the journey
         run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
+      # M1a HARNESS GAP 2 (DEP-022) — THE CROSS-TENANT DRIVERS.
+      #
+      # The E5 exit-gate audit `a2` failed criterion 7's R5 on one measured sentence: the profile
+      # *"declares nine `d2m.tenant.cross.*` cases and every one is `pending`"*. This step is their
+      # driver, plus the four legacy no-RLS tables, the cost surface and the E5 clause-4
+      # wrong-lease redemption refusal — fourteen cases, each with a SAME-TENANT POSITIVE CONTROL
+      # asserted BEFORE its denial is classified (ruling F10: denied, not merely empty).
+      #
+      # ★ BOTH MODES, DELIBERATELY. Nothing here touches a provider: the fixture seeds its own
+      # targets, enrols its own workers and drives the fenced worker-control surface directly. So
+      # the KEYLESS rehearsal exercises every driver end to end, and a keyed run is spent
+      # confirming rows rather than discovering that a driver does not boot.
+      #
+      # ★ AFTER `dispatch`: the tenants' REAL workers have finished, so this fixture cannot
+      # compete with the journey for an offer.
+      - name: Drive the M1a-D2-MECHANISM cross-tenant, cost, legacy-table and lease-binding cases
+        run: node scripts/m1-shipped-boot/journey.mjs cross-tenant --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
       # M1a HARNESS GAP 1 (2026-09-24) — THE FAULT-MATRIX STEP THIS LANE NEVER HAD.
       #
       # The `M1a-D2-MECHANISM` QA record `a2` measured it: *"m1-shipped-boot.yml at the candidate
@@ -304,6 +333,36 @@ jobs:
         run: >-
           node scripts/check-campaign-fault-matrix.mjs
           --evidence "$M1_OUT/evidence/fault-matrix-bundle.json"
+
+      # ★ THE POSITIVE CONTROL IS THE POINT, and it is the same shape `d1-merge-train.yml` uses for
+      # `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION`. With `--suppress-injection` every hostile arm is
+      # performed by the VICTIM's own identity: the controls still pass, every case still records
+      # and classifies, and every row carries `injectionFired: false`. If the phase still PASSED
+      # then, it would be measuring nothing — the failure class this whole exercise is about — so
+      # the lane runs exactly that and FAILS if it succeeds, and greps the evidence marker to prove
+      # the red came from the injection rather than from a bring-up failure.
+      #
+      # LAST, after the graded run and its verdict, so nothing this arm seeds can perturb them. It
+      # writes to its own `cross-tenant-suppressed.json`, never over the graded observations.
+      - name: POSITIVE CONTROL — with the cross-tenant injections suppressed, the phase MUST go red
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/m1-cross-tenant-suppressed.txt"
+          node scripts/m1-shipped-boot/journey.mjs cross-tenant --out "$M1_OUT" --suppress-injection 2>&1             | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" | tee "$out"
+          status="${PIPESTATUS[0]}"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::the cross-tenant phase PASSED with every injection suppressed — it is measuring nothing"
+            exit 1
+          fi
+          grep -F '[cross-tenant:evidence]' "$out" || {
+            echo "::error::the cross-tenant phase went red with the injections suppressed, but NOT on its own evidence verdict"
+            exit 1
+          }
+          grep -F 'injection_did_not_fire' "$out" || {
+            echo "::error::the suppressed run did not report an unfired injection — the observers are not deciding anything"
+            exit 1
+          }
+          echo "positive control: a suppressed injection reds the cross-tenant phase, as required"
 
       - name: Collect the evidence (redacted)
         id: collect

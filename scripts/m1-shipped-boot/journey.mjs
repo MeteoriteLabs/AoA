@@ -56,6 +56,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { CROSS_TENANT_EVIDENCE_MARKER, runCrossTenantCases } from "./cross-tenant.mjs";
 import {
   evaluateFaultMatrixDeclaration,
   evaluateFaultMatrixEvidence,
@@ -117,6 +118,7 @@ function parseArgs(argv) {
     else if (key === "--candidate") out.candidate = argv[++i];
     else if (key === "--mode") out.mode = argv[++i];
     else if (key === "--e2b-template") out.template = argv[++i];
+    else if (key === "--suppress-injection") out.suppressInjection = true;
   }
   return out;
 }
@@ -1107,6 +1109,72 @@ function collect(state) {
 // `pending_case_reported` rule exists to stop, inverted.
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// DEP-022 — THE CROSS-TENANT PHASE (both modes).
+//
+// The E5 exit-gate audit `a2` failed criterion 7's R5 because *"[the profile] declares nine
+// `d2m.tenant.cross.*` cases and every one is `pending`"*. This phase is their driver. It runs the
+// D1 lane's OWN injections (`tests/d1/lib/e6f-harness.mjs`) against the SHIPPED control plane, by
+// pointing that harness's now-parameterised stack binding at this stack.
+//
+// ★ IT RUNS IN BOTH MODES, AND THAT IS THE POINT OF THE BUDGET. Nothing here touches a provider:
+// the fixture seeds its own targets, enrols its own workers and drives the fenced worker-control
+// surface directly, so the keyless rehearsal exercises every driver end to end. A keyed run is
+// then spent confirming the rows, never discovering that a driver does not boot.
+//
+// ★ AFTER `dispatch`, never before: the tenants' REAL workers have finished by then, so this
+// fixture cannot compete with the journey for an offer.
+// -----------------------------------------------------------------------------
+
+/** Bind the D1 harness to THIS stack. Absolute paths, because the harness spawns `docker` without
+ * a cwd of its own and a relative compose path would resolve against whatever the caller's was. */
+function bindHarnessToThisStack(state) {
+  process.env.AOA_E6F_COMPOSE_PROJECT = PROJECT;
+  process.env.AOA_E6F_COMPOSE_ENV_FILE = state.envFile;
+  process.env.AOA_E6F_COMPOSE_FILES = [
+    path.join(repoRoot, BASE_COMPOSE),
+    path.join(repoRoot, OVERLAY),
+  ].join(path.delimiter);
+  // The D1 stack's `test-runner` does not exist here. `control-plane` has the compose network,
+  // the `postgres` dependency and the CA bundle — the same three things `test-runner` gives D1 —
+  // and the worker-control surface has no loopback or origin trust for it to borrow.
+  process.env.AOA_E6F_HTTP_SERVICE = "control-plane";
+}
+
+async function crossTenant(state, { suppressInjection = false } = {}) {
+  bindHarnessToThisStack(state);
+  const label = suppressInjection ? "cross-tenant (INJECTIONS SUPPRESSED — this MUST fail)" : "cross-tenant";
+  console.log(`${label}: driving the M1a-D2-MECHANISM tenant, cost, legacy-table and lease-binding cases`);
+  let observations = null;
+  let error = null;
+  try {
+    observations = await runCrossTenantCases({
+      tenants: state.tenants,
+      ownerSql: (sqlText, params) => ownerSql(state, sqlText, params),
+      suppressInjection,
+      log: (line) => console.log(redactSecrets(String(line), state.redact)),
+    });
+  } catch (err) {
+    error = err;
+  }
+  // The observations are retained on BOTH outcomes: a phase that only wrote evidence when it
+  // passed would leave a failure with nothing to read.
+  writeEvidence(state, suppressInjection ? "cross-tenant-suppressed.json" : "cross-tenant-observations.json", {
+    ticket: "DEP-022",
+    profile: "M1a-D2-MECHANISM",
+    candidate: state.candidate,
+    mode: state.mode,
+    suppressInjection,
+    producedBy: `scripts/m1-shipped-boot/journey.mjs cross-tenant${suppressInjection ? " --suppress-injection" : ""}`,
+    finishedAt: new Date().toISOString(),
+    cases: observations?.rows ?? [],
+    detail: observations?.detail ?? {},
+    error: error ? redactSecrets(String(error.message ?? error), state.redact).slice(0, 4000) : null,
+  });
+  if (error) fail(`${label}: ${redactSecrets(String(error.message ?? error), state.redact)}`);
+  console.log(`${CROSS_TENANT_EVIDENCE_MARKER} ${observations.rows.length} case(s) recorded`);
+}
+
 /** One declared case's row, with the fact that decided it. */
 function matrixRow(caseId, { injectionFired, observedClassification, detail }) {
   return { case: caseId, injectionFired: injectionFired === true, observedClassification, detail };
@@ -1186,13 +1254,33 @@ function faultMatrix(state) {
     }));
   }
 
+  // DEP-022 — the cross-tenant, cost, legacy-table and lease-binding rows, from the phase that
+  // drove them. REQUIRED, not optional: the fault-matrix step runs after `cross-tenant` in the
+  // workflow, so a missing file means the phase did not run and the bundle would silently carry
+  // eleven fewer rows than the declaration now requires. `evaluateFaultMatrixEvidence` would then
+  // red with `case_not_run` — correctly, but only after the keyed journey had already spent. This
+  // refuses first, and says why.
+  const crossPath = path.join(evidenceDir(state), "cross-tenant-observations.json");
+  if (!existsSync(crossPath)) {
+    fail("no cross-tenant-observations.json — the `cross-tenant` phase must run BEFORE `fault-matrix`");
+  }
+  const cross = JSON.parse(readFileSync(crossPath, "utf8"));
+  if (cross.suppressInjection === true) {
+    fail("cross-tenant-observations.json was produced with the injections SUPPRESSED — that bundle is the lane's negative control, not evidence");
+  }
+  if (!Array.isArray(cross.cases) || cross.cases.length === 0) {
+    fail("cross-tenant-observations.json carries no cases");
+  }
+  for (const row of cross.cases) rows.push(row);
+
   const bundle = {
     profile,
-    ticket: "DEP-015",
+    ticket: "DEP-015 + DEP-022",
     candidate: state.candidate,
     mode: state.mode,
     producedBy: "scripts/m1-shipped-boot/journey.mjs fault-matrix",
-    note: "Rows are emitted ONLY for the cases this lane's journey observes. Every other case in this profile is declared `pending` with its kind, reason and owner; see tests/d1/fault-matrix.json.",
+    note: "Rows come from two sources, both of them observations of THIS stack: the journey's own per-tenant outcomes (DEP-015) and the cross-tenant/cost/legacy/lease-binding drivers (DEP-022, cross-tenant-observations.json). Every case still declared `pending` carries its kind, reason and owner; see tests/d1/fault-matrix.json.",
+    crossTenantObservations: { producedBy: cross.producedBy ?? null, finishedAt: cross.finishedAt ?? null, cases: cross.cases.length },
     startedAt: journey.startedAt ?? null,
     finishedAt: new Date().toISOString(),
     cases: rows,
@@ -1238,6 +1326,7 @@ const PHASES = {
   reconcile: (args) => reconcile(loadState(args.out)),
   "probe-presign": (args) => probePresign(loadState(args.out)),
   dispatch: (args) => dispatch(loadState(args.out)),
+  "cross-tenant": (args) => crossTenant(loadState(args.out), { suppressInjection: args.suppressInjection === true }),
   "fault-matrix": (args) => faultMatrix(loadState(args.out)),
   collect: (args) => collect(loadState(args.out)),
   "leak-scan": (args) => leakScan(loadState(args.out)),
