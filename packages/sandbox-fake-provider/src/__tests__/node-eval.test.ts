@@ -26,6 +26,7 @@ import {
   assertProbeArgvShape,
   createNodeEvalRunner,
   executeScriptedCommand,
+  executeScriptedCommandAsync,
   sha256Hex,
 } from "../index.js";
 
@@ -286,5 +287,33 @@ describe("node-eval — the probe's ARGUMENTS are pinned too, not just its scrip
       ),
     ).toThrow(NodeEvalRefusedError);
     expect(spawned).toBe(0);
+  });
+});
+
+describe("node-eval — the DEP-021 delay never reaches a probe invocation", () => {
+  it("★ the delay does NOT reach a DEP-017 probe invocation", async () => {
+    // The probe's argv is the DAEMON's, and it is classified BEFORE the scripting flags are
+    // read. A `--aoa-fake-delay` look-alike carried inside a probe invocation must not be able
+    // to delay a control the daemon times independently, so the probe path never waits.
+    let slept = 0;
+    const result = await executeScriptedCommandAsync(
+      {
+        sandboxId: "sbx",
+        command: "sh",
+        args: probeArgs(SCRIPT, ["--aoa-fake-delay=9000", "", "", "salt", "{}"]),
+        env: {},
+      },
+      {
+        deadlineMs: 60_000,
+        providerOpId: "op",
+        runNodeEval: () => ({ stdout: "PROBE OK\n", exitCode: 0, signal: null }),
+        allowedProbeScriptDigests: PINNED,
+        sleep: async () => {
+          slept += 1;
+        },
+      },
+    );
+    expect(slept).toBe(0);
+    expect(result).toMatchObject({ exitCode: 0, timedOut: false });
   });
 });

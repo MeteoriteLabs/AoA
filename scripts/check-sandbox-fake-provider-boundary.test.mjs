@@ -32,6 +32,7 @@ import path from "node:path";
 import { readFile as realReadFile } from "node:fs/promises";
 
 import { runBoundaryCheck } from "./check-sandbox-fake-provider-boundary.mjs";
+import { FAKE_PROVIDER_PACKAGE } from "./lib/sandbox-fake-provider-boundary.mjs";
 
 const PKG_REL = "packages/sandbox-fake-provider";
 const PKG_NAME = "@armyofagents/sandbox-fake-provider";
@@ -341,4 +342,312 @@ test("the default package list covers BOTH sandbox packages", async (t) => {
   const names = SANDBOX_BOUNDARY_PACKAGES.map((p) => p.name).sort();
   assert.deepEqual(names, ["@armyofagents/sandbox-fake-provider", "@armyofagents/sandbox-provider-contract"]);
   assert.equal(typeof real, "function");
+});
+
+// ==========================================================================
+// THE INBOUND ARM (DEP-021) — who may depend on / import the fake provider.
+//
+// The corpus above is OUTBOUND: what the two leaf packages may import. These cases are the
+// other direction, which is the one that decides whether a FABRICATING provider (and every
+// `--aoa-fake-*` scripting flag it carries) is reachable from a production build.
+//
+// ★ EVERY CASE HERE IS A POSITIVE CONTROL. At `eb8458bb3` the real tree already satisfied the
+// inbound policy, so an arm with no reds would be indistinguishable from an arm that
+// evaluates nothing. Each case therefore MUTATES a synthetic workspace and asserts the exact
+// violation string, and the last two assert the fail-closed refusals on an empty scan.
+// ==========================================================================
+
+const WORKSPACE_YAML = ["packages:", "  - packages/*", "  - server", ""].join("\n");
+
+/** Build a synthetic workspace root: `pnpm-workspace.yaml` plus the packages described. */
+function inboundSetup(t, packages) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sfp-in-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, "pnpm-workspace.yaml"), WORKSPACE_YAML);
+  for (const pkg of packages) {
+    const dir = path.join(root, ...pkg.rel.split("/"));
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg.manifest, null, 2));
+    for (const [name, source] of Object.entries(pkg.sources ?? { "src/index.ts": "export const ok = 1;\n" })) {
+      const target = path.join(dir, ...name.split("/"));
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, source);
+    }
+  }
+  return root;
+}
+
+/** The minimal clean workspace: one production package and the fake provider itself. */
+function cleanPackages(overrides = {}) {
+  return [
+    {
+      rel: "server",
+      manifest: { name: "@armyofagents/server", dependencies: { zod: "3.24.2" }, ...(overrides.server ?? {}) },
+      sources: overrides.serverSources,
+    },
+    {
+      rel: "packages/sandbox-fake-provider",
+      manifest: {
+        name: FAKE_PROVIDER_PACKAGE,
+        dependencies: { "@armyofagents/worker-protocol": "workspace:*", zod: "3.24.2" },
+      },
+      // The fake's OWN source names itself in a string; `self` must not trip on it.
+      sources: { "src/index.ts": `export const me = "${FAKE_PROVIDER_PACKAGE}";\n` },
+    },
+  ];
+}
+
+async function runInbound(root, opts) {
+  const { runInboundCheck } = await import("./check-sandbox-fake-provider-boundary.mjs");
+  return runInboundCheck(root, opts);
+}
+
+test("inbound: the clean workspace passes, and the scan is NON-VACUOUS", async (t) => {
+  const root = inboundSetup(t, cleanPackages());
+  const { policyErrors, readErrors, scanned } = await runInbound(root);
+  assert.deepEqual(policyErrors, [], policyErrors.join(" | "));
+  assert.deepEqual(readErrors, [], readErrors.join(" | "));
+  // The counts are the non-vacuity assertion: a walk that found nothing would otherwise be a
+  // pass. Asserted BEFORE any red below is trusted.
+  assert.equal(scanned.packages, 2);
+  assert.ok(scanned.sources >= 2, `expected >= 2 sources, got ${scanned.sources}`);
+});
+
+test("inbound RED: a production manifest given a runtime dependency on the fake", async (t) => {
+  for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+    const root = inboundSetup(t, cleanPackages({ server: { [field]: { [FAKE_PROVIDER_PACKAGE]: "workspace:*" } } }));
+    const { policyErrors } = await runInbound(root);
+    assert.ok(
+      hasSubstr(policyErrors, `server/package.json: ${field} must not contain ${FAKE_PROVIDER_PACKAGE}`),
+      `${field}: ${policyErrors.join(" | ")}`,
+    );
+    assert.ok(hasSubstr(policyErrors, "a runtime edge makes a FABRICATING provider production-reachable"));
+  }
+});
+
+test("inbound RED: a bundled dependency on the fake, under either spelling", async (t) => {
+  for (const field of ["bundledDependencies", "bundleDependencies"]) {
+    const root = inboundSetup(t, cleanPackages({ server: { [field]: [FAKE_PROVIDER_PACKAGE] } }));
+    const { policyErrors } = await runInbound(root);
+    assert.ok(
+      hasSubstr(policyErrors, `server/package.json: ${field} must not contain ${FAKE_PROVIDER_PACKAGE}`),
+      `${field}: ${policyErrors.join(" | ")}`,
+    );
+  }
+});
+
+test("inbound RED: a devDependency on the fake in a package that is not the conformance harness", async (t) => {
+  const root = inboundSetup(t, cleanPackages({ server: { devDependencies: { [FAKE_PROVIDER_PACKAGE]: "workspace:*" } } }));
+  const { policyErrors } = await runInbound(root);
+  assert.ok(
+    hasSubstr(policyErrors, `server/package.json: devDependencies must not contain ${FAKE_PROVIDER_PACKAGE}`),
+    policyErrors.join(" | "),
+  );
+});
+
+test("inbound: the conformance harness MAY dev-depend on the fake — but NOT at runtime", async (t) => {
+  const harness = {
+    rel: "packages/sandbox-provider-contract",
+    manifest: {
+      name: "@armyofagents/sandbox-provider-contract",
+      dependencies: { zod: "3.24.2" },
+      devDependencies: { [FAKE_PROVIDER_PACKAGE]: "workspace:*" },
+    },
+    sources: {
+      // Its TEST source may import the fake; its shipped source may not.
+      "src/__tests__/contract.test.ts": `import { f } from "${FAKE_PROVIDER_PACKAGE}";\nconsole.log(f);\n`,
+      "src/index.ts": "export const ok = 1;\n",
+    },
+  };
+  const allowed = inboundSetup(t, [...cleanPackages(), harness]);
+  const clean = await runInbound(allowed);
+  assert.deepEqual(clean.policyErrors, [], clean.policyErrors.join(" | "));
+
+  // ★ THE SAME PACKAGE, ONE FIELD MOVED. This is the edge that would reach a shipped image:
+  // `sandbox-e2b-provider` depends on the contract package in `dependencies`, so a runtime
+  // edge here is transitive into every closure that carries it.
+  const promoted = inboundSetup(t, [
+    ...cleanPackages(),
+    {
+      ...harness,
+      manifest: {
+        name: "@armyofagents/sandbox-provider-contract",
+        dependencies: { zod: "3.24.2", [FAKE_PROVIDER_PACKAGE]: "workspace:*" },
+      },
+    },
+  ]);
+  const red = await runInbound(promoted);
+  assert.ok(
+    hasSubstr(
+      red.policyErrors,
+      `packages/sandbox-provider-contract/package.json: dependencies must not contain ${FAKE_PROVIDER_PACKAGE}`,
+    ),
+    red.policyErrors.join(" | "),
+  );
+});
+
+test("inbound RED: SHIPPED source importing the fake, in every extension the scan admits", async (t) => {
+  for (const file of ["src/index.ts", "src/page.tsx", "src/tool.mjs", "src/legacy.js", "src/mod.cts"]) {
+    const root = inboundSetup(
+      t,
+      cleanPackages({ serverSources: { [file]: `import { f } from "${FAKE_PROVIDER_PACKAGE}";\nexport default f;\n` } }),
+    );
+    const { policyErrors } = await runInbound(root);
+    assert.ok(
+      hasSubstr(policyErrors, `server/${file}: shipped source must not import ${FAKE_PROVIDER_PACKAGE}`),
+      `${file}: ${policyErrors.join(" | ")}`,
+    );
+  }
+});
+
+test("inbound RED: a SUBPATH import of the fake is caught, not only the bare specifier", async (t) => {
+  const root = inboundSetup(
+    t,
+    cleanPackages({
+      serverSources: { "src/index.ts": `import { f } from "${FAKE_PROVIDER_PACKAGE}/dist/hostile-driver.js";\nexport default f;\n` },
+    }),
+  );
+  const { policyErrors } = await runInbound(root);
+  assert.ok(hasSubstr(policyErrors, "shipped source must not import"), policyErrors.join(" | "));
+});
+
+test("inbound RED: TEST source importing the fake in a non-allowlisted package, in both test spellings", async (t) => {
+  for (const file of ["src/thing.test.ts", "src/__tests__/thing.ts", "tests/thing.ts"]) {
+    const root = inboundSetup(
+      t,
+      cleanPackages({ serverSources: { [file]: `import { f } from "${FAKE_PROVIDER_PACKAGE}";\nconsole.log(f);\n` } }),
+    );
+    const { policyErrors } = await runInbound(root);
+    assert.ok(
+      hasSubstr(policyErrors, `server/${file}: test source in @armyofagents/server must not import`),
+      `${file}: ${policyErrors.join(" | ")}`,
+    );
+  }
+});
+
+test("inbound: the fake's OWN sources and manifest never trip the arm", async (t) => {
+  const root = inboundSetup(t, [
+    ...cleanPackages(),
+    {
+      rel: "packages/sandbox-fake-provider-extra",
+      manifest: { name: FAKE_PROVIDER_PACKAGE, dependencies: { [FAKE_PROVIDER_PACKAGE]: "workspace:*" } },
+      sources: { "src/a.ts": `import { f } from "${FAKE_PROVIDER_PACKAGE}";\nexport default f;\n` },
+    },
+  ]);
+  const { policyErrors } = await runInbound(root);
+  assert.deepEqual(policyErrors, [], policyErrors.join(" | "));
+});
+
+test("inbound: a DECOY mention in a comment or string never trips the arm", async (t) => {
+  const root = inboundSetup(
+    t,
+    cleanPackages({
+      serverSources: {
+        "src/index.ts": [
+          `// a future ${FAKE_PROVIDER_PACKAGE} could implement SandboxProvider`,
+          `const name = "${FAKE_PROVIDER_PACKAGE}";`,
+          "export default name;",
+          "",
+        ].join("\n"),
+      },
+    }),
+  );
+  const { policyErrors } = await runInbound(root);
+  assert.deepEqual(policyErrors, [], policyErrors.join(" | "));
+});
+
+// --- the fail-closed refusals -------------------------------------------------------------
+
+test("inbound FAIL-CLOSED: an unparseable or empty `packages:` list is a REFUSAL", async (t) => {
+  const { parseWorkspaceGlobs } = await import("./lib/sandbox-fake-provider-boundary.mjs");
+  for (const text of ["", "name: nothing\n", "packages:\n"]) {
+    const { globs, errors } = parseWorkspaceGlobs(text);
+    assert.deepEqual(globs, []);
+    assert.ok(errors.some((e) => e.includes("refusing to scan zero packages")), errors.join(" | "));
+  }
+  // …and the real file still parses, so the refusal above is not the everyday path.
+  const real = parseWorkspaceGlobs(await realReadFile(path.join(process.cwd(), "pnpm-workspace.yaml"), "utf8"));
+  assert.deepEqual(real.errors, []);
+  assert.ok(real.globs.includes("packages/*"), real.globs.join(","));
+});
+
+test("inbound FAIL-CLOSED: zero manifests and zero sources are each a refusal, never a pass", async (t) => {
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), "sfp-in-bare-"));
+  t.after(() => fs.rmSync(bare, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(bare, "pnpm-workspace.yaml"), WORKSPACE_YAML);
+  fs.mkdirSync(path.join(bare, "packages"), { recursive: true });
+  const noPackages = await runInbound(bare);
+  assert.ok(
+    noPackages.readErrors.some((e) => e.includes("zero workspace manifests were scanned")),
+    noPackages.readErrors.join(" | "),
+  );
+
+  // A manifest but no source files at all.
+  const srcless = fs.mkdtempSync(path.join(os.tmpdir(), "sfp-in-srcless-"));
+  t.after(() => fs.rmSync(srcless, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(srcless, "pnpm-workspace.yaml"), WORKSPACE_YAML);
+  fs.mkdirSync(path.join(srcless, "packages"), { recursive: true });
+  fs.mkdirSync(path.join(srcless, "server"), { recursive: true });
+  fs.writeFileSync(path.join(srcless, "server", "package.json"), JSON.stringify({ name: "@armyofagents/server" }));
+  const noSources = await runInbound(srcless);
+  assert.ok(
+    noSources.readErrors.some((e) => e.includes("zero source files were scanned")),
+    noSources.readErrors.join(" | "),
+  );
+});
+
+test("inbound FAIL-CLOSED: a missing workspace file and an unsupported glob are refusals", async (t) => {
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "sfp-in-nows-"));
+  t.after(() => fs.rmSync(empty, { recursive: true, force: true }));
+  const missing = await runInbound(empty);
+  assert.ok(missing.readErrors.some((e) => e.includes("pnpm-workspace.yaml: missing or unreadable")), missing.readErrors.join(" | "));
+
+  const weird = fs.mkdtempSync(path.join(os.tmpdir(), "sfp-in-glob-"));
+  t.after(() => fs.rmSync(weird, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(weird, "pnpm-workspace.yaml"), ["packages:", "  - packages/**/deep", ""].join("\n"));
+  const unsupported = await runInbound(weird);
+  assert.ok(
+    unsupported.readErrors.some((e) => e.includes("unsupported package glob")),
+    unsupported.readErrors.join(" | "),
+  );
+});
+
+test("inbound: an unreadable source file is a READ error, never a silent skip", async (t) => {
+  const root = inboundSetup(t, cleanPackages());
+  const target = path.join(root, "server", "src", "index.ts");
+  const readFile = async (p, enc) => {
+    if (path.resolve(p) === path.resolve(target)) {
+      const err = new Error("permission denied");
+      err.code = "EACCES";
+      throw err;
+    }
+    return realReadFile(p, enc);
+  };
+  const { readErrors, policyErrors } = await runInbound(root, { readFile });
+  assert.ok(hasSubstr(readErrors, "index.ts: unreadable source (EACCES)"), readErrors.join(" | "));
+  assert.deepEqual(policyErrors, [], policyErrors.join(" | "));
+});
+
+test("inbound: the allowance map is CLOSED and is the whole policy surface", async (t) => {
+  const { FAKE_PROVIDER_INBOUND_ALLOWANCES } = await import("./lib/sandbox-fake-provider-boundary.mjs");
+  // A widening of this map is a deliberate act, so it is pinned: two entries, one `self` and
+  // one `devDependencies`. A third appearing without a matching decision reds here.
+  assert.deepEqual(Object.keys(FAKE_PROVIDER_INBOUND_ALLOWANCES).sort(), [
+    "@armyofagents/sandbox-fake-provider",
+    "@armyofagents/sandbox-provider-contract",
+  ]);
+  assert.equal(FAKE_PROVIDER_INBOUND_ALLOWANCES["@armyofagents/sandbox-fake-provider"], "self");
+  assert.equal(FAKE_PROVIDER_INBOUND_ALLOWANCES["@armyofagents/sandbox-provider-contract"], "devDependencies");
+});
+
+test("inbound: the REAL repository satisfies the inbound policy", async () => {
+  const { runInboundCheck } = await import("./check-sandbox-fake-provider-boundary.mjs");
+  const { policyErrors, readErrors, scanned } = await runInboundCheck(process.cwd());
+  assert.deepEqual(policyErrors, [], policyErrors.join(" | "));
+  assert.deepEqual(readErrors, [], readErrors.join(" | "));
+  // ★ The non-vacuity floor for the REAL run. Without it, a walk broken by a path or pruning
+  // bug would report this repository clean by scanning nothing — which is the defect class
+  // this whole arm was added to close, reappearing inside its own proof (E.1a).
+  assert.ok(scanned.packages >= 30, `expected >= 30 workspace manifests, scanned ${scanned.packages}`);
+  assert.ok(scanned.sources >= 1000, `expected >= 1000 source files, scanned ${scanned.sources}`);
 });

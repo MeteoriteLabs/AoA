@@ -55,6 +55,8 @@ export {
   parseScriptedCommand,
   buildScriptedStdoutChunks,
   executeScriptedCommand,
+  executeScriptedCommandAsync,
+  SCRIPTED_COMMAND_MAX_DELAY_MS,
 } from "./scripted-command.js";
 export type {
   ScriptedCommandPlan,
