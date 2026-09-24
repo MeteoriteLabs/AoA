@@ -179,6 +179,7 @@ jobs:
           grep -q "crossTenant(loadState" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates DEP-022: its driver has no cross-tenant phase, so the step below would fail after the keyed journey had already spent (missing crossTenant(loadState in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
           grep -q "runCrossTenantCases" scripts/m1-shipped-boot/cross-tenant.mjs || { echo "::error::the candidate predates DEP-022: it has no cross-tenant driver (missing runCrossTenantCases in scripts/m1-shipped-boot/cross-tenant.mjs)"; exit 1; }
           grep -q "suppressInjection" scripts/m1-shipped-boot/cross-tenant.mjs || { echo "::error::the candidate predates DEP-022: its cross-tenant driver has no suppression arm, so the lane's positive control would have nothing to invert (missing suppressInjection in scripts/m1-shipped-boot/cross-tenant.mjs)"; exit 1; }
+          grep -q "evaluateSuppressedRun" scripts/check-cross-tenant-suppression.mjs || { echo "::error::the candidate predates DEP-022 round 4: its suppression control accepts \"at least one marker\" instead of verifying every declared case (missing evaluateSuppressedRun in scripts/check-cross-tenant-suppression.mjs)"; exit 1; }
           grep -q "composeBaseArgs" tests/d1/lib/e6f-harness.mjs || { echo "::error::the candidate predates DEP-022: its E6F harness hardcodes the D1 compose file, so every cross-tenant driver would address a stack that is not running (missing composeBaseArgs in tests/d1/lib/e6f-harness.mjs)"; exit 1; }
           grep -q "HTTP_SERVICE" tests/d1/lib/e6f-harness.mjs || { echo "::error::the candidate predates DEP-022: its E6F harness dexecs every HTTP client into the D1-only test-runner service, which this stack does not have (missing HTTP_SERVICE in tests/d1/lib/e6f-harness.mjs)"; exit 1; }
 
@@ -362,7 +363,17 @@ jobs:
             echo "::error::the suppressed run did not report an unfired injection — the observers are not deciding anything"
             exit 1
           }
-          echo "positive control: a suppressed injection reds the cross-tenant phase, as required"
+          # ★ PER CASE, not "at least one marker" (Codex P1, PR #600, round 4). The two greps above
+          # would both still match if ONE of the fourteen cases quietly executed its hostile arm
+          # during suppression: the other thirteen keep the phase non-zero and keep the markers
+          # flowing, and that case's non-vacuity would go undemonstrated. "At least one marker" is
+          # the same defect as "at least one test ran". This checker reads the suppressed bundle
+          # and requires EVERY case the declaration marks `required` and this driver owns to be
+          # present with `injectionFired: false` — derived from the declaration, so flipping a new
+          # case to `required` puts it under the control automatically. It fails closed on an
+          # absent or unparseable bundle.
+          node scripts/check-cross-tenant-suppression.mjs --evidence "$M1_OUT/evidence/cross-tenant-suppressed.json"
+          echo "positive control: a suppressed injection reds the cross-tenant phase, per case, as required"
 
       - name: Collect the evidence (redacted)
         id: collect

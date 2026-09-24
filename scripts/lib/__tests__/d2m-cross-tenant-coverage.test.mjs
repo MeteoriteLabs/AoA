@@ -24,14 +24,18 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { D2M_PROFILE, JOURNEY_OWNED_CASES } from "../d2m-cross-tenant.mjs";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const matrix = JSON.parse(readFileSync(path.join(repoRoot, "tests", "d1", "fault-matrix.json"), "utf8"));
 const driver = readFileSync(path.join(repoRoot, "scripts", "m1-shipped-boot", "cross-tenant.mjs"), "utf8");
 const journey = readFileSync(path.join(repoRoot, "scripts", "m1-shipped-boot", "journey.mjs"), "utf8");
 
-const PROFILE = "M1a-D2-MECHANISM";
-/** Decided by the journey's own per-tenant outcomes, not by the cross-tenant phase. */
-const JOURNEY_OWNED = ["d2m.tenant.journey.A", "d2m.tenant.journey.B", "d2m.tenant.control_refused"];
+// ONE list, shared with `scripts/check-cross-tenant-suppression.mjs` — a second copy is a copy
+// that drifts, and these two checks are the halves of one property: a case that fires when
+// injected and provably does NOT fire when suppression is on.
+const PROFILE = D2M_PROFILE;
+const JOURNEY_OWNED = JOURNEY_OWNED_CASES;
 
 const profile = matrix.profiles.find((p) => p.profile === PROFILE);
 assert.ok(profile, `${PROFILE} is not declared`);

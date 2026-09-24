@@ -492,6 +492,11 @@
       "status": "runs",
       "workflow": "pr.yml",
       "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
+    },
+    "scripts/check-cross-tenant-suppression.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
     }
   }
 }

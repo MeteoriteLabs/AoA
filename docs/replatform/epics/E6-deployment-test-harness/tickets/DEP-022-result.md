@@ -238,10 +238,43 @@ non-destructive). **The dual** — an early `fail()` that a suppressed run reach
 reason — was walked too: the remaining ones all assert the OWNER's own control, which suppression
 does not touch.
 
-★ **This is the third Codex round, past the build rules' two-round cap.** It was fixed rather than
-reported because it is not a property converging — it is a regression I introduced in round 2 that
-would have shipped a lane whose own positive control could never pass. Reporting it and shipping it
-would have been the worse failure. Nothing beyond it was fixed.
+★ **Rounds 3 and 4 are past the build rules' two-round cap, and both were fixed rather than
+reported.** Round 3 was a regression I introduced in round 2 that would have shipped a lane whose
+own positive control could never pass. Round 4 was a requirement this ticket's own brief states in
+so many words — *"Each case must appear in the lane's suppressed-injection reds"* — which I had
+not enforced. Neither is a property converging; both are gaps in what was already promised, and
+shipping either to respect a round count would have been the worse failure. The cap overrun is
+recorded here rather than left for a reader to count.
+
+### 3.6 "At least one marker" is "at least one test ran" — RAISED BY CODEX (round 4)
+
+**The class:** *a control that is satisfied by ANY instance of a per-instance property.*
+
+The lane's suppression control greps for `[cross-tenant:evidence]` and for one
+`injection_did_not_fire`. If ONE of the fourteen cases quietly executed its hostile arm during a
+suppressed run, the other thirteen would still make the phase exit non-zero and both greps would
+still match — CI would report the positive control as passing while that case's non-vacuity was
+never demonstrated. This ticket's own brief required the opposite: *"Each case must appear in the
+lane's suppressed-injection reds."* I had not enforced it.
+
+Fixed with `scripts/check-cross-tenant-suppression.mjs`, which reads the suppressed bundle and
+requires **every** case the DECLARATION marks `required` and this driver owns to be present with
+`injectionFired: false` — derived from the declaration, so flipping a new case to `required` puts
+it under the control automatically. It fails closed on an absent or unparseable bundle, and its
+reds are one fixture per violation in `scripts/check-cross-tenant-suppression.test.mjs` (10 cases,
+including a red for exactly one missing case and a red for exactly one still-firing case).
+
+`JOURNEY_OWNED_CASES` and `driverOwnedRequiredCases()` now live once, in
+`scripts/lib/d2m-cross-tenant.mjs`, shared by this checker and the coverage test: a second copy of
+a list is a list that drifts, and the two checks are halves of one property — a case that fires
+when injected and provably does NOT fire when suppression is on.
+
+★ **And writing the check found a bug the finding did not name.** The driver's verdict THROWS, and
+the suppressed run always throws — so `journey.mjs` read its rows from a successful return and
+wrote `cases: []` into `cross-tenant-suppressed.json`. The new checker would have had **nothing to
+read**: a control whose evidence file exists and carries no cases. `CrossTenantError` now carries
+`rows`/`detail` and the driver reads them off the error. *A control that was about to be given an
+empty input is the same class as the control it was fixing.*
 
 ### 3.3 A row fact asserted but not measured
 

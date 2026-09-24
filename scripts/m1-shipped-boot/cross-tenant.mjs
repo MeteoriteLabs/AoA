@@ -72,7 +72,20 @@ const AGENT_MODEL = "claude-sonnet-4-6";
 const FOREIGN_STATUS = EXPECTED_FOREIGN_ACK_STATUS;
 const FOREIGN_CODE = EXPECTED_FOREIGN_ACK_CODE;
 
-class CrossTenantError extends Error {}
+/** The phase's own refusal. It CARRIES the rows it had gathered, because the verdict that throws
+ * is the LAST thing the driver does and the caller must still retain that evidence.
+ *
+ * ★ WITHOUT THIS THE SUPPRESSED BUNDLE WOULD BE EMPTY, and the per-case suppression check
+ * (`scripts/check-cross-tenant-suppression.mjs`) would have had nothing to read — a control whose
+ * evidence file is written but carries no cases. Found while fixing Codex's round-4 finding, which
+ * asked for that check; writing the check is what made the empty bundle visible. */
+class CrossTenantError extends Error {
+  constructor(message, { rows = [], detail = {} } = {}) {
+    super(message);
+    this.rows = rows;
+    this.detail = detail;
+  }
+}
 
 /**
  * ★ THE CALLER-SIDE REDACTION BOUNDARY (self-audit family 1, found on MY OWN diff before the first
@@ -107,8 +120,8 @@ function scrub(text) {
     .reduce((acc, v) => acc.split(v).join("[REDACTED]"), String(text ?? ""));
 }
 
-function fail(message) {
-  throw new CrossTenantError(scrub(message));
+function fail(message, carry) {
+  throw new CrossTenantError(scrub(message), carry);
 }
 
 function truncate(value, max = 2000) {
@@ -731,6 +744,8 @@ export async function runCrossTenantCases({ tenants, ownerSql, suppressInjection
       `${unfired.length} injection(s) did not fire, ${notDenied.length} not denied, ` +
       `${noControl.length} without a positive control, ${deferred.length} shared-verdict violation(s)` +
       (deferred.length > 0 ? `\n${formatIsolationViolations(deferred)}` : ""),
+      // The rows ride ALONG with the refusal: on the suppressed run this IS the evidence.
+      { rows, detail },
     );
   }
   log(`cross-tenant: ${rows.length} case(s) driven, every injection fired, every same-tenant control passed`);

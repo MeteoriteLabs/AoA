@@ -64,6 +64,9 @@ export const CANDIDATE_CONTROL_MARKERS = [
   ["scripts/m1-shipped-boot/journey.mjs", "crossTenant(loadState"],
   ["scripts/m1-shipped-boot/cross-tenant.mjs", "runCrossTenantCases"],
   ["scripts/m1-shipped-boot/cross-tenant.mjs", "suppressInjection"],
+  // DEP-022 round 4: the PER-CASE suppression verdict. A candidate with the phase but not this
+  // checker would report its positive control green on "at least one marker".
+  ["scripts/check-cross-tenant-suppression.mjs", "evaluateSuppressedRun"],
   ["tests/d1/lib/e6f-harness.mjs", "composeBaseArgs"],
   ["tests/d1/lib/e6f-harness.mjs", "HTTP_SERVICE"],
   ["scripts/lib/m1-shipped-boot.mjs", "carry = joined.slice("],

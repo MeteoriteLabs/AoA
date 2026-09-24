@@ -1167,8 +1167,12 @@ async function crossTenant(state, { suppressInjection = false } = {}) {
     suppressInjection,
     producedBy: `scripts/m1-shipped-boot/journey.mjs cross-tenant${suppressInjection ? " --suppress-injection" : ""}`,
     finishedAt: new Date().toISOString(),
-    cases: observations?.rows ?? [],
-    detail: observations?.detail ?? {},
+    // ★ ON THE FAILURE PATH THE ROWS COME OFF THE ERROR. The phase's verdict THROWS after it has
+    // gathered every row, and the suppressed run ALWAYS throws — so reading rows only from a
+    // successful return would have written an EMPTY `cases` array for the one run whose per-case
+    // evidence `scripts/check-cross-tenant-suppression.mjs` reads.
+    cases: observations?.rows ?? error?.rows ?? [],
+    detail: observations?.detail ?? error?.detail ?? {},
     error: error ? redactSecrets(String(error.message ?? error), state.redact).slice(0, 4000) : null,
   });
   if (error) fail(`${label}: ${redactSecrets(String(error.message ?? error), state.redact)}`);

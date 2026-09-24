@@ -670,6 +670,7 @@ jobs:
           node --test scripts/check-m1-shipped-boot-shape.test.mjs scripts/lib/__tests__/m1-shipped-boot.test.mjs
           node --test scripts/lib/__tests__/e6f-harness-binding.test.mjs
           node --test scripts/lib/__tests__/d2m-cross-tenant-coverage.test.mjs
+          node --test scripts/check-cross-tenant-suppression.test.mjs
 
       - name: CI lane routing invariants (DEP-004)
         run: |
