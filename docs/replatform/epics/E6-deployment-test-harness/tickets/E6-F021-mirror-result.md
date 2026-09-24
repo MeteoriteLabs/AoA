@@ -362,15 +362,50 @@ Fixing these also caught an invented pin of my own: `setup-qemu-action` was writ
 action pinned to a sha that does not match its comment is precisely the record-rot this programme
 keeps paying for, and I introduced it.
 
-## 10. Follow-ups, owned
+## 10. Follow-ups, owned — all OPEN, none closed by this ticket
 
+- **`E6-F029` — the D1 harness's documented HUMAN path is exercised by no lane.** Filed by this
+  ticket, `unowned`, MEDIUM. **Three** of this PR's defects lived there at once, each invisible to CI
+  for a structural reason: arm64 (**CI is amd64**), the missing `docker login` (**CI
+  authenticates**), and the stale `.env.example` override (**CI never reads that file**). All three
+  are repaired; the *absence of a check* is not. ★ The finding records that a green `d1-merge-train`
+  run is **not** evidence about any of them — three went green while the third instance was live in
+  the tree — because the lane cannot reach the path. Closure route: exercise the README's own steps
+  in a job, or at minimum a static `.env.example` ↔ Compose-default agreement check, with a positive
+  control either way.
+- **GHCR package visibility — org-admin, deliberately NOT done here.** `ghcr.io/…/aoa-d1-minio` is
+  repo-scoped, `GITHUB_TOKEN` cannot change that, and it is not a call a build agent should make
+  unilaterally. **Until it flips, the documented local bring-up has a hard prerequisite** — a
+  `docker login ghcr.io` with `read:packages` — and `docker/d1/README.md` states it as a requirement
+  rather than a convenience. CI is unaffected: it logs in with its own run token. If the package is
+  later made public, the login becomes optional and that README paragraph can go.
 - **The dual class (§8)** — digest-pin `pgvector/pgvector:pg18`, `ghcr.io/shopify/toxiproxy:2.9.0`
   and the compose `test-runner`'s `node:lts-trixie-slim`, whose current digests are recorded in §8.
-  Owner: `unowned`, with the honest reason that it is a separate, mechanical change deliberately kept
-  out of the PR unblocking `M1a`.
+  Owner: `unowned`. Deliberately not a rider on this PR: pinning them is its own unit with its own
+  verification, and bundling three unrelated image moves into the change that has to unblock `M1a`
+  widens the bring-up blast radius for no gain. The recorded digests make it mechanical.
 - **Mirror refresh is manual by design.** Nothing automatically re-cuts the mirror or re-pins the
   digest, which is intentional — an automatic re-pin would be a tag by another name. The cost is that
-  a MinIO version bump in the harness is a human act.
+  a MinIO version bump in the harness is a human act, and `E6F-05`/`E6F-14` are what tell you whether
+  the new version's presign still behaves.
+
+### 10.1 The third Codex round, and the ruling on it
+
+`docker/d1/.env.example:30` set `AOA_D1_MINIO_IMAGE=minio/minio:latest` — the DELETED Docker Hub
+image — while `README.md:152` instructs `cp docker/d1/.env.example docker/d1/.env`. An env value
+**overrides** the Compose default, so the documented local bring-up still resolved the dead image and
+the GHCR login could not repair the pull.
+
+Per M1-BUILD-RULES §C (hard cap: two Codex rounds) this was **escalated rather than fixed
+unilaterally**, with the verification and a proposed fix. **The planning session ruled: delete the
+line, as proposed** — not re-pin it to the mirror's digest, because *a second copy of the digest is a
+tag by another name*: two places to drift, and the next person to re-cut the mirror updates one and
+not the other. The Compose default is the single source, and `.env.example` now carries a comment
+saying why it is silent.
+
+Checked while there, as the ruling asked: the README's *"(set admitted digests)"* still points at
+something real — `AOA_D1_CONTROL_PLANE_IMAGE` and `AOA_D1_WORKER_IMAGE`, `.env.example:23-24` — and
+is now explicit about which variables it means and about MinIO no longer being among them.
 
 ## 11. What I did NOT do
 

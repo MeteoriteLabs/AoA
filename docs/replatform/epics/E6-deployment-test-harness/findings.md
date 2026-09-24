@@ -2039,3 +2039,77 @@ finding is still accounted for in the counts, and the existing positive controls
 commit by the owner.
 
 **Filed:** 2026-09-24 by the class sweep.
+---
+
+## E6-F029 — the D1 harness has a documented HUMAN path that no lane exercises, and three defects lived there at once
+
+**Status:** open
+**Severity:** MEDIUM (operator-facing; no gate rests on it, and that is precisely the problem)
+**Owner:** `unowned`
+**Filed:** 2026-09-24, by the `E6-F021` re-repair, ruled by the planning session. Measured at
+`d7218601c3c5f3a07328d56dbfec5891caeaaf1c`.
+
+### The class
+
+**A path only a human takes, which no lane exercises.** `docker/d1/README.md`'s *Verification*
+section documents a local bring-up — `cp docker/d1/.env.example docker/d1/.env` →
+`docker compose -f docker-compose.d1.yml up`. Nothing runs that path. `d1-merge-train.yml` brings the
+same stack up by a **different** route, so the two have drifted, and the drift is invisible by
+construction.
+
+### Three instances, found in one PR, each invisible to CI for a STRUCTURAL reason
+
+| # | defect | why no lane could see it |
+|---|---|---|
+| 1 | the mirrored MinIO image was published `linux/amd64` only, while the image it replaced served a multi-arch manifest list | **CI is amd64** |
+| 2 | the repo-scoped GHCR package is not anonymously pullable, and the documented local path had no `docker login` prerequisite | **CI authenticates** (`packages: read` + a login step in all three jobs) |
+| 3 | `docker/d1/.env.example` set `AOA_D1_MINIO_IMAGE=minio/minio:latest` — the image Docker Hub DELETED — and an env value **overrides** the Compose default, so a local operator resolved the dead image no matter what `docker-compose.d1.yml` said | **CI never reads `.env.example`**; it writes `docker/d1/.env` itself, and it never writes `AOA_D1_MINIO_IMAGE` at all |
+
+All three were repaired in PR #603. They are filed as one finding because they are one defect.
+
+★★★ **A GREEN CI RUN IS NOT EVIDENCE ABOUT ANY OF THEM, and that misreading is what let #3 survive.**
+Three `d1-merge-train` runs (`36022608037` bring-up, `36025567413`, `36027175548`) went green — the
+last two fully, 47/47 + 9/9 executed — *while instance #3 was live in the tree*. They are not in
+tension: CI takes the Compose default, so the `.env.example` override is a code path the lane cannot
+reach. A lane that does not take a path cannot vouch for it, and reading its green as if it did is
+the same *"a check that nothing runs"* shape this programme keeps paying for, relocated to a file the
+check never opens.
+
+★ **Instance #3 also survived a class sweep**, which is the sharper lesson. The sweep that fixed #1
+and #2 covered the compose files, both workflows and the Dockerfile — and **not** `.env.example`. The
+class was named correctly and the enumeration was short by one member. An enumeration you can quote
+is only as good as its DOMAIN — and "every file that can set the image the stack resolves" is a wider
+domain than "every file that names an image".
+
+### Why it is tractable
+
+The surface is small and enumerable, which the repair measured rather than assumed:
+`grep -rn "AOA_D1_[A-Z_]*IMAGE="` across the repo returns **20 sites**, of which **1** was stale.
+Line 29 (`pgvector:pg18`) is still pullable, lines 23–24 are local-build placeholders, and all
+seventeen workflow sites write control-plane / worker / fake-provider and never MinIO.
+
+### Proposed closure route
+
+Either of these closes it; the first is stronger.
+
+1. **Exercise the documented path.** A job that performs the README's own steps —
+   `cp docker/d1/.env.example docker/d1/.env`, then `docker compose up` — rather than the lane's
+   bespoke bring-up. This is the only thing that can catch the class rather than its current members;
+   it would have caught all three. Its cost is a second bring-up, and it must NOT be allowed to
+   become a copy of the lane's route, or it stops testing the human path and the finding regenerates.
+2. **At minimum, a static agreement check**: every `AOA_D1_*_IMAGE` in `docker/d1/.env.example` must
+   either match the corresponding `docker-compose.d1.yml` default or be absent. Cheap, pure-node,
+   runnable in `policy`. It catches #3 and nothing else — it is blind to #1 and #2, which are
+   properties of the environment rather than of a file, so it should be filed as a partial closure
+   and say so rather than being allowed to look like coverage of the class.
+
+Whichever is built needs a positive control: reintroduce a stale override, or an amd64-only mirror,
+and show the check goes red. A check adopted on the strength of the fixes it post-dates has not been
+shown to detect anything.
+
+### Not claimed
+
+This finding does NOT say the local path is currently broken — all three instances are repaired. It
+says the path is **unverified**, and that three defects accumulated there undetected is evidence
+about the absence of a check, not about the current state of the tree. It also makes no claim about
+operator-facing paths in epics other than E6, which were not examined.

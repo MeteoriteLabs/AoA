@@ -149,8 +149,9 @@ service declares a **non-empty** `AOA_FAKE_PROVIDER_CTL_ALLOW` equal to
   `node --test scripts/check-d1-compose.test.mjs`.
 - **Linux/CI live (compose up):** `node --test tests/d1/network-denial.test.mjs
   tests/d1/fake-provider-job.test.mjs` with `AOA_D1_LIVE=1` (skips cleanly without
-  Docker). Bring-up: `cp docker/d1/.env.example docker/d1/.env` (set admitted
-  digests) → `docker compose -f docker-compose.d1.yml up`.
+  Docker). Bring-up: `cp docker/d1/.env.example docker/d1/.env` (set the admitted
+  digests — `AOA_D1_CONTROL_PLANE_IMAGE` and `AOA_D1_WORKER_IMAGE`; the file no longer
+  carries a MinIO override, see below) → `docker compose -f docker-compose.d1.yml up`.
 
 ### Prerequisite for a local bring-up: authenticate to GHCR (E6-F021)
 
@@ -169,6 +170,15 @@ echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USERNAME" --password-std
 
 `AOA_D1_MINIO_IMAGE` still overrides the service image if you have the bytes some other
 way; nothing about the login is load-bearing beyond obtaining them.
+
+★ **`docker/d1/.env.example` deliberately does NOT set `AOA_D1_MINIO_IMAGE`** (`E6-F029`).
+It used to set `minio/minio:latest`, and because an env value overrides the Compose
+default, copying the sample file resolved the deleted Docker Hub image regardless of what
+`docker-compose.d1.yml` said — a GHCR login could not repair that pull. The digest lives
+in exactly one place, the Compose default, because a second copy of it is a tag by another
+name. **Until the GHCR package is made anonymously readable** (an org-admin action, not
+something CI or a build agent can do), the login above is a REQUIRED prerequisite of the
+documented local path, not an optional convenience.
 
 **Architecture.** The mirror publishes `linux/amd64` and `linux/arm64`, and
 `AOA_D1_MINIO_IMAGE` is pinned to the multi-arch INDEX digest, so an arm64 Linux host
