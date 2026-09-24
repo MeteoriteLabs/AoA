@@ -304,7 +304,7 @@ the PR head is this record's own §10. So the certified revision describes the c
 - **The `kind`.** `announcementsFor` joins on `r.path` from `requests` and throws when a committed
   path has no request; the payload is `artifactPreparedPayloadV1Schema.parse(…)`, not a cast.
   `E7-D08`'s `other` is the request's, never invented.
-- **The 8 mutations.** Each is a real inversion of a distinct decision in the diff (the emit loop, the
+- **The 8 mutations** (re-executed in part at attempt 2 below). Each is a real inversion of a distinct decision in the diff (the emit loop, the
   partial-exit return, the swallow, the kind, the ordering, the `requests`/`exported` source, the
   projection, the catch boundary), and each expected red maps onto a test that asserts exactly that
   property. I could not re-execute them — this worktree has no installed `node_modules` — so the
@@ -350,3 +350,37 @@ right that this flips no counter; `E7-F043`, `E7-F044` and `E7-F024` all stay op
 `supervisor-hung-stage-input` flake is pre-existing and unrelated (I confirmed the announcement path
 is unreachable without both export deps); and the mutation REDs are the implementer's recorded runs,
 not re-executed here.
+
+#### ★ Review attempt 2 — the reviewer RERUN the protocol owes, and two mutations re-executed
+
+*Appended 2026-09-24 by the same reviewer after Codex raised it on PR #595 (P1). The finding is
+**real**: E7 `implementation-plan.md` step 4 says the distinct reviewer **"checks out the reviewed
+40-hex revision, reruns the focused command there"**, and attempt 1 recorded source inspection plus
+the implementer's runs while saying this worktree had no installed dependencies. That is the
+`check-that-nothing-runs` class pointed at a review rather than at a guard, so the status flip was
+**reverted** and the rerun was done. Attempt 1's text is kept exactly as written.*
+
+Dependencies installed in the review worktree
+(`pnpm install --frozen-lockfile --virtual-store-dir=C:/pn/rv8`), at the **reviewed revision**
+`c3f71519eef55035ebc80a97e0e704b1055b01f8` checked out detached:
+
+| command, at `c3f71519ee` | result |
+|---|---|
+| `pnpm --filter @armyofagents/worker-protocol build` | pass |
+| `pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts` | **1 file, 9 tests passed** (vitest 3.2.6, 846 ms, win32) |
+| `node scripts/check-frozen-worker-protocol-consumer.mjs --source-sha b7a842870ce7509d8baa75409e0ab19da375c88a` | `OK (zod 3.24.2, esbuild 0.28.1)` |
+
+**And two mutations re-executed by the reviewer, not taken from the record:**
+
+- **M6-class (the anti-vacuity claim I certified).** Replacing the window's tail with
+  `announcementsFor(requests.map(…) as never, requests)` — announcements built from `requests`
+  instead of `exported` — gives `3 failed | 6 passed`, and **`nothing committed ⇒ NO announcement`
+  is one of the three reds**. So that control is non-vacuous at GREEN, measured here and not argued.
+  Reverted; baseline back to `9 passed`.
+- The mutant also reds `a PARTIAL window still announces what COMMITTED` and the fail-closed-join
+  case, which is consistent with the record's M6 row (it reports a wider red set for its own exact
+  mutant shape; mine differs in how the fake refs are minted).
+
+**Disposition after the rerun: `approved`, unchanged.** The rerun and the mutation both pass at the
+reviewed revision, so nothing in attempt 1's reasoning moves — the defect was the missing evidence,
+not the conclusion.

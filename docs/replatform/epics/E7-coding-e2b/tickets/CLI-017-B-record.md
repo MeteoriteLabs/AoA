@@ -519,11 +519,11 @@ produced it.
 
 **Reviewer:** `M1b independent reviewer (Claude Opus 5)` — distinct from the implementer.
 **Date (UTC):** `2026-09-24`
-**Revision I reviewed (40-hex):** `d9b25579d…` (the squash of PR #592 onto
+**Revision I reviewed (40-hex):** `d9b25579d001515d24dfb1a84a9fa4758ffd31c3` (the squash of PR #592 onto
 `docs/replatform-program`, an ancestor of this review's HEAD), because it is the only revision that
 contains the code this record describes — see the finding immediately below.
 **Disposition:** `changes_requested` **on the record's cited revision**; the **code is approved** at
-`d9b25579d…`. `Status` stays `gate_review` in any case (keyed items, §11).
+`d9b25579d001515d24dfb1a84a9fa4758ffd31c3`. `Status` stays `gate_review` in any case (keyed items, §11).
 
 #### ★★★ The one blocking finding: the cited reviewed revision predates three rounds of this slice's own code
 
@@ -544,9 +544,9 @@ So a reviewer who checked out the cited revision would find **none** of §11a–
 would have nothing to mutate**. That is exactly the record-rot the re-point note above warns about —
 a record certifying a revision its code had moved past — and it is the defect class this milestone has
 already paid for twice. **Required change:** re-point the header to a revision that contains rounds
-1–3 (`656ed71ee…`, or the merge `d9b25579d…`), keeping the superseded ids quoted as they are now.
+1–3 (`656ed71ee…`, or the merge `d9b25579d001515d24dfb1a84a9fa4758ffd31c3`), keeping the superseded ids quoted as they are now.
 
-#### What I verified at source, at `d9b25579d…` — and it is sound
+#### What I verified at source, at `d9b25579d001515d24dfb1a84a9fa4758ffd31c3` — and it is sound
 
 - **★ `E7-F039`'s canary-swap arm genuinely holds, and the FAIL condition never fires.** In
   `cli-017-b-export-secret-refusal.test.ts`, both swap arms assert
@@ -616,3 +616,28 @@ already paid for twice. **Required change:** re-point the header to a revision t
 `S-P0` + `A-neg` template precondition. **None has run**, keyed dispatch is the planning session's
 under F8, and §11 says so. Even with the revision re-pointed, this ticket cannot reach `complete`
 until the joint keyed case is recorded.
+
+#### ★ Addendum — the reviewer RERUN, and the canary arm's mutation re-executed
+
+*Appended 2026-09-24 by the same reviewer, for the two Codex findings on PR #595 (the abbreviated
+reviewed-revision id — corrected above — and the missing reviewer rerun).*
+
+Run at `d9b25579d001515d24dfb1a84a9fa4758ffd31c3`, checked out detached, dependencies installed:
+
+| command | result |
+|---|---|
+| `pnpm --filter @armyofagents/worker-daemon build` (the provider suite needs the daemon's `dist` for `grantPutHeaders`) | pass |
+| `pnpm --filter @armyofagents/sandbox-e2b-provider exec vitest run src/__tests__/cli-017-b-export-secret-refusal.test.ts` | **28 passed** |
+
+**★★★ THE CANARY ARM'S RED, RE-EXECUTED BY THE REVIEWER.** I defeated SD-5 in the real source —
+`scan({ bytes, sandboxId, secrets: [], signal })`, i.e. the scanner still runs but is given nothing
+to compare against, which is the `M-B4` class in situ — and both `E7-F039` arms went **RED**:
+*"/proc/self/environ bytes: the STORE receives NOTHING"* and *"the run's own STAGED PROMPT bytes …
+are refused too"*, while the **positive control** (*"a swap to a target with NO secret still
+exports"*) stayed **green**. So the arm is not passing because everything refuses, and it is not
+passing vacuously: it detects exactly the loss of the comparison. Reverted; baseline back to
+**28 passed**.
+
+**Disposition unchanged: `changes_requested`** on the header's cited revision (the substance of that
+finding is untouched by this rerun — `6441fa9b63` still predates rounds 1–3), **code approved** at
+`d9b25579d001515d24dfb1a84a9fa4758ffd31c3`, `Status` stays `gate_review`.

@@ -221,8 +221,7 @@ produced it.
 
 **Reviewer:** `M1b independent reviewer (Claude Opus 5)` — distinct from the implementer.
 **Date (UTC):** `2026-09-24`
-**Reviewed revision (40-hex):** `d9b25579d…` (the squash of PR #592, an ancestor of this review's
-HEAD). ★ **The re-point is genuine and current for THIS slice.** `147d5454c9161e7b401064e232100299b334a6e9`
+**Reviewed revision (40-hex):** `d9b25579d001515d24dfb1a84a9fa4758ffd31c3` (the squash of PR #592, an ancestor of this review's HEAD). ★ **The re-point is genuine and current for THIS slice.** `147d5454c9161e7b401064e232100299b334a6e9`
 **is** an ancestor of the PR head `2aaeb1169b6adbd37e3ac77ff7a230f68bb1b077` (`git merge-base
 --is-ancestor`), and the pre-rebase id is kept as written. Every product file this slice owns —
 `sandbox-output-root.ts`, `heartbeat.ts`, `cli-017-output-root-directive.test.ts`,
@@ -276,3 +275,27 @@ on a planted canary in the same lane — and the `E7-D11` template precondition 
 `-f arms=a-neg-only`). **Neither has run.** Keyed dispatch is the planning session's under ruling F8
 and is not this ticket's or this review's to fire, so the flip is not mine to make. §8 of this record
 states the same thing, which is what the plan requires of it.
+
+#### ★ Addendum — the reviewer RERUN, at the full 40-hex revision
+
+*Appended 2026-09-24 by the same reviewer. Two Codex findings on PR #595, both verified before
+acting: the reviewed-revision field was written abbreviated (`d9b25579d…`) where the protocol asks for
+a bare 40-hex id — **real, and corrected above**; and this review had recorded no rerun of the focused
+command at the reviewed revision — **real**, and done here.*
+
+Run at `d9b25579d001515d24dfb1a84a9fa4758ffd31c3`, checked out detached, with dependencies installed
+in the review worktree:
+
+| command | result |
+|---|---|
+| `pnpm --filter @armyofagents/server exec vitest run src/__tests__/cli-017-output-root-directive.test.ts` | **10 passed** |
+| `node scripts/check-sandbox-output-root.mjs` | `OK — one R, "/home/user/aoa-output", on both sides` |
+| `node --test scripts/lib/__tests__/sandbox-output-root-check.test.mjs` | **pass 8** |
+
+**★ M-A1 RE-EXECUTED by the reviewer.** Restoring `currentTaskMarkdown: context.currentTaskMarkdown`
+at the `heartbeat.ts` call site gives exactly **`2 failed | 8 passed`** — the two anchored call-site
+arms — reproducing the record's own row to the count, and confirming that the behavioural arms alone
+would NOT have caught the deletion. That is `E7-D11`'s required positive control for PC-12, measured
+here. Reverted; baseline back to `10 passed`.
+
+**Disposition unchanged: `approved`, `Status` stays `gate_review`** on the unrun keyed half.
