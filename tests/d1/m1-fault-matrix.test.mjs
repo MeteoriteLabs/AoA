@@ -1129,60 +1129,71 @@ test("fault-matrix: redemption on a DIFFERENT lease is refused — with an own-l
 // ★ NOTHING SECRET REACHES THE BUNDLE. Only booleans and byte counts are recorded — never the
 // canary, never the twin, never a stream excerpt.
 
-test("fault-matrix: a planted redemption canary is scrubbed from the run's event AND log streams, with an unseeded twin that leaks", { skip: SKIP }, () => {
+test("fault-matrix: THE CLAUSE-5 BLOCKER, measured live — this lane emits no redeemed credential, so the scrubber has nothing to substitute", { skip: SKIP }, () => {
+  // ★★★ THIS TEST IS NOT THE CLAUSE-5 CASE. It is the live PROOF of that case's `pendingReason`,
+  // and it exists because this programme's worst failure class is a `pending` reason that is false
+  // of the lane it excuses — the exact defect the `M1-D1-SPINE` `a2` record graded `SPINE-MATRIX-3`.
+  // It therefore `record()`s NOTHING: `d1.redaction.planted_canary_scrubbed` is declared `pending`,
+  // and a bundle that reported evidence for a pending case is REFUSED by design.
+  //
+  // WHAT WAS ATTEMPTED, over three live campaigns on this branch:
+  //   35933605253  the case as first written; fell over earlier (a wrong `job_events` column).
+  //   35936498467  fixed. The unregistered TWIN carried through the workload args appeared on
+  //                NEITHER stream.
+  //   35938378052  twin replaced by the scrubber's own `REDACTION_MARKER`. The MARKER appeared on
+  //                neither stream either.
+  //
+  // WHAT THAT MEASURES — a fact about the lane, not about redaction: the canary is absent because
+  // **nothing on this lane ever emits the redeemed value**, so `scrubEventStrings` has nothing to
+  // substitute and its marker never appears. A clean stream here is therefore VACUOUS — the very
+  // thing clause 5's control exists to exclude — and reporting it as a scrub would be the failure
+  // this whole exercise is about.
+  //
+  // WHY: the reference provider EXECUTES a deterministic scripted transcript
+  // (`packages/sandbox-fake-provider/src/scripted-command.ts`) that is a pure function of
+  // `(args, usage)`. It never reads the sandbox env, and an argument outside the `--aoa-fake-`
+  // namespace is passed over without comment — which is also why the twin vanished silently. On the
+  // KEYED lane the echo exists BY DESIGN: `DEP-017`'s env probe performs a *"planted execute, so any
+  // echo of them is scrubbed"* (`packages/worker-daemon/src/supervisor/env-probe.ts`), and the
+  // mechanism record's `plantedControl.red: true` is that echo being caught.
+  //
+  // SO IT IS UNBUILT HERE, NOT UNAVAILABLE — stated that way deliberately, because "unavailable" is
+  // what the two wrongly-excused spine cases claimed. It needs ONE `--aoa-fake-echo-env=<NAME>`
+  // scripting flag on the reference provider, a provider-package change with its own typecheck and
+  // build. Filed in the declaration's `pendingReason`, not smuggled in here.
   const [A] = M1_SPINE_TENANTS.enabled;
   const deployed = step(queryDeployedWorker({}), "deployed worker");
   assert.equal(deployed.ok, true, `deployed worker probe: ${truncate(deployed)}`);
-  assert.ok(deployed.workerId, "clause 5 needs the DEPLOYED worker — it is the only thing that runs synthesiseRunSecrets");
+  assert.ok(deployed.workerId, "the blocker probe needs the DEPLOYED worker, which is what redeems");
 
   const canary = `m1fmcanary${randomBytes(20).toString("hex")}`;
   const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
-
   const seeded = step(seedSpineWorkerDrivenJob({
-    tenant: A, ...ids, target: deployed.target,
-    // Suppressed, no canary is planted at all (the secret keeps the lane's ordinary reference
-    // value), so the case cannot report a scrub that never had anything to do and the lane's
-    // suppression control reds it.
-    workloadArgs: [],
-    ...(SUPPRESS_INJECTION ? {} : { secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`, secretValue: canary }),
+    tenant: A, ...ids, target: deployed.target, workloadArgs: [],
+    secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`, secretValue: canary,
   }), "canary worker-driven seed");
   assert.equal(seeded.ok, true, `canary job seed: ${truncate(seeded)}`);
 
   const observation = step(awaitSpineWorkerDrivenTerminal({ jobId: ids.jobId }), "canary run terminal");
-
   const events = step(queryJobEventPayloadText({ jobId: ids.jobId }), "event stream");
   const logs = composeServiceLogs("worker-b");
   assert.equal(events.ok, true, `event stream read: ${truncate({ ok: events.ok, error: events.error ?? null })}`);
   assert.equal(logs.ok, true, `worker log read: status=${logs.status}`);
 
-  const streamBytesObserved = { events: events.bytes ?? 0, logs: logs.bytes ?? 0 };
-  const canaryInEvents = events.text.includes(canary);
-  const canaryInLogs = logs.text.includes(canary);
-  const markerInEvents = events.text.includes(REDACTION_MARKER);
-  const markerInLogs = logs.text.includes(REDACTION_MARKER);
-  const redactedOnAllStreams = !SUPPRESS_INJECTION && !canaryInEvents && !canaryInLogs;
-  const scrubberMarkerObserved = markerInEvents || markerInLogs;
+  // ★ NON-VACUITY FIRST. A blocker proved over empty streams proves nothing either: the run must
+  // actually have produced events and the worker must actually have logged.
+  assert.ok((events.events ?? 0) > 0, `the run produced no events, so nothing below is a measurement: ${truncate(observation)}`);
+  assert.ok((logs.bytes ?? 0) > 0, "the worker container log is empty, so nothing below is a measurement");
 
-  record("d1.redaction.planted_canary_scrubbed", {
-    injectionFired: !SUPPRESS_INJECTION && seeded.ok === true,
-    observedClassification: redactedOnAllStreams && scrubberMarkerObserved
-      ? "canary_scrubbed_and_scrubber_marker_observed"
-      : "not_redacted",
-    redactedOnAllStreams,
-    scrubberMarkerObserved,
-    streamBytesObserved,
-    detail: {
-      // Presence flags only. The canary itself never leaves this function.
-      canaryInEvents, canaryInLogs, markerInEvents, markerInLogs,
-      attemptStatus: observation.attemptStatus ?? null,
-      events: events.events ?? 0,
-      deployedWorkerId: deployed.workerId,
-      deployedTargetId: SPINE_DEPLOYED_TARGET_ID,
-    },
-  });
-  assert.equal(scrubberMarkerObserved, true, "the scrubber's own replacement marker must appear on at least one stream, else a clean canary proves nothing about redaction");
-  assert.equal(canaryInEvents, false, "the planted canary must not appear in the run's event stream");
-  assert.equal(canaryInLogs, false, "the planted canary must not appear in the worker's container log");
+  const canaryPresent = events.text.includes(canary) || logs.text.includes(canary);
+  const markerPresent = events.text.includes(REDACTION_MARKER) || logs.text.includes(REDACTION_MARKER);
+
+  // Asserted in BOTH directions so the declaration cannot go stale unnoticed: if the canary or the
+  // marker EVER appears, this lane does emit the value / the scrubber is acting, the clause-5 case
+  // becomes buildable here, and THIS TEST REDS — which is how the `pending` declaration gets
+  // revisited instead of quietly outliving its reason.
+  assert.equal(canaryPresent, false, "the redeemed value APPEARED on a stream: this lane now emits it, so d1.redaction.planted_canary_scrubbed is buildable here and its pending declaration is stale");
+  assert.equal(markerPresent, false, `the scrubber's marker APPEARED: it is acting on this lane after all, so d1.redaction.planted_canary_scrubbed's pendingReason is stale. events=${events.events} logBytes=${logs.bytes}`);
 });
 
 test("fault-matrix: cancelling an UNLEASED attempt cancels it directly", { skip: SKIP }, () => {

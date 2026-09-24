@@ -453,7 +453,10 @@
             "observedBy": "the run's event stream and the worker's container log are scanned for the canary (redeemed through synthesiseRunSecrets and registered as a redaction canary), which must be ABSENT, and for the scrubber's OWN replacement marker REDACTION_MARKER = « redacted » (packages/worker-daemon/src/supervisor/redaction.ts, substituted FOR the canary by scrubEventStrings), which must be PRESENT. Each stream's observed byte length must be non-zero. Neither arm passes alone: a clean stream with no marker may be a run that emitted the value nowhere, and a marker with the canary still present is a partial scrub. Remove the redaction and BOTH arms flip."
           },
           "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
-          "evidence": "required"
+          "evidence": "pending",
+          "pendingKind": "structural",
+          "pendingReason": "MEASURED LIVE over three full campaigns on this lane (runs 35933605253, 35936498467, 35938378052): the redeemed credential NEVER appears on the run event stream or the deployed worker container log, and neither does the scrubber own REDACTION_MARKER. So a clean stream here is VACUOUS -- scrubEventStrings has nothing to substitute -- and reporting it as a scrub would be the failure this case exists to prevent. Cause: the reference provider executes a deterministic scripted transcript (packages/sandbox-fake-provider/src/scripted-command.ts) that is a pure function of (args, usage), never reads the sandbox env, and passes over any argument outside the --aoa-fake- namespace without comment. UNBUILT HERE, NOT UNAVAILABLE -- stated that way deliberately, because \"unavailable\" is what the two wrongly-excused spine cases claimed. It needs ONE --aoa-fake-echo-env=<NAME> scripting flag on the reference provider, a provider-package change with its own typecheck and build. ★ The reason is PROVEN LIVE and in BOTH directions by the test \"THE CLAUSE-5 BLOCKER, measured live\" in tests/d1/m1-fault-matrix.test.mjs, which asserts non-vacuity first and REDS if the canary or the marker ever appears -- so this declaration cannot outlive its reason unnoticed. Routed to M1a-D2-MECHANISM, where DEP-017 env probe already performs the planted execute whose echo the scrubber catches.",
+          "pendingOwner": "planning session (F8), on the DEP-015 lane"
         }
       ]
     },
@@ -911,7 +914,7 @@
           "expectedClassification": "canary_scrubbed_while_unseeded_twin_leaks",
           "evidence": "pending",
           "pendingKind": "keyed",
-          "pendingReason": "Needs a real E2B run whose redeemed credential is a planted canary. The clause-5 floor is PROVEN KEYLESSLY on M1-D1-SPINE at this revision against the same producer (synthesiseRunSecrets); this is the real-provider mirror. NOTE that the lane's existing \"Scan the evidence AND the job log for job secrets\" step is NOT this case: it scrubs the uploaded bundle, seeds no per-run canary, and has no unseeded control (E5 exit-gate audit a2 §4, clause 5).",
+          "pendingReason": "Needs a real E2B run whose redeemed credential is a planted canary. ★ THE ECHO MECHANISM ALREADY EXISTS ON THIS LANE, which is what makes the case provable here rather than on D1: DEP-017 env probe performs a \"planted execute, so any echo of them is scrubbed\" (packages/worker-daemon/src/supervisor/env-probe.ts), and the M1a-D2-MECHANISM a2 record measured plantedControl.red: true with three canaries each detected as its expected class -- that IS the echo being caught. What is still missing is a case asserting that the run OWN event and log streams carry the scrubber REDACTION_MARKER and not the value. NOTE the lane existing \"Scan the evidence AND the job log for job secrets\" step is NOT this case: it scrubs the uploaded bundle, seeds no per-run canary, and has no control (E5 exit-gate audit a2 section 4, clause 5). The keyless D1 mirror is blocked on a reference-provider echo flag -- see d1.redaction.planted_canary_scrubbed.",
           "pendingOwner": "planning session (F8), on the DEP-015 lane"
         }
       ]
