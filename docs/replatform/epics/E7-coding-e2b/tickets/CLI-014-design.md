@@ -76,6 +76,17 @@ section's own design item 4 forbids.
 
 ## Why this is not this ticket's to rule
 
+★★★ **CORRECTED 2026-09-24 (Codex P2, PR #596), verified at source: there is a THIRD channel and
+it needs no widening at all.** `artifactManifestV1Schema` already carries `objectKey`, whose only rule
+is `objectKeyHasPrefix` (safe relative POSIX key + the exact attempt prefix + a non-empty suffix); the
+`${prefix}${artifactId}` shape is a **convention**, not a schema constraint. A reversibly-encoded,
+bounded relative path could ride that existing field, recovered from `job_artifacts.objectKey` — no
+schema widening, no fixture re-mint, no new column. It needs an **E5 convention ruling** (the key is
+pinned by an equality check on both sides) and a **leak ruling** (the key reaches logs and receipts),
+and the 1024-char key bound needs its own encoding bound and refusal. `E7-F046` records it as the
+option to evaluate first. ★ *The list below, retained as filed, said "one of" these two; that framing
+was wrong.*
+
 Creating the missing provenance means one of:
 
 1. widening the frozen `artifactPreparedPayloadV1Schema`, or
@@ -108,8 +119,14 @@ and ruled:
 - **(d) `E7-F046` stays OPEN**, re-pointed off `CLI-014` to the post-M1 protocol question.
 
 The **materialization residue** (disposition (a)'s second half — `job_artifacts` → a product
-`artifacts` row so `task_outputs.artifactId` resolves) is **not ruled**; it is independent of the
-path question and remains available as separate work.
+`artifacts` row so `task_outputs.artifactId` resolves) is **not ruled**; it is independent of the path
+question. ★★★ **CORRECTED 2026-09-24 (Codex P1, PR #596): it is no longer merely "available as
+separate work" — it is filed as `E7-F047` (HIGH), and (a)'s closure is CONDITIONAL on that finding
+getting an owner.** Measured at source: `applyAcceptedOutputEvent` leaves `artifactId`,
+`artifactVersionId`, `assetId` and `url` all null, and `OutputRefTabBody` dispatches on exactly those
+four, so a distributed artifact renders *"No preview is available for this output."* The bytes are
+durable and **unreachable from the task**, so closing the projection half must not be read as `M1b`'s
+output criterion being satisfied.
 
 ## The admissible dispositions, as put to the ruling
 

@@ -94,8 +94,18 @@ does not skip it (no `describe.skipIf`; the suite is pure and runs everywhere).
 
 ## What this does NOT close
 
-- **`E7-F046`** stays OPEN and `unowned` — the post-M1 protocol question.
+- **`E7-F046`** stays OPEN and `unowned` — the missing *path* (a display name). ★ Codex P2 found my
+  framing of it wrong: the cheapest fix is **not** a protocol widening but the existing `objectKey`
+  field, whose suffix is unconstrained; corrected on the finding and on `E7-D13`.
+- **`E7-F047`** (HIGH, `unowned`) — filed from Codex P1 during this review, verified at source: the
+  projected row leaves `artifactId`/`artifactVersionId`/`assetId`/`url` all null, so the founder's
+  viewer renders *"No preview is available"* and the committed bytes are **unreachable from the
+  task**. This falsified `E7-D13`'s own *"retrievable bytes"* premise, which is corrected in place
+  with the superseded wording preserved. **`E7-D13` (a)'s closure of `CLI-014` is now conditional on
+  `E7-F047` getting an owner** — the ruling's conclusions are unchanged, but closing the projection
+  half must not be read as `M1b`'s output criterion being satisfied.
 - The **materialization residue** (`job_artifacts` → a product `artifacts` row so
-  `task_outputs.artifactId` resolves rather than staying null) is unruled and unbuilt.
+  `task_outputs.artifactId` resolves rather than staying null) is unruled and unbuilt — now tracked
+  as `E7-F047` rather than left as a sentence.
 - **`CLI-015`**'s clause-6 predicate and the QUALIFYING ARTIFACT counter (arm 1) are untouched, as
   the task section's non-goals require.
