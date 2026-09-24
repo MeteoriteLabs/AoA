@@ -1469,6 +1469,57 @@ Either way, flip this Status and DELETE the `scripts/finding-ownership.json` key
 in the filing commit)
 **Filed:** 2026-09-20, by the re-platform reconciliation/grooming pass, measured at `4df71dada`.
 
+★★★ **AMENDED 2026-09-24 — the quay.io row in the table below is now FALSE, and the repair
+it justified has failed the same way a second time.** The table records
+`quay.io/v2/minio/minio/manifests/RELEASE.2025-09-07T16-13-09Z` returning **200** on 2026-09-20.
+That measurement was true when made and is left in place unedited. Re-measured 2026-09-24, with
+controls on both registries:
+
+| registry | request | result |
+|---|---|---|
+| quay.io | `GET /v2/minio/minio/manifests/RELEASE.2025-09-07T16-13-09Z`, pull-scoped token (801 chars, acquired OK) | **401** |
+| quay.io | `GET /v2/minio/minio/manifests/latest`, same token flow | **401** |
+| quay.io | the repository API | `"Requires authentication"` |
+| quay.io | **control** `GET /v2/prometheus/busybox/manifests/latest`, anonymous | **200** |
+| Docker Hub | `GET /v2/minio/minio/manifests/{that tag, latest}` | **401**, **401** |
+| Docker Hub | **control** `GET /v2/library/busybox/manifests/latest` | **200** |
+| mirror.gcr.io | `GET /v2/minio/minio/manifests/{that tag, latest}` | **404**, **404** |
+| dl.min.io | `HEAD /server/minio/release/linux-amd64/minio` | **410 Gone** |
+| GitHub releases | `minio/minio` latest release | tag exists, **0 binary assets** |
+
+The controls are what make this a REPOSITORY closure rather than a registry outage: both
+registries are up and both anonymous token flows work. **Both documented sources for this image
+are unavailable, and there is no public route left to the upstream image.** Nine D1 dispatches over
+~2.5 hours died at *Bring up the D1 stack* before a single test ran, blocking every D1 campaign and
+therefore M1a.
+
+★ **The lesson is not "pick a better registry".** The original repair replaced one third party's
+registry policy with another's, and bought nine days. The class is *a gate lane whose bring-up
+depends on a third party's decision to keep serving an image*, and it is now fixed at the class:
+`docker/d1/minio.Dockerfile` + `.github/workflows/d1-image-mirror.yml` MIRROR the image into this
+organisation's own GHCR, and `docker-compose.d1.yml` pins
+`ghcr.io/meteoritelabs/aoa-d1-minio` **BY DIGEST** — because a tag we own is still a tag. The mirror
+BUILDS MinIO from upstream source at `RELEASE.2025-09-07T16-13-09Z`, the release the lane was
+already pinned to, and runs it on Debian, so the compose service is byte-for-byte unchanged: root
+(for the `/root/.minio/certs` DAT-002 slice-7 bind), `curl` (for the healthcheck), ENTRYPOINT the
+binary (for the existing `command:`).
+
+★ **It builds from source rather than re-homing a public third-party BUILD, and that was measured,
+not preferred.** The first cut did re-home one; every such build is `:latest`-only, so it carried
+`RELEASE.2026-09-22T19-25-18Z`, and run `36022608037` brought the stack up and then failed `E6F-05`
+and `E6F-14` with `400 AccessDenied: There were headers present in the request which were not
+signed` on the presigned PUT. A newer MinIO is stricter about presigning, so **the version is not a
+free variable** — the upstream source tag is public even though every built image of it is gone. The
+sibling third-party refs were swept and are all still anonymously pullable
+(`pgvector/pgvector:pg18`, `ghcr.io/shopify/toxiproxy:2.9.0`, `node:lts-trixie-slim` — 200 each);
+the outage class is MinIO-only.
+
+★ **Nothing was made quieter.** No service was dropped, no pull failure was made non-fatal, and no
+healthcheck was relaxed. A lane that skipped MinIO would have converted a loud blocker into a
+silent hole.
+
+Evidence: `docs/replatform/epics/E6-deployment-test-harness/tickets/E6-F021-mirror-result.md`.
+
 ### The lane
 
 `d1-merge-train.yml@docs/replatform-program` — the lane that CONSTITUTES the `E6-D1-FOUNDATION`
@@ -1988,3 +2039,270 @@ finding is still accounted for in the counts, and the existing positive controls
 commit by the owner.
 
 **Filed:** 2026-09-24 by the class sweep.
+---
+
+## E6-F029 — a documented path that was never executed: the D1 harness's local bring-up, and the four defects that lived in it
+
+**Status:** open
+**Severity:** MEDIUM (operator-facing; no gate rests on it, and that is precisely the problem)
+**Owner:** `unowned`
+**Filed:** 2026-09-24, by the `E6-F021` re-repair, ruled by the planning session. Measured at
+`077873bdd4f1bb0f2cbf1baa602a28017b4cc446`.
+
+### ★★★ The headline: nobody ever ran the command
+
+`docker/d1/README.md`'s *Verification* section documented a local bring-up —
+`cp docker/d1/.env.example docker/d1/.env`, then `docker compose -f docker-compose.d1.yml up`.
+**That command could never have worked**, for a reason that has nothing to do with this programme's
+MinIO outage:
+
+- Docker Compose auto-loads only `.env` in the **project directory** — the repository root, because
+  that is where `docker-compose.d1.yml` lives. **`docker/d1/.env` was therefore never read**, and
+  Compose fell back to the unrunnable `:d1-local-unbuilt` control-plane and worker defaults.
+- `d1-merge-train.yml` writes the digests to **`$GITHUB_ENV`** — process environment variables, which
+  Compose reads directly — so **CI never needed the flag.**
+- It *also* writes `docker/d1/.env`, and **nothing ever passes that file to Compose.** CI's copy is
+  **dead weight that looks exactly like the operator's copy working.**
+- And the correct idiom sits **one directory away**: `docker/campaign/docker-compose.campaign.yml:11`
+  documents `--env-file docker/campaign/.env.campaign`.
+
+So this was **not a misunderstanding of Compose.** Nobody was wrong about anything. **Nobody ran the
+command.**
+
+★ That is the general lesson, and it is sharper than *"CI is amd64"*: the other defects below are a
+path **CI cannot take**; this one is a path **nobody ever took at all**. It generalises to every
+README in this programme — a documented command is an untested assertion until something executes it,
+and prose degrades silently because nothing reds when it stops being true.
+
+★★ **Dead weight that resembles a working artefact is what made it invisible.** A `docker/d1/.env`
+exists after a CI run. It has plausible contents. Nothing reads it. Anyone checking "does CI produce
+the env file the README describes?" would have answered yes.
+
+### The class
+
+**A path only a human takes, which no lane exercises.** `d1-merge-train.yml` brings the same stack up
+by a **different** route from the documented one, so the two drift, and the drift is invisible by
+construction.
+
+### Four instances, found in one PR, each invisible for a STRUCTURAL reason
+
+| # | defect | why no lane could see it |
+|---|---|---|
+| **4** | **the documented bring-up command omits `--env-file docker/d1/.env`, so the copied env file is never loaded and Compose falls back to the unrunnable `:d1-local-unbuilt` defaults** | **the documented path was never executed by anything.** CI does not use that file: it writes the digests to `$GITHUB_ENV`, and the `docker/d1/.env` it also writes is passed to nothing |
+| 1 | the mirrored MinIO image was published `linux/amd64` only, while the image it replaced served a multi-arch manifest list | **CI is amd64** |
+| 2 | the repo-scoped GHCR package is not anonymously pullable, and the documented local path had no `docker login` prerequisite | **CI authenticates** (`packages: read` + a login step in all three jobs) |
+| 3 | `docker/d1/.env.example` set `AOA_D1_MINIO_IMAGE=minio/minio:latest` — the image Docker Hub DELETED — and an env value **overrides** the Compose default, so a local operator resolved the dead image no matter what `docker-compose.d1.yml` said | **CI never reads `.env.example`**; it writes `docker/d1/.env` itself, and never writes `AOA_D1_MINIO_IMAGE` at all |
+
+Instance 4 is **pre-existing** and is listed first because it is the strongest evidence and the most
+general lesson. All four were repaired in PR #603 — 1–3 as part of the `E6-F021` repair, 4 as a
+one-flag README correction. They are filed as one finding because they are one defect.
+
+### A fifth instance, of the METHOD rather than the environment
+
+The four above are defects nothing executes or the lanes cannot see. This one is a defect in the **sweep that was
+supposed to find them**, and it is recorded here because it has the identical signature: a clean
+result about a set that was never examined.
+
+`E6-F021`'s class sweep enumerated with:
+
+```
+grep -rn "image:" docker-compose*.yml
+```
+
+**That is not recursive.** The **shell** expands `docker-compose*.yml` before `grep` ever runs, and
+it expands only to the **five root-level** files — so `-r` recursed into nothing and two nested
+compose files were never inspected. `find . -name "docker-compose*.yml"` returns **seven**. One of
+the two missed files, `docker/m1-boot/docker-compose.m1-boot.yml:91`, carried the same withdrawn
+image; it is [[E6-F030]].
+
+★★★ **A sweep that silently covers five of seven reads exactly like one that covers all seven.** That
+is `E.2.1` landing on a sweep: the enumeration's own output was the only evidence about its domain,
+so it could report *"4 checked, 1 found"* with complete confidence and be wrong about the
+denominator. **A count is a claim about a domain, and the domain needs a second source** — here,
+`find`, which does the walking itself instead of handing the walk to the shell.
+
+Practical rule, since this will recur: **never hand a recursive search its own file list via a
+glob.** Use `find`, or `grep -r` with a DIRECTORY operand and `--include=`, and quote the pattern so
+the shell cannot expand it. And when reporting *"N checked"*, say how N was obtained.
+
+★★★ **A GREEN CI RUN IS NOT EVIDENCE ABOUT ANY OF THEM, and that misreading is what let #3 survive.**
+Three `d1-merge-train` runs (`36022608037` bring-up, `36025567413`, `36027175548`) went green — the
+last two fully, 47/47 + 9/9 executed — *while instance #3 was live in the tree*. They are not in
+tension: CI takes the Compose default, so the `.env.example` override is a code path the lane cannot
+reach. A lane that does not take a path cannot vouch for it, and reading its green as if it did is
+the same *"a check that nothing runs"* shape this programme keeps paying for, relocated to a file the
+check never opens.
+
+★ **Instance #3 also survived a class sweep**, which is the sharper lesson. The sweep that fixed #1
+and #2 covered the compose files, both workflows and the Dockerfile — and **not** `.env.example`. The
+class was named correctly and the enumeration was short by one member. An enumeration you can quote
+is only as good as its DOMAIN — and "every file that can set the image the stack resolves" is a wider
+domain than "every file that names an image".
+
+### Why it is tractable
+
+The surface is small and enumerable, which the repair measured rather than assumed:
+`grep -rn "AOA_D1_[A-Z_]*IMAGE="` across the repo returns **20 sites**, of which **1** was stale.
+Line 29 (`pgvector:pg18`) is still pullable, lines 23–24 are local-build placeholders, and all
+seventeen workflow sites write control-plane / worker / fake-provider and never MinIO.
+
+### Proposed closure route
+
+Either of these closes it; the first is stronger.
+
+1. **Exercise the documented path.** A job that performs the README's own steps —
+   `cp docker/d1/.env.example docker/d1/.env`, then the documented `docker compose …` line verbatim —
+   rather than the lane's bespoke bring-up. This is the only thing that can catch the class rather
+   than its current members; it would have caught **all four**. Its cost is a second bring-up, and it
+   must NOT be allowed to become a copy of the lane's route, or it stops testing the human path and
+   the finding regenerates.
+1b. **Or, cheaper and static: check that a README's documented commands are the commands the lane
+   actually runs.** Extract the fenced/inline commands from a lane's README and require each to
+   appear in, or be reconciled against, that lane's workflow. This is what would have caught
+   instance 4 without a second bring-up — the README said
+   `docker compose -f docker-compose.d1.yml up` and the lane ran something else, and no artefact
+   recorded the disagreement.
+1c. **And the dead-weight rule, which is the shape that hid it: any `.env` (or similar) a lane
+   WRITES must either be passed to something or deleted.** `d1-merge-train.yml` writes
+   `docker/d1/.env` and passes it to nothing. A file that exists, has plausible contents and is read
+   by nobody is indistinguishable from one that works, and that resemblance is what made instance 4
+   survive. Cheap, pure-node, and it generalises past this lane.
+2. **At minimum, a static agreement check**: every `AOA_D1_*_IMAGE` in `docker/d1/.env.example` must
+   either match the corresponding `docker-compose.d1.yml` default or be absent. Cheap, pure-node,
+   runnable in `policy`. It catches #3 and nothing else — it is blind to #1 and #2, which are
+   properties of the environment rather than of a file, so it should be filed as a partial closure
+   and say so rather than being allowed to look like coverage of the class.
+
+Whichever is built needs a positive control: reintroduce a stale override, or an amd64-only mirror,
+and show the check goes red. A check adopted on the strength of the fixes it post-dates has not been
+shown to detect anything.
+
+### Related, and downgraded on purpose: GHCR package visibility
+
+`ghcr.io/meteoritelabs/aoa-d1-minio` is repo-scoped and private, so the documented local bring-up
+needs a `docker login ghcr.io` with `read:packages` (stated as a requirement in
+`docker/d1/README.md`). Making it anonymously readable is an **org-admin** action — `GITHUB_TOKEN`
+cannot set package visibility.
+
+★ It was filed as [[E6-F030]]'s route 1 and was briefly a **blocker**. The route-2 ruling removed
+that: the shipped-boot lane will build MinIO from source rather than pull the mirror, so nothing
+gates on this any more. It is now a **convenience for D1's local operators only** — if it flips, the
+login prerequisite and its README paragraph retire. Instance #2 above is what it would close, and
+CI is unaffected either way because CI logs in with its own run token.
+
+### Not claimed
+
+This finding does NOT say the local path is currently broken — all three instances are repaired. It
+says the path is **unverified**, and that three defects accumulated there undetected is evidence
+about the absence of a check, not about the current state of the tree. It also makes no claim about
+operator-facing paths in epics other than E6, which were not examined.
+---
+
+## E6-F030 — the shipped-boot lane still resolves the withdrawn MinIO image, and the one-line fix is blocked by that lane's own shape guard
+
+**Status:** open
+**Severity:** HIGH (it fails `m1-shipped-boot` at boot, before the `M1a` journey runs)
+**Owner:** `unowned`
+**Filed:** 2026-09-24, by the `E6-F021` re-repair, after Codex round 4 (P1) on PR #603. Measured at
+`82af63622c4341912adefbf3e1dce2b29313ebd0`.
+
+### The site, and that it is reached
+
+`docker/m1-boot/docker-compose.m1-boot.yml:91`:
+
+```
+image: "${AOA_M1_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}"
+```
+
+That is the identical reference `E6-F021` measures at **401** from quay and Docker Hub alike, with
+controls on both. `grep -rn "AOA_M1_MINIO_IMAGE"` over the whole repo returns **that line and nothing
+else**, so nothing overrides it and the dead default is what resolves.
+
+The chain was measured link by link rather than inferred from any one of them:
+
+| link | measured |
+|---|---|
+| the overlay is booted | `.github/workflows/m1-shipped-boot.yml` boots `docker/m1-boot/docker-compose.m1-boot.yml` |
+| MinIO is brought up | `scripts/m1-shipped-boot/journey.mjs:423` — `compose(state, ["up","-d","--wait",…, CP_REPLICAS[0]])`, and the comment above it names MinIO as part of replica A's dependency closure |
+| nothing overrides the image | the single-hit grep above |
+| the lane cannot authenticate | `.github/workflows/m1-shipped-boot.yml` contains no registry login |
+
+So `m1-shipped-boot` dispatches fail at `boot-core`, before the journey — and that is the `M1a` lane.
+
+### Why `E6-F021` did not catch it — a broken enumeration, not a failed repair
+
+`E6-F021`'s class sweep enumerated with `grep -rn "image:" docker-compose*.yml`. **That is not
+recursive.** The shell expands `docker-compose*.yml` before `grep` runs, and it expands only to the
+five root-level files, so `-r` recursed into nothing. `find . -name "docker-compose*.yml"` returns
+**seven**. The two never inspected were `docker/campaign/docker-compose.campaign.yml` (clean) and
+this one.
+
+★★★ **A sweep that silently covers five of seven reads exactly like one that covers all seven.** This
+is `E.2.1` — a check whose input is the thing under test can only tell you the artefact is
+well-formed, never that it is complete — landing on the sweep itself. The repair of the D1 half is
+sound and proven; the CLAIM that the class was fixed was false, and it was false because of the
+enumeration, which is the more dangerous of the two failure modes.
+
+### RULED: route 2 — the lane builds MinIO from source
+
+**Ruled by the planning session, 2026-09-24.** The reasoning is recorded here in full so whoever
+builds it inherits the argument rather than re-deriving it.
+
+★ **First, a correction to this finding's own filing, because it was imprecise about the guard.**
+The filing said the one-line fix "does not work" because
+`scripts/lib/m1-shipped-boot-shape.mjs:215` forbids `docker pull`/`docker login`. Re-measured at
+source: **that guard reads the WORKFLOW text and nothing else** —
+`scripts/check-m1-shipped-boot-shape.mjs:28` is
+`readFileSync(path.join(repoRoot, SHIPPED_BOOT_WORKFLOW))`, and `SHIPPED_BOOT_WORKFLOW` is
+`.github/workflows/m1-shipped-boot.yml`. So line 216's registry ban never sees
+`docker/m1-boot/docker-compose.m1-boot.yml`, and a *public* GHCR reference placed in that compose
+file would **not** have tripped anything. Route 1 would have passed. What is true is narrower: a
+**private** mirror needs a `docker login` in the workflow, and *that* reds line 215.
+
+**And that is exactly why route 2 is ruled rather than route 1.** Look at what the guard is for. It
+requires `build.sh` / `sbom.sh` / `sign.sh` / `admit.sh`, forbids `docker pull` / `docker login`, and
+forbids registry references, under the stated reason *"images are built from the source"*. That is
+founder ruling **F3**'s definition of a shipped CI boot: the lane builds the artefacts under test
+from the frozen candidate and boots them. **A lane whose object store arrives pre-baked from a
+registry is a weaker claim than the one F3 asks for.**
+
+So route 1 would have satisfied the guard's **letter** while quietly weakening the property the guard
+exists to protect — which is the defect class this programme keeps paying for, and it is worse when
+the guard would have stayed green. Route 2 is not the fallback; **it is what this lane was designed
+to do**, and `docker/d1/minio.Dockerfile` already performs exactly that build, fail-closed on the
+release tag's peeled commit, so it is reuse rather than new work. A Go compile per run is a fair
+price on a lane that runs rarely and deliberately.
+
+★★ **The asymmetry is the interesting part, and it is not an inconsistency.** `docker-compose.d1.yml`
+and `docker/m1-boot/docker-compose.m1-boot.yml` get **different fixes for the same broken image, on
+principle**:
+
+| lane | what it is | the right fix |
+|---|---|---|
+| D1 (`docker-compose.d1.yml`) | a **test harness** — pulling a pinned third-party image is entirely normal, and a registry mirror is the natural repair | pull the GHCR mirror, pinned by digest (`E6-F021`, shipped) |
+| `m1-boot` (`docker/m1-boot/…`) | the **shipped-boot evidence lane** — building from source **is the claim** (F3) | build MinIO from source in the lane (this finding) |
+
+Two different fixes for principled reasons, not two attempts at one fix.
+
+**Route 3 — amending the shape guard to permit a `ghcr.io` login — is rejected.** It would edit a
+guard to accommodate the need it was written to forbid.
+
+**Consequence: GHCR package visibility is no longer a blocker.** It was route 1's prerequisite; with
+route 1 rejected it becomes a **convenience for D1's local operators only**, and it is recorded that
+way on [[E6-F029]] rather than here.
+
+### Scope of the ruling
+
+Route 2 is deliberately **not** started in PR #603: that PR's D1 half is proven and lands as it
+stands, with this finding open. Whoever picks this up inherits the pin-down above — the site, the
+four measured links, the guard's true scope, and the reason route 2 beats a route that would also
+have gone green.
+
+### Not claimed
+
+This does NOT say the D1 lane is broken — it is fixed and proven at runs `36025567413` and
+`36027175548` (bring-up **and** full campaign, 47/47 + 9/9). `docker-compose.d1.yml` and
+`docker/m1-boot/docker-compose.m1-boot.yml` are separate stacks. Nor does it claim `m1-shipped-boot`
+has actually been observed failing on this: the lane is dispatch-only and no dispatch was made — the
+failure is derived from the four measured links above, and **a dispatch is what would confirm it**.
+That dispatch was not made because the lane is keyed-capable and outside this ticket's brief.

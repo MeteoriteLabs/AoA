@@ -55,16 +55,59 @@ services:
       - data-net
 
   minio:
-    # E6-F021 — PINNED to quay.io. Docker Hub's `minio/minio` is GONE: an anonymous
-    # pull token against `registry-1.docker.io/v2/minio/minio/manifests/latest` returns
-    # 401, and the Hub API returns `{"message":"object not found"}`. That is what red-
-    # lined this lane on 2026-09-15 and 2026-09-17 (`pull access denied for minio/minio`).
-    # quay.io is MinIO's own registry and serves the same image: a pull-scoped token +
-    # manifest GET for this exact tag returns 200 with a manifest LIST (multi-arch).
-    # The tag is dated rather than `:latest` — it was the ONLY `:latest` in this file,
-    # and the sibling third-party images here are tag-pinned (`pgvector:pg18`,
-    # `toxiproxy:2.9.0`). Do NOT restore `minio/minio`; it cannot be pulled.
-    image: ${AOA_D1_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}
+    # E6-F021, AMENDED 2026-09-24 — MIRRORED into this organisation's OWN GHCR, and
+    # pinned BY DIGEST. The lane no longer depends on any third party's registry policy
+    # for this image, because that policy has now broken it twice from two registries.
+    #
+    # SUPERSEDED TEXT, kept verbatim (this programme does not rewrite history in a
+    # quote). This block used to read:
+    #
+    #   "E6-F021 — PINNED to quay.io. Docker Hub's `minio/minio` is GONE: an anonymous
+    #    pull token against `registry-1.docker.io/v2/minio/minio/manifests/latest` returns
+    #    401, and the Hub API returns `{"message":"object not found"}`. That is what red-
+    #    lined this lane on 2026-09-15 and 2026-09-17 (`pull access denied for minio/minio`).
+    #    quay.io is MinIO's own registry and serves the same image: a pull-scoped token +
+    #    manifest GET for this exact tag returns 200 with a manifest LIST (multi-arch).
+    #    The tag is dated rather than `:latest` — it was the ONLY `:latest` in this file,
+    #    and the sibling third-party images here are tag-pinned (`pgvector:pg18`,
+    #    `toxiproxy:2.9.0`). Do NOT restore `minio/minio`; it cannot be pulled."
+    #
+    # The quay sentence is now FALSE. Re-measured 2026-09-24, with controls:
+    #
+    #   quay.io    /v2/minio/minio/manifests/RELEASE.2025-09-07T16-13-09Z   401
+    #   quay.io    /v2/minio/minio/manifests/latest                         401
+    #   docker.io  /v2/minio/minio/manifests/{that tag, latest}             401, 401
+    #   control    quay.io    /v2/prometheus/busybox/manifests/latest       200
+    #   control    docker.io  /v2/library/busybox/manifests/latest          200
+    #
+    # Both registries are up and both pull-token flows work; the REPOSITORY is closed.
+    # mirror.gcr.io/minio/minio is 404 and dl.min.io's server binary is 410 Gone, so
+    # there is no public route left to the upstream image. Nine D1 dispatches over
+    # ~2.5 hours died at *Bring up the D1 stack* before a single test ran.
+    #
+    # WHAT THIS IS NOW. `ghcr.io/meteoritelabs/aoa-d1-minio`, built by
+    # `.github/workflows/d1-image-mirror.yml` from `docker/d1/minio.Dockerfile`, which
+    # builds MinIO FROM UPSTREAM SOURCE at RELEASE.2025-09-07T16-13-09Z — the SAME release
+    # this line used to name — onto a Debian base, so NOTHING in this service had to be
+    # softened: it still runs as root (so /root/.minio/certs below is readable), still
+    # ships curl (so the healthcheck below works), and its ENTRYPOINT is the binary (so
+    # the `command:` below is unchanged). Verified on the published digest: the container
+    # logs `Version: RELEASE.2025-09-07T16-13-09Z` and `API: https://127.0.0.1:9000`, and
+    # the EXACT healthcheck command below returns 200.
+    #
+    # ★ THE VERSION IS NOT A FREE VARIABLE, and this was measured rather than assumed. An
+    # earlier cut of this mirror carried RELEASE.2026-09-22T19-25-18Z (the only version a
+    # public third-party build offers). Run `36022608037` brought the stack up and then
+    # failed E6F-05 and E6F-14 with
+    # `400 AccessDenied: There were headers present in the request which were not signed`
+    # on the presigned PUT — the DAT-002 slice-7 path. A newer MinIO is stricter about
+    # presigning, so the harness gets the harness's MinIO.
+    #
+    # Pinned by DIGEST, not by tag. A tag we own is still a tag; the `:d1` tag exists for
+    # humans and the digest is what this lane resolves, so a re-cut mirror cannot silently
+    # change what the gate brings up. To refresh: dispatch d1-image-mirror.yml, then
+    # replace the digest here with the one it prints.
+    image: ${AOA_D1_MINIO_IMAGE:-ghcr.io/meteoritelabs/aoa-d1-minio@sha256:187391a664f95607f5d787e89442df6535ab410bbc7910d2350189183ab92246}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: "aoa-d1"
