@@ -151,3 +151,30 @@ service declares a **non-empty** `AOA_FAKE_PROVIDER_CTL_ALLOW` equal to
   tests/d1/fake-provider-job.test.mjs` with `AOA_D1_LIVE=1` (skips cleanly without
   Docker). Bring-up: `cp docker/d1/.env.example docker/d1/.env` (set admitted
   digests) → `docker compose -f docker-compose.d1.yml up`.
+
+### Prerequisite for a local bring-up: authenticate to GHCR (E6-F021)
+
+The `minio` service is pinned by digest to `ghcr.io/meteoritelabs/aoa-d1-minio`, this
+organisation's own mirror, because both upstream sources for the MinIO image are now
+closed to anonymous pulls (see `E6-F021` and the comment on the service). **That package
+is repo-scoped, so it is not anonymously pullable either** — without credentials
+`docker compose up` fails on the MinIO pull before anything starts. The CI jobs log in
+before bring-up; a local operator must do the same, once:
+
+```sh
+# a GitHub PAT (classic) with `read:packages`, or `gh auth token` if your gh login
+# already carries that scope
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USERNAME" --password-stdin
+```
+
+`AOA_D1_MINIO_IMAGE` still overrides the service image if you have the bytes some other
+way; nothing about the login is load-bearing beyond obtaining them.
+
+**Architecture.** The mirror publishes `linux/amd64` and `linux/arm64`, and
+`AOA_D1_MINIO_IMAGE` is pinned to the multi-arch INDEX digest, so an arm64 Linux host
+resolves its own platform without emulation — matching what the withdrawn upstream image
+did. A host on any other architecture must set `AOA_D1_MINIO_IMAGE` itself.
+
+To re-cut the mirror, dispatch `.github/workflows/d1-image-mirror.yml` and pin the digest
+it prints. It builds MinIO from upstream source at a pinned release tag; changing that tag
+changes presign behaviour, so re-run this lane's `E6F-05` and `E6F-14` when you do.

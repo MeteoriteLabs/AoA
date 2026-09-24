@@ -67,24 +67,48 @@ ARG MINIO_SOURCE_COMMIT=07c3a429bfed433e49018cb0f78a52145d4bedeb
 ARG GO_IMAGE=golang:1.25-trixie@sha256:2c4c60ef415fbfa5e90300722293bef36c5e63fae17570ce18f580af933dbd73
 ARG BASE_IMAGE=debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
-FROM ${GO_IMAGE} AS builder
+# --platform=$BUILDPLATFORM plus an explicit GOARCH is a NATIVE cross-compile, not a
+# QEMU one: the Go toolchain runs on the builder's own architecture and emits the
+# target's. Building arm64 under emulation would be slow enough to become its own
+# problem, and the runtime stage below is the only thing emulated.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS builder
 ARG MINIO_VERSION
 ARG MINIO_SOURCE_COMMIT
-RUN apt-get update   && apt-get install -y --no-install-recommends git ca-certificates   && rm -rf /var/lib/apt/lists/*
+ARG TARGETOS
+ARG TARGETARCH
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 # The commit `test` below is the FAIL-CLOSED arm: a moved tag, a redirected host or a
 # cached mirror all surface here as a mismatch and abort the build.
 WORKDIR /src
-RUN set -eux;     git clone --depth 1 --branch "${MINIO_VERSION}" https://github.com/minio/minio.git .;     actual="$(git rev-parse HEAD)";     test "${actual}" = "${MINIO_SOURCE_COMMIT}"       || { echo "minio source commit mismatch: got ${actual}, expected ${MINIO_SOURCE_COMMIT}" >&2; exit 1; }
+RUN set -eux; \
+    git clone --depth 1 --branch "${MINIO_VERSION}" https://github.com/minio/minio.git .; \
+    actual="$(git rev-parse HEAD)"; \
+    test "${actual}" = "${MINIO_SOURCE_COMMIT}" \
+      || { echo "minio source commit mismatch: got ${actual}, expected ${MINIO_SOURCE_COMMIT}" >&2; exit 1; }
+
 # The release ldflags are what upstream's Makefile sets. Without them the binary reports
-# `Version: DEVELOPMENT.GOGET`, and an image that cannot tell you which MinIO it is would
-# make the next person re-derive it from this file.
-RUN CGO_ENABLED=0 GOFLAGS=-trimpath go build       -ldflags "-s -w         -X github.com/minio/minio/cmd.Version=${MINIO_VERSION}         -X github.com/minio/minio/cmd.ReleaseTag=${MINIO_VERSION}         -X github.com/minio/minio/cmd.CommitID=${MINIO_SOURCE_COMMIT}         -X github.com/minio/minio/cmd.ShortCommitID=${MINIO_SOURCE_COMMIT}"       -o /out/minio .
+# `Version: DEVELOPMENT.GOGET`, and an image that cannot say which MinIO it is would make
+# the next reader re-derive it from this file.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOFLAGS=-trimpath go build \
+      -ldflags "-s -w \
+        -X github.com/minio/minio/cmd.Version=${MINIO_VERSION} \
+        -X github.com/minio/minio/cmd.ReleaseTag=${MINIO_VERSION} \
+        -X github.com/minio/minio/cmd.CommitID=${MINIO_SOURCE_COMMIT} \
+        -X github.com/minio/minio/cmd.ShortCommitID=${MINIO_SOURCE_COMMIT}" \
+      -o /out/minio .
 
 FROM ${BASE_IMAGE} AS production
 ARG MINIO_VERSION
-RUN apt-get update   && apt-get install -y --no-install-recommends curl ca-certificates   && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/minio /usr/bin/minio
-LABEL org.opencontainers.image.title="aoa-d1-minio"       org.opencontainers.image.description="D1 harness MinIO, built from upstream source at ${MINIO_VERSION}"       org.opencontainers.image.version="${MINIO_VERSION}"
+LABEL org.opencontainers.image.title="aoa-d1-minio" \
+      org.opencontainers.image.description="D1 harness MinIO, built from upstream source at ${MINIO_VERSION}" \
+      org.opencontainers.image.version="${MINIO_VERSION}"
 # Deliberately root: /root/.minio/certs is where MinIO auto-enables TLS from, and the
 # compose service binds ./docker/d1/certs there read-only. This image is a CI harness
 # service on an isolated compose network; it is never shipped.
