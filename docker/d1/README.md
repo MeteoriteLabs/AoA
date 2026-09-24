@@ -149,5 +149,53 @@ service declares a **non-empty** `AOA_FAKE_PROVIDER_CTL_ALLOW` equal to
   `node --test scripts/check-d1-compose.test.mjs`.
 - **Linux/CI live (compose up):** `node --test tests/d1/network-denial.test.mjs
   tests/d1/fake-provider-job.test.mjs` with `AOA_D1_LIVE=1` (skips cleanly without
-  Docker). Bring-up: `cp docker/d1/.env.example docker/d1/.env` (set admitted
-  digests) → `docker compose -f docker-compose.d1.yml up`.
+  Docker). Bring-up: `cp docker/d1/.env.example docker/d1/.env` (set the admitted
+  digests — `AOA_D1_CONTROL_PLANE_IMAGE` and `AOA_D1_WORKER_IMAGE`; the file no longer
+  carries a MinIO override, see below) →
+  `docker compose --env-file docker/d1/.env -f docker-compose.d1.yml up`.
+
+  ★ **`--env-file` is load-bearing and was missing** (`E6-F029`, instance 5). Compose
+  auto-loads only `.env` in the PROJECT directory — the repository root, since that is
+  where `docker-compose.d1.yml` lives — so `docker/d1/.env` is **not** picked up
+  implicitly, and without the flag the copied file is ignored and Compose falls back to
+  the unrunnable `:d1-local-unbuilt` defaults. The sibling harness already documents the
+  correct idiom (`docker/campaign/docker-compose.campaign.yml:11`). CI never needed it:
+  `d1-merge-train.yml` writes the digests to `$GITHUB_ENV` as process environment
+  variables, which Compose reads directly — it writes `docker/d1/.env` too, but nothing
+  ever passes that file to Compose.
+
+### Prerequisite for a local bring-up: authenticate to GHCR (E6-F021)
+
+The `minio` service is pinned by digest to `ghcr.io/meteoritelabs/aoa-d1-minio`, this
+organisation's own mirror, because both upstream sources for the MinIO image are now
+closed to anonymous pulls (see `E6-F021` and the comment on the service). **That package
+is repo-scoped, so it is not anonymously pullable either** — without credentials
+`docker compose up` fails on the MinIO pull before anything starts. The CI jobs log in
+before bring-up; a local operator must do the same, once:
+
+```sh
+# a GitHub PAT (classic) with `read:packages`, or `gh auth token` if your gh login
+# already carries that scope
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USERNAME" --password-stdin
+```
+
+`AOA_D1_MINIO_IMAGE` still overrides the service image if you have the bytes some other
+way; nothing about the login is load-bearing beyond obtaining them.
+
+★ **`docker/d1/.env.example` deliberately does NOT set `AOA_D1_MINIO_IMAGE`** (`E6-F029`).
+It used to set `minio/minio:latest`, and because an env value overrides the Compose
+default, copying the sample file resolved the deleted Docker Hub image regardless of what
+`docker-compose.d1.yml` said — a GHCR login could not repair that pull. The digest lives
+in exactly one place, the Compose default, because a second copy of it is a tag by another
+name. **Until the GHCR package is made anonymously readable** (an org-admin action, not
+something CI or a build agent can do), the login above is a REQUIRED prerequisite of the
+documented local path, not an optional convenience.
+
+**Architecture.** The mirror publishes `linux/amd64` and `linux/arm64`, and
+`AOA_D1_MINIO_IMAGE` is pinned to the multi-arch INDEX digest, so an arm64 Linux host
+resolves its own platform without emulation — matching what the withdrawn upstream image
+did. A host on any other architecture must set `AOA_D1_MINIO_IMAGE` itself.
+
+To re-cut the mirror, dispatch `.github/workflows/d1-image-mirror.yml` and pin the digest
+it prints. It builds MinIO from upstream source at a pinned release tag; changing that tag
+changes presign behaviour, so re-run this lane's `E6F-05` and `E6F-14` when you do.

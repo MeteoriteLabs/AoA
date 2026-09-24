@@ -17,6 +17,17 @@ name: D1 Merge Train
 
 permissions:
   contents: read
+  # E6-F021 (2026-09-24 amendment). The MinIO service now comes from this
+  # organisation's OWN GHCR mirror (ghcr.io/<owner>/aoa-d1-minio, built and pushed by
+  # .github/workflows/d1-image-mirror.yml from docker/d1/minio.Dockerfile), because BOTH
+  # documented upstream sources are now closed to anonymous pulls: Docker Hub deleted
+  # `minio/minio`, and `quay.io/minio/minio` -- the repair that replaced it, and which
+  # served a 200 when E6-F021 was filed -- now returns 401 for a pull-scoped token. A
+  # repo-scoped GHCR package is not anonymously pullable either, so every job that brings
+  # the stack up needs read access plus a `docker login ghcr.io` step. That credential is
+  # one we issue to ourselves on every run, which is the entire point: it cannot be
+  # revoked by a third party's registry policy.
+  packages: read
 
 on:
   merge_group:
@@ -230,6 +241,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # E6-F021 (2026-09-24 amendment) -- the MinIO service image is now this
+      # organisation's own GHCR mirror, pinned by digest in docker-compose.d1.yml. A
+      # repo-scoped GHCR package is not anonymously pullable, so the bring-up below needs
+      # this login. It uses the run's own GITHUB_TOKEN with `packages: read`; no secret is
+      # configured for it and no third party can revoke it.
+      - name: Login to GitHub Container Registry (D1 MinIO mirror)
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -485,6 +508,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # E6-F021 (2026-09-24 amendment) -- the MinIO service image is now this
+      # organisation's own GHCR mirror, pinned by digest in docker-compose.d1.yml. A
+      # repo-scoped GHCR package is not anonymously pullable, so the bring-up below needs
+      # this login. It uses the run's own GITHUB_TOKEN with `packages: read`; no secret is
+      # configured for it and no third party can revoke it.
+      - name: Login to GitHub Container Registry (D1 MinIO mirror)
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -747,6 +782,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # E6-F021 (2026-09-24 amendment) -- the MinIO service image is now this
+      # organisation's own GHCR mirror, pinned by digest in docker-compose.d1.yml. A
+      # repo-scoped GHCR package is not anonymously pullable, so the bring-up below needs
+      # this login. It uses the run's own GITHUB_TOKEN with `packages: read`; no secret is
+      # configured for it and no third party can revoke it.
+      - name: Login to GitHub Container Registry (D1 MinIO mirror)
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
