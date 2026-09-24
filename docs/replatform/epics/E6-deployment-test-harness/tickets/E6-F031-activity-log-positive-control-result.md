@@ -121,7 +121,53 @@ of the whole result — which is what makes the null result informative rather t
 `m1-shipped-boot`, `mode: keyless`, run **`36057809378`**, `--ref claude/m1-activity-log-probe`,
 candidate `1f1c3f9b8e28e44cf2f3eb74fa46aea1b30ca11b` (the program tip; the lane refuses a candidate
 that is not already an ancestor of `docs/replatform-program`, so this branch's own head cannot be the
-candidate). **Outcome recorded in the final report and in §7.**
+candidate).
+
+### 4.1 ★★★ THE DISPATCH WAS VOID, AND THE MISSED LINK IS MINE
+
+Run `36057809378` concluded `failure` at the same `cross-tenant` step with the **byte-identical**
+payload, `{"own":0,"foreign":0,"unscoped":0,"ownActions":[]}`.
+
+**That is NOT my failing prediction (a).** Both predictions are **void**, because their shared
+precondition — that the fix was in the workspace the lane ran — was **false**:
+
+```yaml
+- uses: actions/checkout@…            # .github/workflows/m1-shipped-boot.yml:117
+  with:
+    ref: ${{ inputs.candidate }}
+```
+
+`--ref claude/m1-activity-log-probe` selects only which **workflow file** runs. The checkout replaces
+the workspace with the **candidate**, so every `scripts/m1-shipped-boot/*.mjs` — including
+`cross-tenant.mjs` — came from `1f1c3f9b8e…`, which does **not** contain the fix. The run re-executed
+the unfixed driver.
+
+★ **This is E.3.1's failure exactly, committed by me.** I measured the read predicate, the four
+writers, the audit set and the driver's event list — and never measured the link *"does this lane run
+my branch's driver?"* A chain measured at seven links and inferred at the eighth is an inference, and
+it read in my own plan as a verification.
+
+★★ **Worse: both prior records already said so, and I did not read them for this.** `DEP-022-result.md`
+§8: *"the lane REFUSES a candidate that is not already an ancestor of `docs/replatform-program`, so
+this branch's code cannot run on it before the PR merges."* `E6-F030-shipped-boot-minio-result.md`
+makes the same point about `actions/checkout` bringing the candidate's own copies. The information was
+on the page.
+
+**What the run IS worth:** a **third** byte-identical reproduction of `E6-F031` on the unfixed
+candidate, across three independent dispatches (`36047740323`, `36051455003`, `36057809378`). That
+further strengthens "reproducible and candidate-side, not a flake". It is worth strictly less than the
+verification I intended, and it is not a substitute for it.
+
+**The fix is therefore UNVERIFIED LIVE, and cannot be verified before this PR merges** — the lane
+refuses any candidate that is not already an ancestor of `docs/replatform-program`, which is a
+chicken-and-egg the ticket cannot break from inside. `d1-merge-train` does not substitute: the fix is
+in `scripts/m1-shipped-boot/cross-tenant.mjs`, and the D1 twin does not execute that file (and is
+unaffected by the defect anyway, per §2).
+
+**A blocked case filed with its blocker MEASURED is a legitimate outcome** (E.3 §6), and that is what
+this is. The reviewer should treat §3's fix as **argued from source, not demonstrated**, and the
+verification as OWED: after merge, one `mode: keyless` dispatch with the merge commit as candidate,
+whose predictions are exactly §4's, still unspent.
 
 ---
 
@@ -176,9 +222,13 @@ the convention `E6-F030` followed. `E6-F032` is `open`, so it gains one.
 - Pure-node guard set from M1-AGENT-RULES, plus
   `check-evidence-immutability --base origin/docs/replatform-program`: **`failures: 0`**, run after
   `git add -A` so newly-added files were visible to the tracked-file walks.
-- The keyless verification run's per-step conclusions and the
-  `d2m.tenant.legacy.activity_log` row are recorded in the final report.
+- Keyless run `36057809378`: `failure` at `cross-tenant`, byte-identical payload — **a third
+  reproduction on the unfixed candidate, NOT a test of the fix** (§4.1). No `d2m.tenant.legacy.activity_log`
+  row with the fix present exists yet.
 - `ci-required` on PR #605: recorded in the final report.
+- `node --check scripts/m1-shipped-boot/cross-tenant.mjs` parses; `check-m1-shipped-boot-shape` OK;
+  the three event sequence numbers are distinct (`attempt_started@1`, own `usage@2`, hostile
+  `usage@3`), asserted by reading them back out of the file.
 
 ---
 
@@ -187,6 +237,9 @@ the convention `E6-F030` followed. `E6-F032` is `open`, so it gains one.
 - **The keyed step 2 is still not authorised by this ticket.** `DEP-022`'s sequence gates keyed on a
   green step 1; this ticket reports step 1's outcome and nothing further. No keyed dispatch was made
   and none is recommended here.
+- ★★★ **The FIX is not demonstrated.** It is argued from source and blocked from live verification
+  until merge (§4.1). The measured CAUSE is independent of that and stands on its own: every link in
+  §1 was read at source, and none of it rests on run `36057809378`.
 - **Link 8 of §1 is inferred, not measured.** No row dump was taken of `activity_log` for the whole
   lane; the claim that no other phase writes against this fixture job rests on the fixture id being
   minted inside `runCrossTenantCases`.

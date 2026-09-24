@@ -2449,6 +2449,15 @@ and the `foreign === 0` classification is unchanged. Relaxing a same-tenant posi
 unblock the lane would have re-created precisely the `resolveExecutionSecretHttp` defect this control
 exists to catch.
 
+★★★ **The fix is ARGUED FROM SOURCE, NOT DEMONSTRATED LIVE, and `Status: resolved` above refers to the
+CAUSE being established, not to the fix having been observed to pass.** `m1-shipped-boot` checks out
+`ref: ${{ inputs.candidate }}`, so the lane runs the CANDIDATE's `cross-tenant.mjs`, never the
+dispatching branch's; and it refuses a candidate that is not already an ancestor of
+`docs/replatform-program`. A verification dispatch (run `36057809378`) therefore re-ran the **unfixed**
+driver and returned the byte-identical payload — a **third** reproduction, not a test of the fix. The
+verification is OWED: one `mode: keyless` dispatch with the merge commit as candidate. See
+`tickets/E6-F031-activity-log-positive-control-result.md` §4.1.
+
 ### Class sweep
 
 **The class:** *a probe arm that asserts a row exists without the case producing it — it depends on a
