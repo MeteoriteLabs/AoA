@@ -3830,7 +3830,7 @@ const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 try {
   const rows = await sql\`SELECT event_type AS "eventType", event FROM job_events
     WHERE organization_id = \${P.organizationId} ORDER BY created_at ASC\`;
-  const text = rows.map((r) => r.eventType + " " + JSON.stringify(r.event ?? null)).join("\n");
+  const text = rows.map((r) => r.eventType + " " + JSON.stringify(r.event ?? null)).join("\\n");
   report({ ok: true, events: rows.length, text, bytes: Buffer.byteLength(text, "utf8") });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
