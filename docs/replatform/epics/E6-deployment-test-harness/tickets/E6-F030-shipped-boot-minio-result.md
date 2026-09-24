@@ -6,15 +6,20 @@
 **Implementer:** Claude Opus 5 (M1 build agent)
 **Start SHA:** `00cbba381eaf6d49aec2f8b46e47e7747ae9e8cb` (`origin/docs/replatform-program`)
 **PR:** #604 (base `docs/replatform-program`)
-**Reviewed revision:** `845ffb4c9f7d7cd9722c88667209ec6b28679348`
+**Reviewed revision:** `f546f068ecb24a700d2c9ccb9460255d1a3b4a46` (the round-1 fixes; §6's run is cited at its own revision `845ffb4c9f7d7cd9722c88667209ec6b28679348` and §6.2 re-proves it here)
 
-> **On the revisions, stated as a claim that can be checked.** `845ffb4c9` is the revision every
-> piece of live evidence in §5 and §6 was produced on — run `36047740323` was dispatched from it, and
-> the local guard and mutation runs were made on it. The commits after it are this record, the
-> `findings.md` closure and the `scripts/finding-ownership.json` key deletion. `git diff --name-only
-> 845ffb4c9..HEAD` therefore contains **no workflow, Dockerfile, compose file, script or test** — the
-> code surface the evidence speaks about is byte-identical. Saying so without checking would be the
-> records-disagreeing-with-code defect this programme keeps paying for, so the claim is the diff.
+> **On the revisions, stated as a claim that can be checked — and RESTATED, because Codex round 1
+> made the first version of this note false.** It read: *"`845ffb4c9` is the revision every piece of
+> live evidence in §5 and §6 was produced on … `git diff --name-only 845ffb4c9..HEAD` therefore
+> contains **no workflow, Dockerfile, compose file, script or test**."* That was true when written and
+> is kept rather than edited away. It stopped being true at `f546f068e`, which fixes four real Codex
+> findings in the workflow, the journey, the shape guard and its test.
+>
+> The revision the evidence now rests on is **`f546f068e`**: §5's local runs and §5.1's observed
+> refusals were made on it, and §6.2's run `36051455003` was dispatched from it. §6's run
+> `36047740323` is cited at `845ffb4c9` and stays there — it is the run that proved the mechanism, and
+> §6.2 is the re-proof on the fixed tree, which is why a second dispatch was made rather than a claim
+> that the fixes were harmless. Every commit after `f546f068e` is prose and the register.
 
 > `Status` is `gate_review` and may be set to `complete` only by a DISTINCT reviewer, never by this
 > author.
@@ -152,6 +157,19 @@ process environment outranks both the file default and `--env-file` — so the e
 repair effective on the frozen candidates M1a will actually dispatch. §6 is the measurement of that
 claim, which was an inference until the run.
 
+> **Narrowed after Codex round 1 (§5.1, P1).** *"Any candidate that predates this commit"* was too
+> broad, and was corrected rather than defended: the step runs the **candidate's** copy of
+> `docker/d1/minio.Dockerfile`, which only exists from `bafa11938`. The claim holds for candidates
+> that **carry the recipe** — which is now enforced by the candidate gate, so an older one is refused
+> by name instead of dying on a missing file.
+
+**The release is pinned by the LANE, not by the candidate** (Codex round 1, P2). The same
+replaces-the-workspace property means the candidate's `MINIO_VERSION` / `MINIO_SOURCE_COMMIT`
+defaults are what a bare build would use, and those belong to the D1 harness and may legitimately
+move there. Both are therefore passed as **literal `--build-arg`s** (literal so the shape guard can
+check the pins rather than an indirection), and the built **binary's own `--version`** is read back,
+because a build arg records what was *requested* and the binary is what was *produced*.
+
 **Two new clauses, not one** (the halves are independently holed): without the build the lane has no
 store image; without the export the built image is never the one Compose resolves, and an older
 candidate falls back to its own withdrawn default.
@@ -190,6 +208,44 @@ read so that it is reachable and observable without a Docker build.
 `failures: 0`**, run after `git add -A` (so newly-touched files are visible to the tracked-file
 walks) and before the push. `node scripts/check-staging-manifest.mjs` is green on the edited overlay,
 which is the check that parses it with `yaml-lite`.
+
+## 5.1 Codex round 1 — five findings, four real and fixed at source, one stale
+
+Each was verified at source before anything was changed.
+
+| # | finding | verdict | fix |
+|---|---|---|---|
+| P1 | *older candidates lack `docker/d1/minio.Dockerfile`* | **REAL** | `git cat-file -e 3966a01f9f:docker/d1/minio.Dockerfile` → **ABSENT**; the file was added by `bafa11938`, and `3966a01f9f` carries **every** marker the candidate-control gate enforces. Such a candidate would have died at the build step on a missing file rather than being refused as too old. The file joins the candidate gate's required-files list, so candidates are restricted explicitly and fail-closed, and §4's claim is narrowed. |
+| P2 | *pin the MinIO version passed to the candidate Dockerfile* | **REAL** | both pins are now literal `--build-arg`s, and the binary's `--version` is read back. §6.2 measured the readback. |
+| P2 | *match the actual `GITHUB_ENV` export* | **REAL**, and it is the **vacuous-control family**: the clause matched `AOA_M1_MINIO_IMAGE=` *anywhere*, so a plain shell assignment — which later steps do not inherit — kept it green over exactly the regression it names. | the clause requires `>> "$GITHUB_ENV"`, with a red for the downgraded assignment. |
+| P2 | *reject implicit registry image names* | **REAL** | `minio/minio:latest` (no dot in its first component, yet Docker resolves it through Hub) and `localhost:5000/…` both passed the host-shaped pattern, so Compose would **pull** while `candidate.json` still recorded `builtFromSource: true` — false source-build evidence, worse than a refusal. Replaced with a **default-deny allowlist** on the lane's own build-product namespace. |
+| P1 | *synchronize the E6-F030 finding record* | **STALE** — it describes `845ffb4c9`, not the reviewed head | at `9228cbb6e`: `grep -c '"E6-F030"' scripts/finding-ownership.json` → **0**; `findings.md` carries `Status: resolved` and the *Closed* section; and the named result record exists. Nothing to change. |
+
+**The tightened validator, observed** — five refusals and the passing control, at
+`f546f068e`:
+
+| `AOA_M1_MINIO_IMAGE` | outcome |
+|---|---|
+| *(unset)* | refused: *is not set* |
+| `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` | refused |
+| `minio/minio:latest` (Codex's first bypass) | refused |
+| `localhost:5000/minio/minio:x` (Codex's second) | refused |
+| `minio:latest` (a bare library name — found by the sweep, not by the review) | refused |
+| **`aoa-m1-minio:RELEASE.2025-09-07T16-13-09Z`** | **passes**, and proceeds to `digests.env` |
+
+★ **SWEPT THE CLASS, and the twin was in PRE-EXISTING code.** *The class: a registry ban that
+**names** registries is only as complete as its list.* The shape guard's own clause — the one this
+whole ruling rests on — matched `ghcr.io|docker.io/|registry-1.` and **did not name `quay.io`**, the
+host this very finding is about. Widened to the hosts this programme has actually referenced
+(`quay.io`, `mirror.gcr.io`, `registry.min.io`, `cgr.dev`), with a red for a `quay.io` reference. The
+residual — an *unnamed* host — is stated rather than papered over; the `docker pull`/`login` ban and
+the overlay's `:?` are what cover it. **Sites checked: 2 (the journey validator in this diff, the
+shape guard's pre-existing clause). Found: 2. Fixed: 2.** The dual searched (E.1(b)) was the opposite
+polarity — a check that can *fail* wrongly, i.e. an allowlist too narrow to admit the lane's own
+legitimate tag — which is why the passing control above is in the table.
+
+**After the fixes: 48 tests, 48 pass**, up from 42; the six added are the five new reds plus the
+`quay.io` one. The full guard set and `check-evidence-immutability` remain `failures: 0`.
 
 ## 6. The live rehearsal: `m1-shipped-boot` keyless, run `36047740323`
 
@@ -295,6 +351,40 @@ clauses were therefore not evaluated by this run**; their evidence is §5's muta
 which is the case M1a will dispatch — the candidate's compose file still held the quay default and
 the candidate's `prepare` never wrote the variable, and MinIO came up anyway, from the process env.
 That is the precedence link measured rather than inferred.
+
+## 6.2 The SECOND rehearsal, on the round-1 fixes: run `36051455003`
+
+The round-1 fixes added a fail-closed arm I could not measure locally — no Docker in this
+environment — and shipping an unverified refusal into M1a's critical path would have risked
+re-blocking the very lane this ticket unblocks. So a second free keyless dispatch was made.
+
+**Hypothesis, with both predictions:** the `--build-arg` pins, the `--version` readback and the
+candidate-gate file requirement leave the lane's behaviour up to and including `boot-core` unchanged.
+
+- **If right:** the candidate gate still accepts `00cbba381e…`, the build step succeeds and prints a
+  version line containing `RELEASE.2025-09-07T16-13-09Z`, and `boot-core` is green again.
+- **If wrong:** the gate refuses the candidate, **or `minio --version` does not print the release
+  string** — making my grep a false blocker — or the build args break the Dockerfile. Any of those had
+  to be fixed before this lands.
+
+`m1-shipped-boot`, `mode: keyless`, run **`36051455003`**, head `f546f068e`, candidate
+`00cbba381eaf6d49aec2f8b46e47e7747ae9e8cb`. Right on every prediction, and the version line is
+**better evidence than the pin itself**:
+
+```
+20:04:09  minio version RELEASE.2025-09-07T16-13-09Z (commit-id=07c3a429bfed433e49018cb0f78a52145d4bedeb)
+20:04:09  object store aoa-m1-minio:RELEASE.2025-09-07T16-13-09Z built from upstream source
+20:04:56  boot-core: postgres, minio, migrate (completed), control-plane + control-plane-b healthy
+```
+
+The **produced binary** reports both the release **and the peeled commit** — so the version pin is
+confirmed on the artefact rather than on the request, which is the distinction P2 was about. *Build
+the object store image from upstream source (E6-F030)* and *Boot the core* both concluded `success`.
+
+★ The run again concluded `failure` at the same DEP-022 `cross-tenant` step, with the byte-identical
+error (`{"own":0,"foreign":0,"unscoped":0,"ownActions":[]}`). **Two independent dispatches, same
+failure, same line** — so §6.1's defect is reproducible and candidate-side, not a flake, which is
+worth more to the planning session than a single observation.
 
 ## 7. Findings and register
 

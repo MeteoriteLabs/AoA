@@ -2309,7 +2309,7 @@ That dispatch was not made because the lane is keyed-capable and outside this ti
 
 ### Closed — 2026-09-25, route 2 built, and the lane PROVEN past MinIO
 
-**PR #604**, head `845ffb4c9f7d7cd9722c88667209ec6b28679348`. Evidence:
+**PR #604**, head `f546f068ecb24a700d2c9ccb9460255d1a3b4a46` (the run in the next paragraph is cited at its own revision `845ffb4c9`, and a SECOND keyless dispatch, run `36051455003`, re-proves it on the Codex-round-1 tree). Evidence:
 `docs/replatform/epics/E6-deployment-test-harness/tickets/E6-F030-shipped-boot-minio-result.md`.
 
 The measurement above was reproduced before building — quay **401** and Docker Hub **401** for
@@ -2343,8 +2343,15 @@ core* → `success`
 **functional** and not merely up — the presign surface being exactly what the wrong MinIO version
 breaks. No `pull access denied`, no 401, no registry error anywhere in the log.
 
-★ The run's overall conclusion was `failure`, **fourteen steps later**, at the DEP-022 `cross-tenant`
-step (`cross-tenant: activity_log: the owner's own read must return its row: {"own":0,…}` — that
+★ Re-proved on the round-1 fixes: run **`36051455003`** (head `f546f068e`, same candidate) printed
+`minio version RELEASE.2025-09-07T16-13-09Z (commit-id=07c3a429bfed433e49018cb0f78a52145d4bedeb)` off
+the BUILT BINARY before booting — the release AND the peeled commit confirmed on the artefact rather
+than on the build request — and `boot-core` was green again. Both dispatches were `mode: keyless` and
+free; no keyed dispatch was made.
+
+★ **Both** runs' overall conclusion was `failure`, **fourteen steps later**, at the DEP-022 `cross-tenant`
+step, with the byte-identical error — two independent dispatches, so it is reproducible and
+candidate-side rather than a flake (`cross-tenant: activity_log: the owner's own read must return its row: {"own":0,…}` — that
 driver's own positive control declining to grade a case it could not set up). It touches no object
 store and is not this finding's. It is `DEP-022-result.md`'s step-1 keyless rehearsal returning its
 *failing* prediction, with a cause outside the two that section anticipated, so **the keyed step 2
