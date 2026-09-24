@@ -84,6 +84,11 @@ export const CANDIDATE_CONTROL_MARKERS = [
   ["scripts/m1-shipped-boot/journey.mjs", "never closed"],
 ];
 
+/** E6-F030 — the object store the lane BUILDS (reusing the D1 harness's source build), and the
+ * variable it exports the built tag as. The overlay's MinIO service is `:?` on that variable. */
+export const MINIO_DOCKERFILE = "docker/d1/minio.Dockerfile";
+export const MINIO_IMAGE_ENV = "AOA_M1_MINIO_IMAGE";
+
 export const EVIDENCE_UPLOAD_PATH = "${{ env.M1_OUT }}/evidence/";
 /** E6-D001: the one branch the registration-only push may name. */
 export const REGISTRATION_BRANCH = "docs/replatform-program";
@@ -211,6 +216,17 @@ export function evaluateShippedBootWorkflowShape(text) {
   if (!/AOA_IMAGE_REVISION:\s*\$\{\{\s*inputs\.candidate\s*\}\}/.test(src)) v.push("the image build must pin `AOA_IMAGE_REVISION: ${{ inputs.candidate }}`");
   for (const script of ["build.sh", "sbom.sh", "sign.sh", "admit.sh"]) {
     if (!new RegExp(`bash docker/images/${script.replace(".", "\\.")}`).test(src)) v.push(`the lane must run docker/images/${script} (build from source + DEP-014's admission chain)`);
+  }
+  // ★ E6-F030 — the OBJECT STORE is built from source too, and that is a property of this file.
+  // The registry ban below reads the WORKFLOW and nothing else, so a registry reference placed in
+  // `docker/m1-boot/docker-compose.m1-boot.yml` never reached it: a pulled MinIO would have gone
+  // green here while weakening exactly the property this clause exists to protect. These two
+  // checks are what make the compose-side repair unremovable.
+  if (!new RegExp(`docker build[^\\n]*-f ${MINIO_DOCKERFILE.replace(/[.]/g, "\\.")}`).test(src)) {
+    v.push(`the lane must BUILD its object store from upstream source (\`docker build -f ${MINIO_DOCKERFILE} …\`) — F3: the shipped boot builds what it boots, and the store's upstream image is withdrawn (E6-F030)`);
+  }
+  if (!new RegExp(`${MINIO_IMAGE_ENV}=`).test(src)) {
+    v.push(`the lane must export the built store's tag as \`${MINIO_IMAGE_ENV}\` — the overlay is fail-closed on it, and the process environment is what overrides an older candidate's own compose default (E6-F030)`);
   }
   if (/\bdocker (pull|login)\b/.test(src)) v.push("the lane must never `docker pull`/`docker login` — images are built from the candidate's source");
   if (/ghcr\.io|docker\.io\/|registry-1\./i.test(src.replace(/^\s*#.*$/gm, ""))) v.push("the lane must not reference a registry image — images are built from source");

@@ -157,6 +157,28 @@ test("REJECT: a pulled image instead of a source build, or the admission step dr
   assert.ok(anyMatch(violationsOf(unadmitted), /docker\/images\/admit\.sh/), violationsOf(unadmitted).join("\n"));
 });
 
+// ★ E6-F030. Two reds, because the repair has two halves and either alone is a hole: without the
+// BUILD the lane has no store image, and without the EXPORT the built image is never the one
+// Compose resolves — an older candidate would quietly fall back to its own withdrawn default.
+test("REJECT: the object store no longer built from source (it would have to be pulled)", () => {
+  const v = violationsOf(mutate(
+    real(),
+    '          docker build -f docker/d1/minio.Dockerfile -t "$AOA_M1_MINIO_IMAGE" docker/d1\n',
+    "",
+  ));
+  assert.ok(anyMatch(v, /must BUILD its object store from upstream source/), v.join("\n"));
+});
+
+test("REJECT: the built store's tag not exported, so Compose resolves something else", () => {
+  // Both `AOA_M1_MINIO_IMAGE=` occurrences go: the `env:` key line is `: `, not `=`, so the only
+  // matches are the two in the run script.
+  const stripped = real()
+    .replace('          echo "AOA_M1_MINIO_IMAGE=$AOA_M1_MINIO_IMAGE" >> "$GITHUB_ENV"\n', "");
+  assert.ok(!/AOA_M1_MINIO_IMAGE=/.test(stripped), "the export mutation must remove every `AOA_M1_MINIO_IMAGE=`");
+  const v = violationsOf(stripped);
+  assert.ok(anyMatch(v, /must export the built store's tag/), v.join("\n"));
+});
+
 test("REJECT: the evidence upload widened to the whole output dir (keys, env, state)", () => {
   const text = mutate(real(), "          path: ${{ env.M1_OUT }}/evidence/\n", "          path: ${{ env.M1_OUT }}/\n");
   assert.ok(anyMatch(violationsOf(text), /only uploaded path must be/), violationsOf(text).join("\n"));

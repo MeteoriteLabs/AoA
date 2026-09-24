@@ -218,6 +218,39 @@ jobs:
             echo "$key $tag revision=$label"
           done
 
+      # ★ E6-F030 — THE OBJECT STORE IS BUILT FROM SOURCE TOO.
+      #
+      # The overlay's MinIO used to resolve `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`,
+      # which is withdrawn (401 from quay AND Docker Hub with pull-scoped tokens; mirror.gcr.io
+      # 404; dl.min.io 410 Gone; the GitHub release carries no binaries), so this lane died in
+      # `boot-core` before the journey ever ran. Route 2 was ruled over a registry mirror on
+      # principle: F3 says this lane BUILDS what it boots, and an object store pulled from a
+      # registry would be a weaker claim — one that would also have left the shape guard green,
+      # since that guard reads this workflow and never the compose file.
+      #
+      # `docker/d1/minio.Dockerfile` already performs this build and FAILS CLOSED on the release
+      # tag's peeled commit id (`refs/tags/<tag>^{}`, not the annotated tag object — the two are
+      # different ids and only one is what a checkout lands on). The version is not a free
+      # variable: a newer MinIO is stricter about presigning and broke the D1 presign cases.
+      #
+      # The tag is exported to $GITHUB_ENV so Compose resolves it from the PROCESS environment,
+      # which outranks `--env-file`. That is also what makes the repair effective against a
+      # candidate that predates it: checkout replaces the workspace, so an older candidate brings
+      # its own compose default, and a process-env value overrides it. A build failure is FATAL —
+      # a lane that skipped or tolerated a missing object store would convert a loud blocker into
+      # a silent hole.
+      - name: Build the object store image from upstream source (E6-F030)
+        env:
+          AOA_M1_MINIO_IMAGE: "aoa-m1-minio:RELEASE.2025-09-07T16-13-09Z"
+        run: |
+          set -euo pipefail
+          docker build -f docker/d1/minio.Dockerfile -t "$AOA_M1_MINIO_IMAGE" docker/d1
+          # Prove the tag EXISTS locally before anything depends on it: a build that printed a
+          # warning and produced nothing would otherwise surface as a compose pull attempt.
+          docker image inspect "$AOA_M1_MINIO_IMAGE" >/dev/null
+          echo "AOA_M1_MINIO_IMAGE=$AOA_M1_MINIO_IMAGE" >> "$GITHUB_ENV"
+          echo "object store $AOA_M1_MINIO_IMAGE built from upstream source"
+
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:

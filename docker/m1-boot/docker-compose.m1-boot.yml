@@ -87,8 +87,31 @@ services:
     networks:
       - store-egress-net
 
+  # ★ E6-F030 — THE OBJECT STORE IS BUILT FROM SOURCE BY THE LANE, like the three candidate images.
+  #
+  # This service used to default to `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`. That image
+  # is GONE: quay and Docker Hub both answer 401 for a pull-scoped token (re-measured 2026-09-25,
+  # with anonymous 200 controls on quay.io/prometheus/busybox and docker.io/library/busybox),
+  # mirror.gcr.io is a 404, dl.min.io's binary is a 410 Gone and the GitHub release carries zero
+  # assets. Nothing overrode the default, so `m1-shipped-boot` died in `boot-core`.
+  #
+  # The repair is NOT a registry mirror, and the asymmetry with `docker-compose.d1.yml` (which DOES
+  # pull a GHCR mirror, by digest) is deliberate. D1 is a TEST HARNESS, where pulling a pinned
+  # third-party image is normal. THIS is the shipped-boot evidence lane, where founder ruling F3
+  # says the lane builds the artefacts under test from the frozen candidate and boots them —
+  # the reason `scripts/lib/m1-shipped-boot-shape.mjs` forbids registry references at all, under
+  # "images are built from the source". An object store that arrived pre-baked from a registry
+  # would be a weaker claim than F3 asks for, and would have left that guard green while doing it.
+  #
+  # So `.github/workflows/m1-shipped-boot.yml` BUILDS this image from upstream MinIO source at the
+  # exact release tag, reusing `docker/d1/minio.Dockerfile` (which fails closed on the tag's peeled
+  # commit id), and exports the resulting local tag as AOA_M1_MINIO_IMAGE.
+  #
+  # `:?` and not `:-`: the version is NOT a free variable — a newer MinIO is STRICTER about
+  # presigning and broke the D1 presign cases — and a default here is what let a dead reference
+  # resolve silently for nine days. A missing value now fails the RENDER, loudly, before any boot.
   minio:
-    image: "${AOA_M1_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}"
+    image: "${AOA_M1_MINIO_IMAGE:?the lane builds the MinIO store image from upstream source (docker/d1/minio.Dockerfile) — E6-F030}"
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: "aoa-m1"
