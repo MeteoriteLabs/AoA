@@ -275,9 +275,20 @@ them cannot distinguish "neither" from "exactly one", and "exactly one" is the s
 4. **Flipping would fold an unexercised phase's row into a graded bundle** on the next keyed run —
    declaring coverage nobody measured, which is the failure class this matrix exists to stop.
 
-So the honest outcome is the expected one: **preconditions closed, case still `pending` /
+So the honest outcome is the expected one: **the two named preconditions closed, case still `pending` /
 `pendingKind: keyed`, with the owed run named.** The declaration's `pendingReason` is superseded in
 place to say so, with `DEP-024`'s text kept verbatim under `$supersededPendingReason_DEP024`.
+
+★★★ **And one further precondition is handed up rather than closed — §11.** Codex round 3 found, and I
+confirmed at source, that `evaluateFaultMatrixEvidence`'s `family === "redaction"` branch **never reads
+`positiveControlPassed`**, so a suppressed-arm failure clears the only field it sets and nothing grades
+that field for this case. The phase still refuses, so a normal keyed run reds; what does not hold is that
+the **retained artifact alone** is gradeable. It is a flip precondition on the same terms as the two this
+ticket closed — the row cannot enter a graded bundle while the case is `pending` — and rule `C` reserves
+a third fix round to the planning session. §11 gives the verification, two candidate fixes, and why the
+general one reds a green `required` case. **So the flip now depends on three closures, of which two are
+done and one is ruled.** I would rather say that plainly than report "preconditions closed" and leave the
+third for the next reader to discover.
 
 ### 5.1 The owed keyed run, and EXACTLY what each red shape decides
 
@@ -377,12 +388,64 @@ lane's verdicts are unchanged.
   been accepting its stream evidence from a non-succeeded attempt all along. The D1 half would then be
   reverted and filed, and the shipped-boot half kept.
 
-### 8.1 The run
+### 8.1 The run — HYPOTHESIS CONFIRMED
 
-**Run `36118426821`, `d1-merge-train` / `m1-fault-matrix`, dispatched on
-`claude/m1-d2m-flip-preconditions` (head `970b3c49d1`).** IN FLIGHT at the time this section was first
-committed; its verdict is recorded below by job and step, with executed counts, before this ticket
-leaves `gate_review`. **No claim in §6 rests on it except the one row that names it.**
+**Run `36118426821`, `d1-merge-train` / `m1-fault-matrix`, head `970b3c49d1`. Run conclusion
+`success`.** Cited by job and step with executed counts, not by run id alone.
+
+| Step | Executed | Result |
+|---|---|---|
+| Static preflight (the declaration, its reds, the compose invariants) | `tests 32 / pass 32 / fail 0` | **success** |
+| **Run the M1-D1-SPINE fault matrix (live)** | `tests 25 / pass 25 / fail 0` | **success** |
+| The matrix's own verdict over the retained bundle | — | **success** |
+| POSITIVE CONTROL — with every injection suppressed, the matrix MUST go red | — | **success** (i.e. it went red, as required) |
+
+★ **The line that settles it**, from the live step's own output:
+
+```
+✔ fault-matrix: a planted credential canary is SCRUBBED from both streams, and the scrubber's
+  own marker is observed there (60836.91992ms)
+```
+
+That is the `required` D1 twin passing **with the new unconditional
+`attemptStatus === "succeeded"` assertion in it**. The failing prediction (§8) was a red on exactly
+that assertion, naming the observed status; it did not happen, so **the D1 attempt does reach a durable
+`succeeded` terminal** and the assertion is demonstrated rather than argued. 25 of 25 cases.
+
+★ **And the suppressed control's red SHAPE is unchanged by this ticket**, which is the thing to check
+when adding an assertion to a case that appears in a positive control. It still reds with:
+
+```
+evidence:case_not_run: case d1.redaction.planted_canary_scrubbed is declared `required`
+  but the bundle carries no evidence for it
+```
+
+— byte-for-byte the shape `DEP-023` §5.2.2 measured and `DEP-024` §8.1 reproduced, i.e. something in
+the suppressed path throws **before** `record` is reached. **I did not diagnose that cause, and I am
+not claiming one:** it is pre-existing, it is already filed as `DEP-023`'s owed refinement, and this
+ticket neither introduces nor touches it. What matters here is that it is the SAME shape as before, so
+the new assertion did not move the positive control.
+
+★ **What this run does NOT show**, so nothing is over-read: it exercises the D1 lane and the reference
+provider. It says nothing about whether the probe line reaches both streams on a REAL E2B sandbox
+(§5.1's keyed run), and it does not execute `scripts/m1-shipped-boot/redaction.mjs` or
+`scripts/lib/m1a-redaction-probe.mjs`, whose coverage is the pure `policy` suites.
+
+### 8.2 The run on the FINAL head
+
+Run `36118426821` is on `970b3c49d1`, which carries §3.1's assertion but not the round-1/round-2 row
+degradations. **A run on an earlier head is not evidence about a later one** (`E6-F031`), so the lane
+was re-dispatched on the final head; the intermediate dispatch on `f90ebd651` was cancelled rather than
+left to look like coverage of a head that is no longer final. Its verdict is recorded here with the
+same per-step counts before this ticket leaves `gate_review`.
+
+★ The behavioural argument for why the two should agree, stated so the run is a real hypothesis test
+rather than a formality: on a path where the attempt DOES succeed, `attemptSucceeded` is `true` and both
+degradations are algebraic no-ops — `injectionFired && true` and the unchanged classification branch. So
+**if right**, the final-head run reproduces `25 / 25` and the same suppressed red. **If wrong**, the row
+degradation or the shared-token import has changed a passing path, and the live step reds on the
+redaction case or on a `classification_mismatch` naming `graded_arm_attempt_*` — which would mean
+`observation.attemptStatus` is not what run `36118426821` demonstrated it to be.
 
 ---
 
@@ -519,3 +582,78 @@ verified at source before acceptance, both fixed at source, and both were in the
 written to close — which is itself worth reporting rather than smoothing over. A review is requested on
 the final head because the gate requires one, but **I will not take a third fix round**: anything raised
 now goes to the planning session with my verification at source and a proposed fix, for it to rule on.
+
+★ **Round 3 then raised something, and §11 is that commitment being kept** rather than restated.
+
+---
+
+## 11. Codex round 3 — ONE finding, REAL, and HANDED TO THE PLANNING SESSION unfixed
+
+This is the cap, and it is being honoured rather than argued with — exactly as `DEP-024` §5.5 honoured
+it one ticket ago, on this same driver. The finding was verified at source before being written up. It
+is not dismissed. It is not fixed here.
+
+**P2 — `make suppressed-arm failures affect a graded field`
+(`scripts/lib/m1a-redaction-probe.mjs`, and really `scripts/lib/campaign-fault-matrix.mjs`).**
+
+**Verified at source, and it is right.** `grep -n "positiveControlPassed" scripts/lib/campaign-fault-matrix.mjs`
+returns **exactly two** read sites:
+
+- `if (c.family === "credential" && isPlainObject(c.credentialCase) && row.positiveControlPassed !== true)`
+- `if (t && (t.kind === "cross_tenant_denial" || t.kind === "legacy_table_isolation"))`
+
+The `if (c.family === "redaction")` branch — which raises `evidence:redaction_not_clean`,
+`…_marker_not_observed`, `…_stream_vacuous` and `…_no_declared_streams` — **never reads it.** And this
+case is declared `family: "redaction"` with a `redactionCase` block and no `tenantCase`, so neither of
+the two sites applies to it.
+
+**So the residual is exactly as stated:** when the graded arm succeeds and the suppressed arm either
+terminates non-`succeeded` or carries a marker on one stream, §1 and §2 clear `positiveControlPassed` —
+and **nothing grades that field for a redaction case.** Every field the redaction branch *does* read
+stays pass-shaped, so a standalone verdict over the retained row reports no violations. The refusal is
+still raised inside the phase, so a normal end-to-end keyed run reds; what does not hold is the property
+rounds 1 and 2 were establishing — that **the artifact alone** is gradeable.
+
+★ **Why this is handed up rather than fixed — argued, not merely asserted.**
+
+1. **Rule `C`: two fix rounds is the hard cap**, and I committed to it on the thread one round ago.
+2. **This is the third consecutive round finding a real defect in the same control logic**, which is
+   precisely the regenerating-property signal the cap exists to catch: *"a ticket is not the place to
+   converge on a property that keeps regenerating."* `DEP-024` stopped at the same wall on the same
+   driver; a third ticket doing the same thing is the pattern, not the exception.
+3. ★★★ **And the sound fix is NOT a few lines — it reds a green `required` case.** This is the
+   substantive reason, and it is measured rather than feared. The general fix is to make the grader's
+   redaction branch require `positiveControlPassed`. But **`d1.redaction.planted_canary_scrubbed` files
+   no `positiveControlPassed` field at all** — its suppression is a whole separate campaign run, not an
+   in-run second arm — so that change would red a `required`, currently-green case until the D1 case is
+   given a suppressed-arm control it does not structurally have. That is a design decision about the D1
+   case, not a line edit, and it is entangled with `E6-F033` (§3.4), which already blocks porting this
+   lane's suppressed-arm discipline to D1.
+4. **And the interim is SAFE, which is a measurement rather than a preference.** The case is `pending`,
+   and `faultMatrix` folds this row into the graded bundle **only** while the declaration says
+   `required`. So this residual, like the two it descends from, **cannot produce a false pass until the
+   planning session both flips the field and dispatches the keyed run.** It is a flip precondition, and
+   it belongs in the same hand as the envelope.
+
+**Two fixes, so the planning session can choose rather than re-derive:**
+
+| Option | What it does | Cost |
+|---|---|---|
+| **(A) LOCAL — recommended first** | in `redactionProbeMatrixRow`, degrade `injectionFired` and the classification when the **suppressed** arm did not succeed or carried a marker, exactly as §9 already does for the graded arm (the inputs are already on `detail`: `suppressedAttemptStatus`, `suppressedMarkerOnEvents/Logs`, `suppressedUnfired`) | a few lines, **no D1 impact**, control = the mutation that feeds a failed/marked suppressed arm and expects `injectionFired: false`. Fixes the shipped-boot lane only |
+| **(B) GENERAL** | in the grader's `family === "redaction"` branch, require `row.positiveControlPassed === true` as `evidence:redaction_positive_control_missing` | the only place a STANDALONE verdict can enforce it, and it covers every future filer — **but it reds the `required` D1 case** until that case files the field, which it cannot today (see 3) |
+
+**My recommendation:** take **(A)** now, and file **(B)** as a finding owned together with `E6-F033`,
+since both are blocked on the same question — what a suppressed-arm control means on the D1 lane, where
+suppression is a separate campaign run. I did not implement (A) because rule `C` reserves a third fix
+round to the planning session, and because doing so would leave (B) looking handled when it is not.
+
+### 11.1 Recorded as a MISS in the counting, not as three discoveries
+
+Honest counting (`E.3` rule 5): rounds 1, 2 and 3 are **one class in three places**, not three findings.
+The class is *a fact that refuses a run in one place, while the durable row a different consumer grades
+stays pass-shaped.* Round 1 was the graded arm's fields, round 2 the D1 row, round 3 the suppressed
+arm's only field being one the grader does not read. **I fixed two members and a reviewer found the
+third**, which means my sweep of this class was incomplete twice — the second time after I had written
+the class sentence down. That is the honest summary of this ticket's review history, and it is the
+argument for (B) being decided rather than patched.
+
