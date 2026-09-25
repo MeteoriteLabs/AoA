@@ -268,12 +268,49 @@ export function evaluateRedactionProbeEvidence(input) {
   return { violations, summary };
 }
 
-/** The matrix row this phase files, in the shape `evaluateFaultMatrixEvidence` grades. */
+/**
+ * The matrix row this phase files, in the shape `evaluateFaultMatrixEvidence` grades.
+ *
+ * ★★★ THE REFUSAL MUST NOT LIVE ONLY IN THE THROWING PROCESS (Codex round 1 on PR #608 — verified at
+ * source before acceptance, and the finding was right).
+ *
+ * THE CLASS: *a fact asserted in one process, while the DURABLE record it retains stays pass-shaped
+ * for a different consumer that grades it later.* `journey.mjs`'s `redaction` phase deliberately
+ * retains `cases: observations?.rows ?? error?.rows ?? []` — so a run refused by
+ * `evaluateRedactionProbeEvidence` for a non-succeeded attempt still writes a row to
+ * `redaction-observations.json` — and a LATER, SEPARATE `fault-matrix` invocation folds that row
+ * without re-running this judge: `evaluateFaultMatrixEvidence` inspects `injectionFired`,
+ * `observedClassification`, `redactedOnAllStreams`, the stream bytes and `positiveControlPassed`, and
+ * nothing about an attempt status. A pass-shaped row would then CONTRADICT the refusal that produced
+ * it, and the failed setup would be ungradeable from the artifact alone.
+ *
+ * ★ And this is finding (b)'s OWN class pointed at my own diff (E.1(a)): asserting the status in the
+ * judge and leaving the row untouched is the same shape as reading the status and never asserting it.
+ * So the status is now BOTH carried on the row (so a standalone consumer can see it) AND allowed to
+ * degrade every field that would otherwise read as a pass.
+ *
+ * `redactedOnAllStreams` is deliberately left as the RAW observation: the streams really were scanned
+ * and really were clean, and forcing it to `false` would make the bundle claim a LEAK — a diagnosis
+ * the run does not support, and one whose stated remedy is "revert the surface". `injectionFired`
+ * going false is what stops the row passing (`evidence:injection_did_not_fire`), and the
+ * classification names the real cause.
+ */
 export function redactionProbeMatrixRow(graded, detail) {
+  const gradedAttemptStatus = typeof graded?.attemptStatus === "string" ? graded.attemptStatus : null;
+  const suppressedAttemptStatus = typeof detail?.suppressedAttemptStatus === "string" ? detail.suppressedAttemptStatus : null;
+  const gradedSucceeded = gradedAttemptStatus === REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS;
+  // FAIL-CLOSED on both: an absent status is refused, never read as succeeded.
+  const suppressedSucceeded = suppressedAttemptStatus === REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS;
   return {
     case: REDACTION_PROBE_CASE,
-    injectionFired: graded?.injectionFired === true,
-    observedClassification: graded?.observedClassification ?? "no_scrubber_marker_observed",
+    injectionFired: gradedSucceeded && graded?.injectionFired === true,
+    observedClassification: gradedSucceeded
+      ? (graded?.observedClassification ?? "no_scrubber_marker_observed")
+      : `graded_arm_attempt_${String(gradedAttemptStatus)}`,
+    // Carried on the ROW, not only in `detail`, so a consumer reading the retained artifact sees the
+    // fact that refused the run without having to know this module's detail shape.
+    gradedAttemptStatus,
+    suppressedAttemptStatus,
     redactedOnAllStreams: graded?.redactedOnAllStreams === true,
     scrubberMarkerObservedOnStream: {
       events: graded?.scrubberMarkerObservedOnStream?.events === true,
@@ -283,8 +320,10 @@ export function redactionProbeMatrixRow(graded, detail) {
       events: Number(graded?.streamBytesObserved?.events ?? 0),
       logs: Number(graded?.streamBytesObserved?.logs ?? 0),
     },
-    // The same positive-control field the cross-tenant rows carry: here it is the SUPPRESSED arm.
-    positiveControlPassed: detail?.suppressedUnfired === true,
+    // The same positive-control field the cross-tenant rows carry: here it is the SUPPRESSED arm —
+    // which must ALSO have succeeded, or its "no marker" is a failed setup rather than a working
+    // suppression, and the row would certify a control that never ran.
+    positiveControlPassed: suppressedSucceeded && detail?.suppressedUnfired === true,
     detail: detail ?? {},
   };
 }

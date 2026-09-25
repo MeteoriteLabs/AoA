@@ -229,8 +229,49 @@ test("the declaration's own classification token is the one required", () => {
 
 // ── the row ──────────────────────────────────────────────────────────────────
 
-test("the matrix row carries every field `evaluateFaultMatrixEvidence` grades a redaction case on", () => {
+// ── DEP-025 / Codex round 1 P2: the RETAINED row must carry the refusal ──────
+// ★★★ THE REFUSAL MUST NOT LIVE ONLY IN THE THROWING PROCESS. `journey.mjs`'s `redaction` phase
+// deliberately retains `cases: observations?.rows ?? error?.rows ?? []`, so a run refused for a
+// non-succeeded attempt still writes a row — and a LATER, SEPARATE `fault-matrix` invocation grades
+// that file without re-running this judge (`evaluateFaultMatrixEvidence` does not inspect attempt
+// statuses). A pass-shaped row would therefore contradict the refusal that produced it.
+//
+// This is finding (b)'s own class pointed at my own diff (E.1(a)): a fact asserted in one place and
+// not carried into the durable record a different consumer grades.
+test("★ the retained row is NOT pass-shaped when the GRADED attempt did not succeed", () => {
+  const row = redactionProbeMatrixRow(classify({ ...GRADED, attemptStatus: "failed" }), {
+    suppressedUnfired: true,
+    suppressedAttemptStatus: "succeeded",
+  });
+  assert.equal(row.injectionFired, false, "a failed graded attempt must not claim its injection fired");
+  assert.equal(row.observedClassification, "graded_arm_attempt_failed");
+  assert.notEqual(row.observedClassification, REDACTION_PROBE_EXPECTED_CLASSIFICATION);
+  assert.equal(row.gradedAttemptStatus, "failed", "the retained row must CARRY the status, so a standalone fault-matrix can see it");
+});
+
+test("★ positiveControlPassed is false when the SUPPRESSED attempt did not succeed", () => {
+  // The shape finding (b) names, now followed all the way into the artifact: no markers because the
+  // withheld job FAILED, not because suppression worked.
+  const row = redactionProbeMatrixRow(classify(GRADED), { suppressedUnfired: true, suppressedAttemptStatus: "failed" });
+  assert.equal(row.positiveControlPassed, false);
+  assert.equal(row.suppressedAttemptStatus, "failed");
+});
+
+test("★ FAIL-CLOSED — a row whose detail omits the suppressed status cannot claim a positive control", () => {
   const row = redactionProbeMatrixRow(classify(GRADED), { suppressedUnfired: true });
+  assert.equal(row.positiveControlPassed, false, "an absent status is refused, never read as succeeded");
+  assert.equal(row.suppressedAttemptStatus, null);
+});
+
+test("a row from an arm with NO status at all names that, rather than the expected classification", () => {
+  const { attemptStatus, ...noStatus } = GRADED;
+  const row = redactionProbeMatrixRow(classify(noStatus), { suppressedUnfired: true, suppressedAttemptStatus: "succeeded" });
+  assert.equal(row.injectionFired, false);
+  assert.equal(row.observedClassification, "graded_arm_attempt_null");
+});
+
+test("the matrix row carries every field `evaluateFaultMatrixEvidence` grades a redaction case on", () => {
+  const row = redactionProbeMatrixRow(classify(GRADED), { suppressedUnfired: true, suppressedAttemptStatus: "succeeded" });
   assert.equal(row.case, REDACTION_PROBE_CASE);
   assert.equal(row.injectionFired, true);
   assert.equal(row.observedClassification, REDACTION_PROBE_EXPECTED_CLASSIFICATION);
@@ -259,7 +300,11 @@ test("the row NEVER carries a canary or a stream excerpt — only booleans, coun
 test("a row built from a MISSING graded arm cannot claim a pass", () => {
   const row = redactionProbeMatrixRow(null, {});
   assert.equal(row.injectionFired, false);
-  assert.equal(row.observedClassification, "no_scrubber_marker_observed");
+  // ★ Was `no_scrubber_marker_observed` before DEP-025's Codex round-1 fix. A MISSING arm has no
+  // attempt status either, and naming that is strictly more accurate than naming the stream scan: the
+  // streams were never read, so "no marker was observed" would describe a scan that did not happen.
+  assert.equal(row.observedClassification, "graded_arm_attempt_null");
+  assert.equal(row.gradedAttemptStatus, null);
   assert.equal(row.redactedOnAllStreams, false);
   assert.equal(row.positiveControlPassed, false);
 });
