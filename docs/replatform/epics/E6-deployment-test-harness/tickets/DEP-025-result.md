@@ -322,7 +322,9 @@ None of these is "flaky", and each names a different fact.
 | The owning `pr.yml` step's eight suites still pass with the stricter judge | **Demonstrated** — `266 tests / 266 pass / 0 fail`, run locally |
 | The full guard set + `check-evidence-immutability --base origin/docs/replatform-program` are green | **Demonstrated** — `failures: 0` |
 | The register deltas are exactly mine, two-sided against the merge ref | **Demonstrated** — §7 |
-| The D1 twin's new assertion HOLDS on a live stack (the D1 attempt does reach `succeeded`) | **Demonstrated** by the free `d1-merge-train` run in §8 |
+| The D1 twin's new assertion HOLDS on a live stack (the D1 attempt does reach `succeeded`) | **Demonstrated** — free `d1-merge-train` run `36118426821`, live step `tests 25 / pass 25 / fail 0` (§8.1) |
+| The row degradations + the shared-token import are no-ops on the PASSING path | **Demonstrated on a live stack** — run `36122095774` on the final CODE head `2931c0af5f`, all nine steps `success`, `25 / 25`, and the suppressed control red with the same pre-existing shape (§8.2) |
+| The span from that head to the FINAL head changes nothing the D1 lane executes | **Argued, and unavoidably so** — a record commit cannot be covered by a run that reports it. Made checkable: `git diff --name-only` over the span is docs plus one `pendingReason` string on an `M1a-D2-MECHANISM` case (§8.2) |
 | The D1 twin's new assertion would RED if the attempt did not succeed | **Argued** — the identical predicate, mutation-proven in the pure judge. A live red needs a broken D1 attempt, which I cannot manufacture |
 | `E6-F033`: the D1 suppressed control reads a stale marked line every run | **Argued from source**, and the load-bearing link was READ rather than inferred (`d1-merge-train.yml`: one bring-up, two invocations, teardown last) |
 | The RETAINED row is not pass-shaped when the **GRADED** arm failed, on both lanes' row builders | **Demonstrated for the shipped-boot row** (local, two mutations). **Argued for the D1 row** — its builder needs a live stack; the identical predicate is mutation-proven in the pure judge, and the shared token is imported rather than re-spelled so the two cannot diverge |
@@ -462,6 +464,41 @@ degradations are algebraic no-ops — `injectionFired && true` and the unchanged
 degradation or the shared-token import has changed a passing path, and the live step reds on the
 redaction case or on a `classification_mismatch` naming `graded_arm_attempt_*` — which would mean
 `observation.attemptStatus` is not what run `36118426821` demonstrated it to be.
+
+**Result — HYPOTHESIS CONFIRMED. Run `36122095774`, head `2931c0af5f`, conclusion `success`, all nine
+steps `success`:**
+
+| Step | Executed | Result |
+|---|---|---|
+| Static preflight | `tests 32 / pass 32 / fail 0` | **success** |
+| **Run the M1-D1-SPINE fault matrix (live)** | `tests 25 / pass 25 / fail 0` | **success** |
+| The matrix's own verdict over the retained bundle | — | **success** |
+| POSITIVE CONTROL — every injection suppressed, the matrix MUST go red | — | **success** (it went red) |
+
+```
+✔ fault-matrix: a planted credential canary is SCRUBBED from both streams, and the scrubber's
+  own marker is observed there (61167.941563ms)
+```
+
+and the suppressed arm's red is again, byte-for-byte, the pre-existing shape:
+
+```
+evidence:case_not_run: case d1.redaction.planted_canary_scrubbed is declared `required`
+  but the bundle carries no evidence for it
+```
+
+So the row degradation and the shared-token import are confirmed to be no-ops on the passing path, on a
+live stack, and not merely argued to be.
+
+★ **ONE STEP OF THIS CHAIN IS ARGUED, NOT DEMONSTRATED, AND IT CANNOT BE OTHERWISE.** The head this run
+tested, `2931c0af5f`, is the final **code** head; the commits after it are this record plus one
+`pendingReason` string. A record commit cannot be covered by a run it has to report — that regress has
+no end — so the claim for the remaining span is stated and made checkable instead:
+`git diff --name-only 2931c0af5f <final head>` is `docs/replatform/…` plus
+`tests/d1/fault-matrix.json`, whose entire diff is the one `pendingReason` string of an
+**`M1a-D2-MECHANISM`** case (`git diff` shows a single `-`/`+` pair). Nothing the `M1-D1-SPINE` profile
+executes or grades is in that span. I would rather name this as the one argued link than let "the final
+head is green" stand unqualified.
 
 ---
 
