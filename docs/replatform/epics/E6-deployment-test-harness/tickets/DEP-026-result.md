@@ -505,9 +505,40 @@ every one dead at its fixture with `fixture setup failed: Error: connect ECONNRE
    code delta between the passing run and the failing one.
 
 So the tree that failed is, in every executable respect, the tree that passed. The failure mode is the
-known embedded-PostgreSQL boot class (`ECONNREFUSED` at fixture setup, not an assertion), and the shard
-is re-run on the same commit. ★ A re-run that passes is the evidence; until it does, this is an **open
-red on the final head** and is reported as one rather than pre-emptively dismissed.
+known embedded-PostgreSQL boot class (`ECONNREFUSED` at fixture setup, not an assertion).
+
+★★★ **AND MY FIRST ATTEMPT TO GET THAT EVIDENCE DESTROYED IT — recorded, because the correction matters
+more than the tidy version.** I dispatched `gh run rerun 36145100055 --failed` on `cc8d46ef7` and then,
+while it was in flight, pushed this very section as a commit. The push moved the branch to `d22bead8e`,
+and `pr.yml`'s concurrency group cancelled the in-flight run for that ref: run `36145100055` concluded
+**`cancelled`**, not `success`. So the re-run I had just cited as the evidence produced **no verdict at
+all**, and a reader who saw only the sentence *"the shard is re-run on the same commit"* would have been
+told a measurement existed when it did not.
+
+**The lesson, stated as a rule:** a re-run and a push to the same ref do not compose — the push wins and
+silently voids the re-run. Get the verdict first, or let the new head's own run be the verdict.
+
+**The verdict therefore comes from the head run**, which executes `verify (1)` over the same code (the
+span is docs-only), so nothing is lost but a cycle: **run `36147253773` on `d22bead8ed`.**
+
+- **If it passes:** the red on `cc8d46ef7` was the fixture-boot flake, on the evidence rather than on my
+  say-so.
+- **If it fails the same way:** the flake reading is FALSIFIED and something in this branch does reach
+  that suite, contradicting check 1 above — which would then be the finding, and would be investigated
+  rather than re-run again.
+
+#### 8.3.1 The verdict — FLAKE READING HOLDS, on evidence
+
+**Run `36147253773` on `d22bead8ed`: `verify (1)` **pass** in `18m58s`, run conclusion `success`,
+`ci-required` **pass** (15 checks green, 1 skipping).**
+
+So `job-audit-parity.integration.test.ts` passed on code identical to the tree where its fixture
+refused to connect, and the earlier red is the embedded-PostgreSQL boot class rather than anything this
+branch does. The falsifying prediction — the same suite failing the same way, which would have meant
+check 1 above was wrong and this branch does reach `server/` — **did not fire**.
+
+★ Counted honestly: this cost **two cycles, not one**, and the second was my own doing — the cancelled
+re-run (§8.3). One of them is a measurement and one is a self-inflicted loss, and the record says which.
 
 ---
 
