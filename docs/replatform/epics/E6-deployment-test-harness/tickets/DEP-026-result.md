@@ -486,6 +486,31 @@ the guard CLI that `m1-shipped-boot.yml`'s keyed artifact-verdict step will run.
 
 ---
 
+## 8.3 A `verify` shard flaked on the RECORD-ONLY head — evidence, not assertion
+
+`verify (1)` failed on `cc8d46ef7` (run `36145100055`). Recorded rather than quietly re-run, because
+"it is just a flake" is a claim and this programme does not accept claims without a measurement.
+
+**The failure:** `server/src/__tests__/job-audit-parity.integration.test.ts`, `14 tests | 14 failed`,
+every one dead at its fixture with `fixture setup failed: Error: connect ECONNREFUSED 127.0.0.1:56120`
+— embedded PostgreSQL never came up on its port. `Test Files 1 failed | 663 passed | 3 skipped`.
+
+**Why it cannot be this change**, three independent checks:
+
+1. `git diff --name-only origin/docs/replatform-program` over the WHOLE PR matches **no** `server/`,
+   `packages/` or `ui/` path. The failing suite is `server/src/__tests__/`.
+2. The identical code passed this shard one run earlier: run `36137518941` on `e5cbb0c8cf` concluded
+   `success`, `verify (1)` green in `17m56s`.
+3. `git diff --name-only e5cbb0c8c..cc8d46ef7` is exactly two files, both under `docs/`. There is no
+   code delta between the passing run and the failing one.
+
+So the tree that failed is, in every executable respect, the tree that passed. The failure mode is the
+known embedded-PostgreSQL boot class (`ECONNREFUSED` at fixture setup, not an assertion), and the shard
+is re-run on the same commit. ★ A re-run that passes is the evidence; until it does, this is an **open
+red on the final head** and is reported as one rather than pre-emptively dismissed.
+
+---
+
 ## 9. Demonstrated vs argued — the honest split
 
 | Claim | Status |
