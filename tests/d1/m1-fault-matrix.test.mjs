@@ -129,9 +129,11 @@ import {
 } from "../../scripts/lib/m1-spine-assertions.mjs";
 import {
   evaluateFaultMatrixDeclaration,
+  evaluateRedactionExemptionBlockers,
   evaluateFaultMatrixEvidence,
   formatViolations,
 } from "../../scripts/lib/campaign-fault-matrix.mjs";
+import { readFindingSources } from "../../scripts/lib/finding-sources.mjs";
 import {
   REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS,
   redactionAttemptFailureClassification,
@@ -163,7 +165,12 @@ if (LIVE && CAMPAIGN !== "m1-fault-matrix") {
 // The declaration must be sound before a single injection runs: firing cases against a matrix
 // that does not itself satisfy the checker would produce evidence nobody can consume.
 {
-  const declarationViolations = evaluateFaultMatrixDeclaration(MATRIX);
+  const declarationViolations = [
+    ...evaluateFaultMatrixDeclaration(MATRIX),
+    // DEP-026 (Codex P2 x2 on PR #609) — this lane owns the one `required` redaction case, and it is
+    // the EXEMPT one, so the blocker cross-reference matters most here. Fail-closed on unusable sources.
+    ...evaluateRedactionExemptionBlockers(MATRIX, readFindingSources(repoRoot)),
+  ];
   if (declarationViolations.length > 0) {
     throw new Error(`tests/d1/fault-matrix.json is not a valid declaration:\n${formatViolations(declarationViolations)}`);
   }

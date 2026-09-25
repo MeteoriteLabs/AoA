@@ -16,7 +16,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,8 +32,10 @@ import {
   MIN_ENABLED_TENANT_JOURNEYS,
   evaluateFaultMatrixDeclaration,
   evaluateFaultMatrixEvidence,
+  evaluateRedactionExemptionBlockers,
   formatViolations,
 } from "./lib/campaign-fault-matrix.mjs";
+import { readFindingSources } from "./lib/finding-sources.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -64,6 +66,9 @@ function completeProfile(profile) {
           scrubberMarkerControl: true,
           streams: [...REQUIRED_REDACTION_STREAMS],
           producer: "server/src/services/x.ts synthesiseRunSecrets",
+          // DEP-026 — the case must say WHERE its withheld-plant control lives, because the row
+          // field the grader can see (`positiveControlPassed`) only exists for an IN-RUN arm.
+          suppressedArm: { scope: "in_run" },
         },
       });
       continue;
@@ -302,6 +307,8 @@ function completeBundle(profile) {
             redactedOnAllStreams: true,
             scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
             streamBytesObserved: Object.fromEntries(c.redactionCase.streams.map((k) => [k, 1024])),
+            // DEP-026 — the withheld-plant arm's own row fact, for a case declaring an IN-RUN arm.
+            ...(c.redactionCase.suppressedArm?.scope === "in_run" ? { positiveControlPassed: true } : {}),
           }
           : {}),
       })),
@@ -539,4 +546,252 @@ test("DEP-018: the committed tests/d1/fault-matrix.json satisfies every declarat
   assert.ok(spine, "the committed matrix must declare M1-D1-SPINE");
   const required = spine.cases.filter((c) => c.evidence === "required");
   assert.ok(required.length >= 20, `M1-D1-SPINE must declare a real case list, saw ${required.length} required cases`);
+});
+
+// ── DEP-026: the SUPPRESSED (withheld-plant) arm is graded, per redaction case ───────────────
+//
+// DEP-025 §11 handed this up, verified at source: the `family === "redaction"` branch never read
+// `positiveControlPassed`, so when a probe's withheld-plant arm failed — a non-`succeeded` attempt,
+// or its own nonce-tagged marker on a stream — the probe cleared that field and NOTHING graded it.
+// Every field the branch did read stayed pass-shaped, so a standalone verdict over the RETAINED row
+// reported no violations while the run itself reded. That is `E6-F023` in artifact form: the bundle
+// disagreeing with its own run.
+//
+// ★ The grade is DECLARATION-DRIVEN, and that is the whole point. A withheld-plant control can live
+// in the run (a second arm, whose outcome the row can carry) or in a SEPARATE CAMPAIGN (a whole
+// re-run with the injection suppressed, whose outcome the row structurally cannot carry). So the
+// case DECLARES which, and:
+//   - `in_run`  → `positiveControlPassed === true` is REQUIRED on the row;
+//   - `none`    → the exemption, which must NAME its blocking finding and give a reason;
+//   - anything else, or absent → REFUSED. Fail-closed on a missing declaration is what stops this
+//     from being "the guard simply not looking", which is the defect the whole exercise unwinds.
+
+test("DEP-026 evidence: a redaction case declaring an IN-RUN suppressed arm reds without a passing control", () => {
+  for (const value of [false, null, undefined]) {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+    if (value === undefined) delete row.positiveControlPassed;
+    else row.positiveControlPassed = value;
+    const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+    assert.ok(
+      has(violations, "evidence:redaction_positive_control_missing"),
+      `${JSON.stringify(value)} must red: ${codes(violations)}`,
+    );
+  }
+});
+
+test("DEP-026 evidence: a redaction case that declares NO suppressed arm is REFUSED, not skipped", () => {
+  const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+  const decl = matrix.profiles
+    .find((p) => p.profile === GATE_PROFILES[0]).cases
+    .find((c) => c.case.includes("redaction.canary"));
+  delete decl.redactionCase.suppressedArm;
+  const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+  assert.ok(has(violations, "evidence:redaction_suppressed_arm_undeclared"), codes(violations).join(","));
+});
+
+test("DEP-026 evidence: an unknown suppressed-arm scope is REFUSED rather than read as exempt", () => {
+  for (const scope of ["campaign", "", null, 1]) {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    matrix.profiles
+      .find((p) => p.profile === GATE_PROFILES[0]).cases
+      .find((c) => c.case.includes("redaction.canary")).redactionCase.suppressedArm = { scope };
+    const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+    assert.ok(
+      has(violations, "evidence:redaction_suppressed_arm_undeclared"),
+      `scope ${JSON.stringify(scope)} must red: ${codes(violations)}`,
+    );
+  }
+});
+
+test("DEP-026 evidence: a JUSTIFIED `none` exemption passes without the row field; an UNJUSTIFIED one reds", () => {
+  const withArm = (suppressedArm, mutateRow = (r) => { delete r.positiveControlPassed; }) => {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    matrix.profiles
+      .find((p) => p.profile === GATE_PROFILES[0]).cases
+      .find((c) => c.case.includes("redaction.canary")).redactionCase.suppressedArm = suppressedArm;
+    mutateRow(bundle.cases.find((r) => r.case.includes("redaction.canary")));
+    return evaluateFaultMatrixEvidence(matrix, bundle).violations;
+  };
+  const justified = { scope: "none", blockedBy: ["E6-F033"], reason: "the logs stream carries no per-run token" };
+  assert.deepEqual(withArm(justified), [], "a justified exemption must not red, and must not need the row field");
+  // ★ THE DUAL, in the same control: an exemption that OUTLIVED its reason. The file's own
+  // `evidence:pending_case_reported` refuses a pending case that DID produce evidence; this is that
+  // shape with the polarity flipped -- a case claiming it cannot report the arm, whose row reports one.
+  assert.ok(
+    has(withArm(justified, (r) => { r.positiveControlPassed = true; }), "evidence:redaction_suppressed_arm_exemption_stale"),
+    "an exemption whose row DOES carry the field must red -- the arm exists and is deliberately ungraded",
+  );
+  assert.ok(
+    has(withArm(justified, (r) => { r.positiveControlPassed = false; }), "evidence:redaction_suppressed_arm_exemption_stale"),
+    "and it reds on a FAILING reported arm too: the field's presence is the drift, not its value",
+  );
+  // ★ And it is NARROW: every way of writing a bare exemption reds.
+  for (const arm of [
+    { scope: "none" },
+    { scope: "none", reason: "because" },
+    { scope: "none", blockedBy: ["E6-F033"] },
+    { scope: "none", blockedBy: [], reason: "because" },
+    { scope: "none", blockedBy: ["E6-F033"], reason: "  " },
+    { scope: "none", blockedBy: "E6-F033", reason: "not an array" },
+    { scope: "none", blockedBy: [""], reason: "an empty id" },
+  ]) {
+    const violations = withArm(arm);
+    assert.ok(
+      has(violations, "evidence:redaction_suppressed_arm_exemption_unjustified"),
+      `${JSON.stringify(arm)} must red: ${codes(violations)}`,
+    );
+  }
+});
+
+test("DEP-026 declaration: a REQUIRED redaction case must declare its suppressed arm, well-formed", () => {
+  const decl = (fn) => evaluateFaultMatrixDeclaration(mutate((m, at) => {
+    fn(at.caseIn(GATE_PROFILES[0], "redaction.canary").redactionCase);
+  }));
+  assert.ok(has(decl((r) => { delete r.suppressedArm; }), "declaration:redaction_suppressed_arm_missing"));
+  assert.ok(has(decl((r) => { r.suppressedArm = { scope: "campaign" }; }), "declaration:redaction_suppressed_arm_unknown_scope"));
+  assert.ok(has(decl((r) => { r.suppressedArm = "in_run"; }), "declaration:redaction_suppressed_arm_unknown_scope"));
+  assert.ok(has(decl((r) => { r.suppressedArm = { scope: "none" }; }), "declaration:redaction_suppressed_arm_exemption_unjustified"));
+  assert.ok(has(decl((r) => { r.suppressedArm = { scope: "none", blockedBy: ["E6-F033"], reason: "" }; }), "declaration:redaction_suppressed_arm_exemption_unjustified"));
+  // The two legal shapes are silent.
+  assert.deepEqual(decl((r) => { r.suppressedArm = { scope: "in_run" }; }), []);
+  assert.deepEqual(decl((r) => { r.suppressedArm = { scope: "none", blockedBy: ["E6-F033"], reason: "measured structural blocker" }; }), []);
+});
+
+test("DEP-026 declaration: a PENDING redaction case need not declare it yet, but a malformed one still reds", () => {
+  // The grader never reaches a `pending` case (the evidence loop `continue`s on it), and a case whose
+  // driver is unbuilt cannot honestly answer the question — `d2c.redaction.planted_canary_scrubbed`
+  // has no producer anywhere in the repo. So PRESENCE is required at the moment the field becomes
+  // load-bearing, which is the flip to `required`, and that makes the flip mechanical rather than
+  // prose. Well-formedness is required either way, so a pending case cannot park a broken shape.
+  const pendingNoArm = evaluateFaultMatrixDeclaration(mutate((m, at) => {
+    const c = at.caseIn(GATE_PROFILES[0], "redaction.canary");
+    c.evidence = "pending";
+    c.pendingKind = "keyed";
+    c.pendingReason = "the driver is unbuilt";
+    c.pendingOwner = "planning session";
+    delete c.redactionCase.suppressedArm;
+  }));
+  assert.ok(!has(pendingNoArm, "declaration:redaction_suppressed_arm_missing"), codes(pendingNoArm).join(","));
+  const pendingBadArm = evaluateFaultMatrixDeclaration(mutate((m, at) => {
+    const c = at.caseIn(GATE_PROFILES[0], "redaction.canary");
+    c.evidence = "pending";
+    c.pendingKind = "keyed";
+    c.pendingReason = "the driver is unbuilt";
+    c.pendingOwner = "planning session";
+    c.redactionCase.suppressedArm = { scope: "vibes" };
+  }));
+  assert.ok(has(pendingBadArm, "declaration:redaction_suppressed_arm_unknown_scope"), codes(pendingBadArm).join(","));
+});
+
+// ★★★ DEP-026 — A BLOCKER THAT IS PHANTOM *OR RESOLVED* MAKES THE EXEMPTION UNCHECKED.
+//
+// Two Codex P2s on PR #609, both real, both verified at source. The narrative is in
+// `evaluateRedactionExemptionBlockers`'s own header; what matters here is that these controls exercise
+// THE PRODUCTION FUNCTION with the PRODUCTION LOADER, not a copy of the logic living in the test.
+//
+// ★ The first version of this control DID live only in the test, which was Codex's second finding:
+// `check-campaign-fault-matrix.mjs` — invoked by `m1-shipped-boot.yml`'s keyed artifact-verdict step
+// and twice by `d1-merge-train.yml`, in neither case alongside this suite — did not perform it. So the
+// check moved into the lib, three production callers now make it, and the LAST control below is the
+// anti-orphan one (`REL-004`'s lesson: three admission verifiers that had zero callers).
+
+test("DEP-026: the committed exemption's blockers are OPEN registered findings (production function + loader)", () => {
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
+  const sources = readFindingSources(repoRoot);
+  // Non-vacuity FIRST, three times: an empty register, a heading scan that found nothing, or a matrix
+  // with no exemption at all would each make this pass while checking nothing.
+  assert.ok(sources.openFindingIds.size >= 50, `the open-finding register holds only ${sources.openFindingIds.size} ids — the layout moved`);
+  assert.ok(
+    sources.declaredFindingIds.size > sources.openFindingIds.size,
+    `${sources.declaredFindingIds.size} headings vs ${sources.openFindingIds.size} open keys — headings must SURVIVE closure, which is the whole reason they cannot be the openness source`,
+  );
+  const exempt = matrix.profiles.flatMap((p) => p.cases.filter((c) => c.redactionCase?.suppressedArm?.scope === "none"));
+  assert.ok(exempt.length > 0, "no redaction exemption is declared, so these controls evaluated nothing");
+  assert.deepEqual(evaluateRedactionExemptionBlockers(matrix, sources), [], "the committed exemption's blockers must all be open registered findings");
+});
+
+test("DEP-026: a PHANTOM blocker, a RESOLVED blocker, and ABSENT sources each red", () => {
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
+  const sources = readFindingSources(repoRoot);
+  const withBlockers = (ids) => {
+    const m = JSON.parse(JSON.stringify(matrix));
+    for (const p of m.profiles) {
+      for (const c of p.cases) {
+        if (c.redactionCase?.suppressedArm?.scope === "none") c.redactionCase.suppressedArm.blockedBy = ids;
+      }
+    }
+    return m;
+  };
+  assert.ok(
+    has(evaluateRedactionExemptionBlockers(withBlockers(["E6-F999"]), sources), "declaration:redaction_exemption_blocker_undeclared"),
+    "a PHANTOM blocker must red",
+  );
+  // ★ THE SHAPE MY FIRST PASS MISSED, and the reason the register is the openness source: `E9-F003` is
+  // a REAL, closed finding — its findings.md heading survives, its register key is gone — so it passes
+  // the existence check and must fail the openness one. Resolving the blocker is what forces the flip.
+  assert.ok(sources.declaredFindingIds.has("E9-F003"), "E9-F003's heading must still exist, else this control measures the wrong thing");
+  assert.ok(!sources.openFindingIds.has("E9-F003"), "E9-F003 must be CLOSED (absent from the register), else this control is vacuous");
+  const resolved = evaluateRedactionExemptionBlockers(withBlockers(["E9-F003"]), sources);
+  assert.ok(has(resolved, "declaration:redaction_exemption_blocker_not_open"), codes(resolved).join(","));
+  assert.ok(!has(resolved, "declaration:redaction_exemption_blocker_undeclared"), "a resolved finding is DECLARED — the two codes must not collapse");
+
+  // ★ FAIL-CLOSED ON ABSENT SOURCES. A caller cannot obtain silence by not looking, which is the class
+  // this whole ticket is about. Every unusable shape refuses.
+  const unusable = [
+    undefined,
+    {},
+    { openFindingIds: sources.openFindingIds },
+    { declaredFindingIds: sources.declaredFindingIds },
+    { openFindingIds: new Set(), declaredFindingIds: sources.declaredFindingIds },
+    { openFindingIds: ["E6-F033"], declaredFindingIds: ["E6-F033"] },
+  ];
+  for (const bad of unusable) {
+    assert.ok(
+      has(evaluateRedactionExemptionBlockers(matrix, bad), "declaration:redaction_exemption_blockers_unverifiable"),
+      `${JSON.stringify(bad ?? null)} must refuse rather than pass silently`,
+    );
+  }
+  // And a matrix with NO exemption needs no sources — the refusal is scoped to callers that depend on it.
+  const none = JSON.parse(JSON.stringify(matrix));
+  for (const p of none.profiles) {
+    for (const c of p.cases) if (c.redactionCase?.suppressedArm) c.redactionCase.suppressedArm = { scope: "in_run" };
+  }
+  assert.deepEqual(evaluateRedactionExemptionBlockers(none, undefined), [], "a matrix with no exemption must not demand sources");
+});
+
+test("DEP-026 ANTI-ORPHAN: every production declaration-checking path performs the blocker cross-reference", () => {
+  // `REL-004`'s lesson, applied to my own new verifier: a check with zero callers is a check that
+  // evaluates nothing, and Codex's second P2 was exactly that — the cross-reference existed only here.
+  const callers = [
+    "scripts/check-campaign-fault-matrix.mjs",
+    "scripts/m1-shipped-boot/journey.mjs",
+    "tests/d1/m1-fault-matrix.test.mjs",
+  ];
+  for (const rel of callers) {
+    const src = readFileSync(path.join(repoRoot, rel), "utf8");
+    assert.match(src, /evaluateRedactionExemptionBlockers\(/, `${rel} must call evaluateRedactionExemptionBlockers`);
+    assert.match(src, /readFindingSources\(/, `${rel} must supply the finding sources, else the call fails closed`);
+  }
+  // Non-vacuity, and the SECOND SOURCE for completeness (`E.2.1`): every file that validates the
+  // declaration at all must be in the list above, so a NEW production caller cannot be added without
+  // being swept. An enumeration, not a memory.
+  const dirs = ["scripts", "scripts/m1-shipped-boot", "scripts/lib", "tests/d1"];
+  const validators = [];
+  for (const dir of dirs) {
+    const abs = path.join(repoRoot, dir);
+    if (!existsSync(abs)) continue;
+    for (const f of readdirSync(abs, { withFileTypes: true })) {
+      if (!f.isFile() || !f.name.endsWith(".mjs")) continue;
+      const rel = `${dir}/${f.name}`;
+      if (rel === "scripts/lib/campaign-fault-matrix.mjs" || rel === "scripts/check-campaign-fault-matrix.test.mjs") continue;
+      if (/evaluateFaultMatrixDeclaration\(/.test(readFileSync(path.join(abs, f.name), "utf8"))) validators.push(rel);
+    }
+  }
+  assert.ok(validators.length > 0, "found no production declaration validator at all — this control evaluated nothing");
+  assert.deepEqual(
+    validators.sort(),
+    [...callers].sort(),
+    "a file validates the declaration without cross-referencing the exemption's blockers — add it to this list AND give it the call",
+  );
 });

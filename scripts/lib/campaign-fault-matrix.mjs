@@ -106,6 +106,56 @@ export const REQUIRED_CREDENTIAL_REFUSAL_KINDS = Object.freeze([
 export const REQUIRED_REDACTION_STREAMS = Object.freeze(["events", "logs"]);
 
 /**
+ * DEP-026 — WHERE a redaction case's WITHHELD-PLANT control lives, declared per case.
+ *
+ * `DEP-025` §11 established, at source, that this branch never read `positiveControlPassed`: when a
+ * probe's withheld-plant arm failed — a non-`succeeded` attempt, or its own nonce-tagged marker on a
+ * stream — the probe cleared that field and NOTHING graded it. The phase still refused, so an
+ * end-to-end run reded; what did not hold is that the RETAINED ARTIFACT ALONE was gradeable. A
+ * bundle reporting no violations about a run that failed is `E6-F023` in artifact form.
+ *
+ * ★ WHY THIS IS A DECLARED SCOPE RATHER THAN AN UNCONDITIONAL REQUIREMENT, measured rather than
+ * assumed. The two M1a lanes site the control differently:
+ *
+ *   - `in_run` — the driver runs BOTH arms inside one invocation, so the row can carry the withheld
+ *     arm's outcome. `scripts/m1-shipped-boot/redaction.mjs` does this, and
+ *     `redactionProbeMatrixRow` already sets `positiveControlPassed` from it.
+ *   - `none` — the lane has NO arm the row could carry, for a reason that must be NAMED. The D1
+ *     lane's suppression is a whole separate campaign (`AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION=1`,
+ *     a module-load env read in `tests/d1/m1-fault-matrix.test.mjs`), so the graded run has no
+ *     second arm at all, and an in-run one cannot be given a sound `logs` half — `E6-F033`.
+ *
+ * ★★★ AND AN ABSENT OR UNRECOGNISED SCOPE IS REFUSED, which is the whole load-bearing part. A guard
+ * that quietly skips a case it cannot grade is indistinguishable from the defect above: the honest
+ * shape is that the case says which situation it is in, and a case that says nothing reds. An
+ * exemption must additionally name its blocking finding ids and give a reason, so it is visible to a
+ * reader and to the finding register rather than being the guard not looking.
+ */
+export const REDACTION_SUPPRESSED_ARM_SCOPES = Object.freeze(["in_run", "none"]);
+
+/**
+ * The one reader of `redactionCase.suppressedArm`, shared by the declaration half and the evidence
+ * half so the two cannot drift apart — which is the asymmetry that produced `DEP-025` finding (a).
+ *
+ * @returns {{scope: "in_run"} | {scope: "none"} | {scope: null, code: "unknown_scope"} | {scope: "none", code: "exemption_unjustified"}}
+ */
+export function classifyRedactionSuppressedArm(suppressedArm) {
+  if (!isPlainObject(suppressedArm) || !REDACTION_SUPPRESSED_ARM_SCOPES.includes(suppressedArm.scope)) {
+    return { scope: null, code: "unknown_scope" };
+  }
+  if (suppressedArm.scope === "in_run") return { scope: "in_run" };
+  // `none` is the exemption, and it is NARROW: a bare `{scope:"none"}` would be exactly the silent
+  // skip this field exists to prevent, so both halves are required and both are checked for content
+  // rather than presence (an empty array, an empty id and a whitespace reason all red).
+  const blockedBy = suppressedArm.blockedBy;
+  const justified = Array.isArray(blockedBy)
+    && blockedBy.length > 0
+    && blockedBy.every((id) => isNonEmptyString(id))
+    && isNonEmptyString(suppressedArm.reason);
+  return justified ? { scope: "none" } : { scope: "none", code: "exemption_unjustified" };
+}
+
+/**
  * The nine cross-tenant surfaces the M1 plan's `DEP-018` row names: *"A cannot lease, read,
  * cancel or see B's jobs, events, secrets, staged inputs, outputs, cost rows or tool calls"*
  * (`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4). Enumerated rather than counted, so
@@ -312,6 +362,29 @@ export function evaluateFaultMatrixDeclaration(matrix) {
           }
           if (!isNonEmptyString(rc.producer)) {
             v("declaration:redaction_without_producer", `${where}: the redaction case must name the \`producer\` (file + symbol) whose scrubbing it proves, so a reviewer can check the clause's own symbol is the one exercised`);
+          }
+          // DEP-026 — the SECOND SOURCE for the evidence half's refusal (`E.2.1`: a single source can
+          // only answer "is what I wrote well-formed?", never "is anything missing?"). The evidence
+          // half refuses an undeclared arm on the bundle it is given; this half refuses the same thing
+          // on the COMMITTED declaration, in `policy`, on the PR rather than on the merge train.
+          //
+          // PRESENCE is required exactly where the field becomes load-bearing — a `required` case,
+          // which is the only kind the evidence loop reaches — so the flip of a `pending` case to
+          // `required` mechanically forces the question instead of leaving it to prose. A case whose
+          // driver is unbuilt (`d2c.redaction.planted_canary_scrubbed` has no producer anywhere in the
+          // repo) therefore cannot be made to answer it prematurely. WELL-FORMEDNESS is required
+          // either way, so no case can park a broken shape behind `pending`.
+          if (rc.suppressedArm === undefined) {
+            if (c.evidence === "required") {
+              v("declaration:redaction_suppressed_arm_missing", `${where}: a \`required\` redaction case must declare \`redactionCase.suppressedArm\` — a withheld-plant control the grader cannot see is not a control it can grade, and skipping the field is how DEP-025 §11's hole stayed open`);
+            }
+          } else {
+            const arm = classifyRedactionSuppressedArm(rc.suppressedArm);
+            if (arm.code === "unknown_scope") {
+              v("declaration:redaction_suppressed_arm_unknown_scope", `${where}: redactionCase.suppressedArm.scope ${JSON.stringify(isPlainObject(rc.suppressedArm) ? (rc.suppressedArm.scope ?? null) : rc.suppressedArm)} is not one of ${REDACTION_SUPPRESSED_ARM_SCOPES.join(", ")}`);
+            } else if (arm.code === "exemption_unjustified") {
+              v("declaration:redaction_suppressed_arm_exemption_unjustified", `${where}: a \`none\` suppressed arm is an EXEMPTION and must name its blocking finding ids in \`blockedBy\` (a non-empty array of non-empty strings) and give a non-empty \`reason\` — an unnamed exemption is the guard not looking`);
+            }
           }
         }
       } else if (c.redactionCase !== undefined) {
@@ -537,6 +610,41 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
       if (declaredStreams.length === 0) {
         v("evidence:redaction_no_declared_streams", `case ${id}: the declaration names no streams, so every per-stream check above evaluated nothing`);
       }
+      // ★★★ DEP-026 — THE WITHHELD-PLANT ARM, graded here for the first time.
+      //
+      // Everything above grades the SEEDED arm. `DEP-025` §11 verified at source that the withheld
+      // arm's only row field, `positiveControlPassed`, was read in exactly two places — the
+      // `credential` family branch and the `tenantCase.kind in {cross_tenant_denial,
+      // legacy_table_isolation}` branch — and in NEITHER of them for a `redaction` case. So a probe
+      // whose suppressed arm terminated non-`succeeded`, or carried its own nonce-tagged marker on a
+      // stream, cleared that field and left every field this branch DOES read pass-shaped: the run
+      // reded, and a standalone verdict over the retained row reported no violations.
+      //
+      // ★ The polarity matters. The seeded arm proves the scrubber ACTED; the withheld arm proves the
+      // marker is the INJECTION'S work rather than something the lane produces anyway. Without the
+      // second, "a probe that cannot go red is not a probe" — the same sentence the marker control
+      // itself was introduced under, applied one level out.
+      const arm = classifyRedactionSuppressedArm(rc?.suppressedArm);
+      if (arm.code === "unknown_scope") {
+        // FAIL-CLOSED ON A MISSING DECLARATION. A case that does not say where its withheld-plant
+        // control lives is refused, never graded as though it had one and never skipped as though it
+        // did not need one. A guard narrowed to protect a case that is not supplying evidence it
+        // should is the defect this whole surface has been unwinding.
+        v("evidence:redaction_suppressed_arm_undeclared", `case ${id}: the declaration does not say where the withheld-plant control lives (redactionCase.suppressedArm.scope must be one of ${REDACTION_SUPPRESSED_ARM_SCOPES.join(", ")}) — an ungraded control arm is how a bundle comes to disagree with its own run`);
+      } else if (arm.code === "exemption_unjustified") {
+        v("evidence:redaction_suppressed_arm_exemption_unjustified", `case ${id}: the declaration claims \`suppressedArm.scope: "none"\` without naming its blocking finding ids in \`blockedBy\` and a \`reason\` — an exemption nobody can check is indistinguishable from the guard not looking`);
+      } else if (arm.scope === "in_run" && row.positiveControlPassed !== true) {
+        v("evidence:redaction_positive_control_missing", `case ${id}: the withheld-plant arm did not pass (positiveControlPassed=${JSON.stringify(row.positiveControlPassed ?? null)}) — its attempt did not reach a succeeded terminal, or it carried the scrubber's marker on a stream, so the seeded arm's marker is not shown to be this case's injection at work`);
+      } else if (arm.scope === "none" && row.positiveControlPassed !== undefined) {
+        // ★ THE DUAL (`E.1b`), and the file already sets the precedent — `evidence:pending_case_reported`
+        // refuses a `pending` case that DID produce evidence, on the reasoning that inheriting the pass
+        // would be the silent drift this matrix exists to stop. The same reasoning applies here with the
+        // polarity flipped: a case claiming it CANNOT report a withheld-plant arm, whose row reports one,
+        // means the exemption is stale — the driver grew the arm and nobody deleted the exemption, so the
+        // field the grader would have required is present and DELIBERATELY UNGRADED. Rewrite the
+        // declaration (flip to `in_run`) rather than let an exemption outlive its reason.
+        v("evidence:redaction_suppressed_arm_exemption_stale", `case ${id}: the declaration claims \`suppressedArm.scope: "none"\` (blocked by ${JSON.stringify(rc?.suppressedArm?.blockedBy ?? null)}) but the bundle reports positiveControlPassed=${JSON.stringify(row.positiveControlPassed)} — the driver now HAS the arm the exemption says it cannot have, so flip the declaration to \`in_run\` rather than leave the field ungraded`);
+      }
     }
     const t = isPlainObject(c.tenantCase) ? c.tenantCase : null;
     if (t && (t.kind === "cross_tenant_denial" || t.kind === "legacy_table_isolation")) {
@@ -555,4 +663,65 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
 
 export function formatViolations(violations) {
   return (violations ?? []).map((v) => `  - ${v.code}: ${v.message}`).join("\n");
+}
+
+// ── 3. the redaction exemption's blockers, cross-referenced against the FINDING REGISTER ──────
+//
+// ★★★ Codex P2 ×2 on PR #609, both REAL and both verified at source before fixing.
+//
+// (1) `classifyRedactionSuppressedArm` accepts any non-empty strings in `blockedBy`, so a typo — or
+//     the later RESOLUTION of `E6-F033`/`E6-F034` — would leave the D1 case permanently exempt and
+//     green without its withheld-plant arm. ★ THE SECOND HALF REVERSED MY OWN EARLIER REASONING: I
+//     had cross-referenced the epics' `findings.md` headings and argued AGAINST the register because
+//     closure DELETES its key. Closing the blocker is PRECISELY what must invalidate the exemption —
+//     the D1 case's own `reason` says *"Closing both means deleting this exemption and declaring
+//     `scope: "in_run"`"*. So the register is the right source for OPENNESS, and the headings for
+//     EXISTENCE. Measured: `E9-F003` and `E9-F007` are closed, absent from the register, and their
+//     headings survive (232 headings vs 104 register keys, 40 headings explicitly `resolved`).
+//
+// (2) The cross-reference lived only in the self-test, so `check-campaign-fault-matrix.mjs` — which
+//     `m1-shipped-boot.yml`'s keyed artifact-verdict step and `d1-merge-train.yml` both invoke
+//     WITHOUT the suite — did not perform it. It is therefore in the PRODUCTION path now, called by
+//     every entry point that validates the declaration, with an anti-orphan control in the self-test
+//     (the `REL-004` lesson: three admission verifiers with zero callers).
+//
+// It is a SEPARATE function rather than part of `evaluateFaultMatrixDeclaration` because the sets
+// come from the filesystem and that evaluator is pure. FAIL-CLOSED ON ABSENT SOURCES: a matrix that
+// declares an exemption while the caller supplied no sets is REFUSED, so a caller cannot obtain
+// silence by not looking — which is the class this whole ticket is about.
+/**
+ * @param {object} matrix
+ * @param {{openFindingIds?: Set<string>, declaredFindingIds?: Set<string>}} [sources]
+ * @returns {{code:string,message:string}[]}
+ */
+export function evaluateRedactionExemptionBlockers(matrix, sources) {
+  const out = [];
+  const v = (code, message) => out.push(violation(DECLARATION_MARKER, code, message));
+  const exemptions = [];
+  for (const p of matrix?.profiles ?? []) {
+    if (!isPlainObject(p)) continue;
+    for (const c of p.cases ?? []) {
+      if (!isPlainObject(c) || c.family !== "redaction") continue;
+      const arm = isPlainObject(c.redactionCase) ? c.redactionCase.suppressedArm : null;
+      if (!isPlainObject(arm) || arm.scope !== "none") continue;
+      exemptions.push({ where: `${p.profile} / ${c.case}`, blockedBy: Array.isArray(arm.blockedBy) ? arm.blockedBy : [] });
+    }
+  }
+  if (exemptions.length === 0) return out;
+  const usable = (s) => s instanceof Set && s.size > 0;
+  if (!usable(sources?.openFindingIds) || !usable(sources?.declaredFindingIds)) {
+    v("declaration:redaction_exemption_blockers_unverifiable", `${exemptions.length} redaction exemption(s) declare blocking findings, but the caller supplied no finding sources to check them against — an exemption nobody verified is an exemption nobody can rely on, so this refuses rather than passing silently`);
+    return out;
+  }
+  for (const { where, blockedBy } of exemptions) {
+    for (const raw of blockedBy) {
+      const id = String(raw);
+      if (!sources.declaredFindingIds.has(id)) {
+        v("declaration:redaction_exemption_blocker_undeclared", `${where}: suppressedArm.blockedBy names ${JSON.stringify(id)}, which no epic's findings.md declares at all — a phantom blocker cannot justify skipping the withheld-plant arm`);
+      } else if (!sources.openFindingIds.has(id)) {
+        v("declaration:redaction_exemption_blocker_not_open", `${where}: suppressedArm.blockedBy names ${JSON.stringify(id)}, which is RESOLVED (its findings.md heading survives closure, but its scripts/finding-ownership.json key is deleted on resolve) — resolving the blocker is exactly what must force this case to \`scope: "in_run"\`, so the exemption fails closed rather than outliving its reason`);
+      }
+    }
+  }
+  return out;
 }
