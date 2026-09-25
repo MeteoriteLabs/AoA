@@ -325,8 +325,11 @@ None of these is "flaky", and each names a different fact.
 | The D1 twin's new assertion HOLDS on a live stack (the D1 attempt does reach `succeeded`) | **Demonstrated** by the free `d1-merge-train` run in §8 |
 | The D1 twin's new assertion would RED if the attempt did not succeed | **Argued** — the identical predicate, mutation-proven in the pure judge. A live red needs a broken D1 attempt, which I cannot manufacture |
 | `E6-F033`: the D1 suppressed control reads a stale marked line every run | **Argued from source**, and the load-bearing link was READ rather than inferred (`d1-merge-train.yml`: one bring-up, two invocations, teardown last) |
+| The RETAINED row is not pass-shaped when either arm failed, on BOTH lanes' row builders | **Demonstrated for the shipped-boot row** (local, two mutations). **Argued for the D1 row** — its builder needs a live stack; the identical predicate is mutation-proven in the pure judge, and the shared token is imported rather than re-spelled so the two cannot diverge |
+| The attempt-failure classification can never equal the declared pass token | **Demonstrated** (local; the mutation that re-spells it reds 4) |
+| §11's residual: the grader's redaction branch never reads `positiveControlPassed` | **Demonstrated at source** — `grep -n "positiveControlPassed" scripts/lib/campaign-fault-matrix.mjs` returns exactly two sites, neither in that branch. **NOT fixed** — handed up |
 | The probe line actually appears on both streams of a REAL E2B run | **NOT demonstrated**, and not claimed. This is the owed keyed run (§5.1) — unchanged from `DEP-024` |
-| These two holes could not have produced a false pass while the case was `pending` | **Argued from source**, and it is `DEP-024`'s argument, re-checked: `faultMatrix` folds the row only on `evidence === "required"` |
+| **None of the three** holes could have produced a false pass while the case was `pending` | **Argued from source**, and it is `DEP-024`'s argument, re-checked: `faultMatrix` folds the row only on `evidence === "required"` |
 
 ★ **What I did NOT dispatch, and why.** `m1-shipped-boot` in `mode: keyless` is free and was the
 obvious reach. It would have proved **nothing about this branch**: that workflow's `actions/checkout`
