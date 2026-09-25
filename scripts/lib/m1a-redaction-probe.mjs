@@ -301,7 +301,17 @@ export function evaluateRedactionProbeEvidence(input) {
  * ★ And this is finding (b)'s OWN class pointed at my own diff (E.1(a)): asserting the status in the
  * judge and leaving the row untouched is the same shape as reading the status and never asserting it.
  * So the status is now BOTH carried on the row (so a standalone consumer can see it) AND allowed to
- * degrade every field that would otherwise read as a pass.
+ * degrade the fields that would otherwise read as a pass.
+ *
+ * ★★★ AND THE PROPERTY HOLDS FOR THE GRADED ARM ONLY — stated here rather than left for a reader to
+ * assume, because the surrounding prose reads as if it were complete. A SUPPRESSED-arm failure
+ * (non-`succeeded`, or a marker on one stream) clears only `positiveControlPassed`, and
+ * `evaluateFaultMatrixEvidence`'s `family === "redaction"` branch NEVER READS that field: measured at
+ * source, it is read only in the `credential` branch and the `tenantCase` branch. So an artifact-only
+ * verdict still passes on that half. That is Codex round 3 on PR #608, verified and HANDED TO THE
+ * PLANNING SESSION under rule C's two-round cap — the phase itself still refuses, so an end-to-end
+ * keyed run reds, and the case is `pending` so the row cannot enter a graded bundle meanwhile. Two
+ * candidate fixes are in `DEP-025-result.md` §11; the general one reds the `required` D1 case.
  *
  * `redactedOnAllStreams` is deliberately left as the RAW observation: the streams really were scanned
  * and really were clean, and forcing it to `false` would make the bundle claim a LEAK — a diagnosis
