@@ -132,6 +132,10 @@ import {
   evaluateFaultMatrixEvidence,
   formatViolations,
 } from "../../scripts/lib/campaign-fault-matrix.mjs";
+import {
+  REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS,
+  redactionAttemptFailureClassification,
+} from "../../scripts/lib/m1a-redaction-probe.mjs";
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -1310,10 +1314,10 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
   // ★ And I owed this sweep myself: I fixed the identical shape in `redactionProbeMatrixRow` one round
   // earlier and did not look at its twin here. `E` rule 3 — a known twin left behind is worse than the
   // original. The naming matches the shipped-boot lane's token exactly so the two cannot drift.
-  const attemptSucceeded = observation.attemptStatus === "succeeded";
+  const attemptSucceeded = observation.attemptStatus === REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS;
   const injectionFired = markerOnEvents && markerOnLogs && attemptSucceeded;
   const observedClassification = !attemptSucceeded
-    ? `graded_arm_attempt_${String(observation.attemptStatus ?? null)}`
+    ? redactionAttemptFailureClassification(observation.attemptStatus)
     : injectionFired && redactedOnAllStreams
       ? "canary_scrubbed_while_unseeded_twin_leaks"
       : injectionFired
@@ -1355,7 +1359,7 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
   // Placed AFTER `record` so the row carries the observation that refuses.
   assert.equal(
     observation.attemptStatus,
-    "succeeded",
+    REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS,
     `the seeded job's attempt must reach a durable succeeded terminal, else its streams are a failed setup rather than a clean run: ${truncate(observation)}`,
   );
 

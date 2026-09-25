@@ -15,8 +15,10 @@ import test from "node:test";
 import {
   REDACTION_PROBE_CASE,
   REDACTION_PROBE_EXPECTED_CLASSIFICATION,
+  REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS,
   REDACTION_PROBE_STREAMS,
   classifyRedactionObservation,
+  redactionAttemptFailureClassification,
   evaluateRedactionProbeEvidence,
   redactionProbeMatrixRow,
 } from "../m1a-redaction-probe.mjs";
@@ -247,6 +249,24 @@ test("★ the retained row is NOT pass-shaped when the GRADED attempt did not su
   assert.equal(row.observedClassification, "graded_arm_attempt_failed");
   assert.notEqual(row.observedClassification, REDACTION_PROBE_EXPECTED_CLASSIFICATION);
   assert.equal(row.gradedAttemptStatus, "failed", "the retained row must CARRY the status, so a standalone fault-matrix can see it");
+});
+
+// ★ The token the D1 twin ALSO emits. It is exported and imported by both lanes rather than written
+// out twice, because the record used to CLAIM "the same token, so the two lanes cannot drift" and
+// nothing enforced that. This is the control for the shared definition.
+test("★ the attempt-failure classification is ONE definition, and never the declared pass token", () => {
+  assert.equal(redactionAttemptFailureClassification("failed"), "graded_arm_attempt_failed");
+  assert.equal(redactionAttemptFailureClassification(null), "graded_arm_attempt_null");
+  assert.equal(redactionAttemptFailureClassification(undefined), "graded_arm_attempt_null");
+  for (const status of ["failed", "cancelled", "running", null, undefined, 7]) {
+    assert.notEqual(redactionAttemptFailureClassification(status), REDACTION_PROBE_EXPECTED_CLASSIFICATION);
+  }
+  // The row builder must USE it, not re-spell it.
+  assert.equal(
+    redactionProbeMatrixRow(classify({ ...GRADED, attemptStatus: "cancelled" }), { suppressedAttemptStatus: "succeeded" }).observedClassification,
+    redactionAttemptFailureClassification("cancelled"),
+  );
+  assert.equal(REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS, "succeeded");
 });
 
 test("★ positiveControlPassed is false when the SUPPRESSED attempt did not succeed", () => {

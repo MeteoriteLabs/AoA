@@ -61,6 +61,20 @@ export const REDACTION_PROBE_EVIDENCE_MARKER = "[redaction-probe:evidence]";
 export const REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS = "succeeded";
 
 /**
+ * The classification a redaction row files when its own arm's attempt did not succeed.
+ *
+ * ★ ONE DEFINITION, IMPORTED BY BOTH LANES. The shipped-boot row (`redactionProbeMatrixRow`) and the
+ * D1 twin (`tests/d1/m1-fault-matrix.test.mjs`) both emit it. An earlier draft duplicated the template
+ * string in the two files and the record CLAIMED "the same token, so the two lanes cannot drift" —
+ * which nothing enforced. A false claim of enforcement is worse than a missing check, so the claim is
+ * now true by construction instead: the D1 case imports this function, exactly as it already imports
+ * `evaluateFaultMatrixEvidence`.
+ */
+export function redactionAttemptFailureClassification(status) {
+  return `graded_arm_attempt_${String(typeof status === "string" ? status : null)}`;
+}
+
+/**
  * One arm's observation → its classification, plus the vacuity findings that make the
  * classification meaningful at all.
  *
@@ -306,7 +320,7 @@ export function redactionProbeMatrixRow(graded, detail) {
     injectionFired: gradedSucceeded && graded?.injectionFired === true,
     observedClassification: gradedSucceeded
       ? (graded?.observedClassification ?? "no_scrubber_marker_observed")
-      : `graded_arm_attempt_${String(gradedAttemptStatus)}`,
+      : redactionAttemptFailureClassification(gradedAttemptStatus),
     // Carried on the ROW, not only in `detail`, so a consumer reading the retained artifact sees the
     // fact that refused the run without having to know this module's detail shape.
     gradedAttemptStatus,
