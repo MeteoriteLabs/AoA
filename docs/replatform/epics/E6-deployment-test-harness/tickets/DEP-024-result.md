@@ -495,7 +495,7 @@ keys; nothing earlier was rewritten.
 | The seeder's parameters are default-identical and the overrides take effect | **Demonstrated** (local, mutation-proven) |
 | The rendered seed script parses on both lanes' parameters | **Demonstrated** (local; the check's own positive control reds) |
 | The judge refuses each of: missing arm, still-firing suppressed arm, never-ran suppressed arm, scrubber removed, zero-byte stream, drifted stream list | **Demonstrated** (local, 17 controls) |
-| The D1 twin still passes with the parameterised seeder | **Demonstrated** — see §8 |
+| The D1 twin still passes with the parameterised seeder | **Demonstrated** — run `36101968762`, live step `tests 25 / pass 25 / fail 0`, §8.1 |
 | The shipped worker's logger is wrapped in `createRedactingDestination`, so `E4-F019` is not reachable | **Argued from source**, whole chain, 4 links each read |
 | A canary cannot reach either stream unscrubbed | **Argued from source** (fail-closed capture ×2, envelope-level event scrub, transport-level log scrub) |
 | The candidate preflight greps match a current tree (so the gate can pass) | **Demonstrated** (each grep run against this tree) |
@@ -531,9 +531,51 @@ behaves exactly as before.
 
 **Result:** recorded in §8.1 below.
 
-### 8.1 The run
+### 8.1 The run — HYPOTHESIS CONFIRMED
 
-*(filled in from the dispatch; see the final report for the run id, the job and its executed count.)*
+**Run `36101968762`, `d1-merge-train` / `m1-fault-matrix`, dispatched on `claude/m1a-d2-redaction`.
+Run conclusion `success`.** Cited by job and step, with executed counts, not by run id alone.
+
+| Step | Executed | Result |
+|---|---|---|
+| Static preflight (the declaration, its reds, the compose invariants) | `tests 32 / pass 32 / fail 0` | **success** |
+| **Run the M1-D1-SPINE fault matrix (live)** | `tests 25 / pass 25 / fail 0` | **success** |
+| The matrix's own verdict over the retained bundle | — | **success** |
+| POSITIVE CONTROL — with every injection suppressed, the matrix MUST go red | — | **success** (i.e. it went red, as required) |
+
+★ **The line that settles the hypothesis**, from the live step's own output:
+
+```
+✔ fault-matrix: a planted credential canary is SCRUBBED from both streams, and the scrubber's
+  own marker is observed there (60979.422794ms)
+```
+
+That is the `required` D1 twin — the one case that calls `seedSpineWorkerDrivenJob` with **none** of
+the three new parameters — passing against the parameterised seeder. The failing prediction (§8) was a
+TIMEOUT on every worker-driven case, because a drifted `policy_hash` or placement target means the
+seeded job is never offered. It did not happen: 25 of 25, including this case, in 61 s. **The
+default-identical claim moves from argued to demonstrated.**
+
+★ **And the suppressed control is consistent with DEP-023 §5.2.2's correction rather than with its
+original prediction**, which is worth recording because it is the same shape on the same case. The
+suppressed arm reds with:
+
+```
+evidence:case_not_run: case d1.redaction.planted_canary_scrubbed is declared `required`
+  but the bundle carries no evidence for it
+```
+
+— not with an `injectionFired: false` row. DEP-023 predicted the latter, measured the former, and
+filed the reordering as an owed refinement; this run reproduces exactly what it measured, so that
+refinement is still open and still correctly described. The other twelve cases do report
+`injection_did_not_fire`, so the lane's grep still matches on them.
+
+★ **What this run does NOT show**, stated so nothing is over-read: it exercises the D1 lane and the
+reference provider. It says nothing about whether the probe line reaches both streams on a REAL E2B
+sandbox, which is §9's keyed run and is the whole remaining question. It also does not execute the
+`redaction` phase, `scripts/m1-shipped-boot/redaction.mjs` or `scripts/lib/m1a-redaction-probe.mjs` —
+those are the shipped-boot lane's, and their coverage here is the pure `policy` suites plus the
+argued-from-source chain in §1.
 
 ---
 
