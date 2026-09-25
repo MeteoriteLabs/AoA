@@ -2503,3 +2503,59 @@ authored the `cost_events` arm, but it is only at `gate_review`, so it is not a 
 could be named a successor, and no other ticket has been groomed for this. Naming it here anyway would
 route a triager to a ticket the ownership register deliberately rejects — an invented owner is the
 `E4-F013` failure. It owns the ARM; it does not own this finding.
+
+---
+
+## E6-F033 — the D1 redaction case's `logs` arm is attributable only POSITIONALLY, and the suppressed control provably reads a stale marked line
+
+**Status:** open · **Owner:** `unowned` · **Severity:** MEDIUM
+
+Class: HARNESS. Found 2026-09-25 by `DEP-025`'s sweep of the class behind its finding (a) — *a
+predicate over a SHARED, APPEND-ONLY surface that is scoped by WHEN it was read rather than by
+something in the data.* `DEP-024` §5.3 named that class and fixed it on the shipped-boot lane, but
+counted only the shared-surface reads **inside its own diff** ("2 shared-surface reads checked, 1
+positional, 1 fixed"). The D1 twin of the very same case is outside that diff and was never counted.
+
+**THE SITE.** `tests/d1/m1-fault-matrix.test.mjs`, the `d1.redaction.planted_canary_scrubbed` case:
+its `markedProbeLine` requires one line carrying `RUN_OUTPUT_PROBE_TAG` **and** `REDACTION_MARKER`,
+with no per-run token — and it reads `composeServiceLogs("worker-b")`, the WHOLE container log. The
+canary cannot serve as the token: the scrubber has replaced it with the marker, so it is precisely
+the value the line no longer contains. The shipped-boot lane solved this with a per-arm nonce carried
+in the probe line's plaintext; the D1 plant is the reference provider's `--aoa-fake-echo-env`, whose
+line format the harness does not author, so the same fix is not available there without a change to
+the reference provider.
+
+**THE STALE LINE IS NOT HYPOTHETICAL ON THIS LANE — measured at source.** In
+`.github/workflows/d1-merge-train.yml`, the `m1-fault-matrix` job brings the stack up ONCE, runs the
+graded profile, then runs the suppressed control **against that same stack**, and tears down only
+afterwards. So by the time the suppressed invocation reads `worker-b`'s log, the GRADED invocation's
+tagged+marked probe line is already in it. The suppressed arm therefore observes
+`markerOnLogs === true` with `markerOnEvents === false`, every run.
+
+★ **Why MEDIUM rather than HIGH, stated precisely.** It produces no false pass today, and for a
+reason nothing enforces: the graded invocation is the FIRST on a freshly-created stack each CI run,
+so its marked line is in fact its own. That is exactly the POSITIONAL argument `DEP-024` §5.3
+refused to rely on after Codex falsified it on the sibling lane — sound today, and not a property of
+the data. The suppressed run is still red (as `evidence:case_not_run`, the shape `DEP-023` §5.2.2
+measured and filed as an owed refinement), so the lane's positive control is unaffected.
+
+★ **It also blocks a port.** The per-stream suppressed discipline `DEP-025` added to
+`evaluateRedactionProbeEvidence` (a marker on EITHER stream while the plant is withheld is a
+violation) cannot be carried to D1 while this stands: it would red on the stale line rather than on
+a defect.
+
+**Deliberately NOT fixed by `DEP-025`, with the reason** (`E` rule 4): every available fix reaches
+outside the harness — a unique token in the reference provider's echo, or a log boundary captured
+before each invocation (which is positional again, and which `DEP-024` §5.3 rejected on the merits).
+`DEP-025`'s brief is to close two named flip preconditions on the shipped-boot lane; redesigning a
+`required` D1 case's attribution mechanism is a separate change with its own keyed-free proof.
+
+★ **Ownership: `unowned`.** `DEP-024` authored the sibling fix and `DEP-023` the D1 case, and both
+stand at `gate_review` rather than `complete`, so neither is a shipped ticket that could be named a
+successor (`E4-F013`). No groomed ticket covers it.
+
+**WHAT WOULD CLOSE IT:** an attribution token intrinsic to the D1 probe line (the reference
+provider echoing a per-run variable the harness names, so the line carries a value the case chose),
+`markedProbeLine` requiring it, and the mutation that proves the arm reds when a line carrying
+another run's token is the only candidate. Resolve = flip this `Status` **and** delete the
+`scripts/finding-ownership.json` key in the same commit.
