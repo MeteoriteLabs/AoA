@@ -675,7 +675,7 @@ export function evaluateShippedBootEvidence(signals) {
   const costReceipt = signals?.cost?.receipts?.[0];
   if (usageEventId && costRow && costReceipt && (
     costRow.sourceIdempotencyKey !== `cost:${usageEvent.companyId}:${usageEventId}` ||
-    costReceipt.sourceIdentity !== `usage:${usageEventId}` ||
+    costReceipt.sourceIdentity !== `cost:${usageEvent.companyId}:${usageEventId}` ||
     costReceipt.targetAggregateId !== costRow.id ||
     costReceipt.aggregateKind !== "cost_events"
   )) reasons.push("authoritative cost evidence is not bound to the accepted usage event and cost row");

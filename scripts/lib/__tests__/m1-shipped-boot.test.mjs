@@ -60,7 +60,7 @@ test("campaign evidence fails closed without audit, cost, or applied receipts", 
     },
     cost: {
       events: [{ id: "c1", costCents: 1, sourceIdempotencyKey: `cost:company-1:${usageEventId}` }],
-      receipts: [{ status: "applied", sourceIdentity: `usage:${usageEventId}`, targetAggregateId: "c1", aggregateKind: "cost_events" }],
+      receipts: [{ status: "applied", sourceIdentity: `cost:company-1:${usageEventId}`, targetAggregateId: "c1", aggregateKind: "cost_events" }],
     },
   };
   assert.deepEqual(evaluateShippedBootEvidence(good), { pass: true, reasons: [] });
@@ -70,7 +70,7 @@ test("campaign evidence fails closed without audit, cost, or applied receipts", 
     { ...good, cost: { ...good.cost, events: [] } },
     { ...good, cost: { ...good.cost, receipts: [{ status: "pending" }] } },
     { ...good, cost: { ...good.cost, events: [{ ...good.cost.events[0], sourceIdempotencyKey: `usage:${usageEventId}` }] } },
-    { ...good, cost: { ...good.cost, receipts: [{ ...good.cost.receipts[0], sourceIdentity: "usage:wrong" }] } },
+    { ...good, cost: { ...good.cost, receipts: [{ ...good.cost.receipts[0], sourceIdentity: `usage:${usageEventId}` }] } },
     { ...good, audit: { ...good.audit, activityReceipts: [{ ...good.audit.activityReceipts[0], targetAggregateId: "a2" }, good.audit.activityReceipts[1]] } },
   ]) assert.equal(evaluateShippedBootEvidence(broken).pass, false);
 });
