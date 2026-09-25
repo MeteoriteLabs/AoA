@@ -644,6 +644,56 @@ export function redactSecrets(text, secrets) {
   return out;
 }
 
+export const M1_SHIPPED_BOOT_MODEL = "claude-sonnet-4-6";
+
+export function shippedBootAgentCreatePayload(name) {
+  return {
+    name,
+    kind: "org",
+    adapterType: "claude_local",
+    adapterConfig: { model: M1_SHIPPED_BOOT_MODEL },
+    runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } },
+  };
+}
+
+export function evaluateShippedBootEvidence(signals) {
+  const reasons = [];
+  if ((signals?.audit?.jobSubmitted ?? []).length !== 1) reasons.push("expected exactly one job.submitted audit row");
+  if ((signals?.audit?.attemptLifecycle ?? []).length !== 2) reasons.push("expected attempt_started and terminal audit rows");
+  if ((signals?.audit?.activityReceipts ?? []).length !== 2 || signals.audit.activityReceipts.some((r) => r.status !== "applied")) {
+    reasons.push("expected two applied activity_audit receipts");
+  }
+  if ((signals?.cost?.events ?? []).length !== 1 || Number(signals.cost.events[0]?.costCents ?? 0) <= 0) {
+    reasons.push("expected one positive cost row bound to the accepted usage event");
+  }
+  if ((signals?.cost?.receipts ?? []).length !== 1 || signals.cost.receipts[0]?.status !== "applied") {
+    reasons.push("expected one applied authoritative_cost receipt");
+  }
+  const usageEventId = signals?.usageEvents?.[0]?.eventId;
+  const costRow = signals?.cost?.events?.[0];
+  const costReceipt = signals?.cost?.receipts?.[0];
+  if (usageEventId && costRow && costReceipt && (
+    costRow.sourceIdempotencyKey !== `usage:${usageEventId}` ||
+    costReceipt.sourceIdentity !== `usage:${usageEventId}` ||
+    costReceipt.targetAggregateId !== costRow.id ||
+    costReceipt.aggregateKind !== "cost_events"
+  )) reasons.push("authoritative cost evidence is not bound to the accepted usage event and cost row");
+
+  const lifecycleEvents = signals?.audit?.attemptEvents ?? [];
+  const activityRows = new Map((signals?.audit?.attemptLifecycle ?? []).map((row) => [row.id, row]));
+  const eventTypeById = new Map(lifecycleEvents.map((event) => [event.eventId, event.eventType]));
+  for (const receipt of signals?.audit?.activityReceipts ?? []) {
+    const eventId = String(receipt.sourceIdentity ?? "").split(":").pop();
+    const expectedAction = eventTypeById.get(eventId) === "attempt_started" ? "job.attempt_started"
+      : eventTypeById.get(eventId) === "terminal" ? "job.attempt_terminal" : null;
+    if (!expectedAction || activityRows.get(receipt.targetAggregateId)?.action !== expectedAction || receipt.aggregateKind !== "activity_log") {
+      reasons.push("activity audit receipt is not bound to its accepted lifecycle event and audit row");
+      break;
+    }
+  }
+  return { pass: reasons.length === 0, reasons };
+}
+
 // --- the control plane's own account of the rollout decision -------------------------------
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;

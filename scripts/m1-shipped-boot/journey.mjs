@@ -100,6 +100,8 @@ import {
   plantedTenantCanary,
   extractEnvProbeSummary,
   evaluateEnvProbeEvidence,
+  shippedBootAgentCreatePayload,
+  evaluateShippedBootEvidence,
 } from "../lib/m1-shipped-boot.mjs";
 import { evaluateUsageCardinality, formatViolations } from "../lib/m1-spine-assertions.mjs";
 
@@ -307,6 +309,13 @@ function prepare(args) {
   // bare library name like `minio:latest` fails it as well.
   const minioImage = String(process.env.AOA_M1_MINIO_IMAGE ?? "").trim();
   if (!minioImage) fail("AOA_M1_MINIO_IMAGE is not set — the lane must build the object store from source (docker/d1/minio.Dockerfile) and export its tag before `prepare` (E6-F030)");
+  const e2bPackage = JSON.parse(readFileSync(path.join(repoRoot, "packages/sandbox-e2b-provider/package.json"), "utf8"));
+  const e2bSdkVersion = String(e2bPackage.dependencies?.e2b ?? "").replace(/^\^/, "");
+  const configIdentity = Object.fromEntries([
+    ".github/workflows/m1-shipped-boot.yml",
+    "docker/m1-boot/docker-compose.m1-boot.yml",
+    "scripts/m1-shipped-boot/journey.mjs",
+  ].map((file) => [file, createHash("sha256").update(readFileSync(path.join(repoRoot, file))).digest("hex")]));
   if (!/^aoa-[a-z0-9][a-z0-9-]*:[A-Za-z0-9._-]+$/.test(minioImage)) {
     fail(`AOA_M1_MINIO_IMAGE=${minioImage} is not one of this lane's own locally built tags (aoa-<name>:<tag>, no registry and no slash) — the shipped-boot lane builds its object store from source, and anything Compose could PULL would make \`builtFromSource\` false evidence (F3, E6-F030)`);
   }
@@ -376,6 +385,15 @@ function prepare(args) {
     candidate: args.candidate,
     imageRevision,
     mode: args.mode,
+    providerIdentity: {
+      provider: "e2b",
+      requestedTemplate: args.template || "aoa-base",
+      sdkPackage: "e2b",
+      sdkVersion: e2bSdkVersion,
+      serviceEndpoint: "api.e2b.dev",
+      configSha256: configIdentity,
+      note: "Per-run E2B sandbox service identifiers are retained in journey.json under providerEvidence.sandboxIds.",
+    },
     envValues,
     boardToken,
     signingKeyFile,
@@ -406,6 +424,7 @@ function prepare(args) {
   writeEvidence(state, "candidate.json", {
     candidate: args.candidate,
     mode: args.mode,
+    providerIdentity: state.providerIdentity,
     images: {
       controlPlane: { image: tag("CONTROL-PLANE_IMAGE"), digest: tag("CONTROL-PLANE_DIGEST"), revision: tag("CONTROL-PLANE_REVISION") },
       worker: { image: tag("WORKER_IMAGE"), digest: tag("WORKER_DIGEST"), revision: tag("WORKER_REVISION") },
@@ -491,12 +510,8 @@ finally { client.destroy(); }
   for (const t of TENANTS) {
     const org = await api(state, "POST", "/organizations", { name: `${t.name} ${secret(3)}` });
     const company = await api(state, "POST", "/companies", { name: `${t.name} Co`, organizationId: org.id });
-    const agent = await api(state, "POST", `/companies/${company.id}/agents`, {
-      name: `${t.name} Agent`,
-      kind: "org",
-      adapterType: "claude_local",
-      runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } },
-    });
+    const agent = await api(state, "POST", `/companies/${company.id}/agents`,
+      shippedBootAgentCreatePayload(`${t.name} Agent`));
     // `POST /companies/:cid/agents` creates the agent `idle` unconditionally (server/src/routes/
     // agents.ts, the direct-create route); only `/agent-hires` honours
     // `requireBoardApprovalForNewAgents` and parks a hire as `pending_approval`. Asserted, not
@@ -783,6 +798,23 @@ function tenantSignals(state, key, run) {
     audit: {
       jobSubmitted: q(`SELECT action, entity_id, details FROM activity_log WHERE action = 'job.submitted' AND company_id = $1`, [t.companyId]),
       securityDenials: q(`SELECT action, details FROM activity_log WHERE action LIKE 'security.denied.%' AND company_id = $1`, [t.companyId]),
+      attemptLifecycle: run?.distributed_job_id
+        ? q(`SELECT id, action, company_id AS "companyId", actor_type AS "actorType", actor_id AS "actorId", details
+               FROM activity_log WHERE company_id = $1 AND entity_id = $2
+                AND action IN ('job.attempt_started', 'job.attempt_terminal') ORDER BY created_at`,
+          [t.companyId, run.distributed_job_id])
+        : [],
+      activityReceipts: run?.distributed_attempt_id
+        ? q(`SELECT status, source_identity AS "sourceIdentity", target_aggregate_id AS "targetAggregateId",
+                    aggregate_kind AS "aggregateKind"
+               FROM job_projection_receipts WHERE attempt_id = $1 AND projection_kind = 'activity_audit'
+               ORDER BY created_at`, [run.distributed_attempt_id])
+        : [],
+      attemptEvents: run?.distributed_attempt_id
+        ? q(`SELECT event_id AS "eventId", event_type AS "eventType" FROM job_events
+              WHERE attempt_id = $1 AND event_type IN ('attempt_started', 'terminal') ORDER BY sequence`,
+          [run.distributed_attempt_id])
+        : [],
     },
     // WRK-018 acceptance 1, on the KEYED lane: the accepted `usage` events of THIS attempt, from
     // the durable ledger, scoped to this attempt (never the job: a retry attempt has its own).
@@ -793,9 +825,22 @@ function tenantSignals(state, key, run) {
         [run.distributed_attempt_id])
       : [],
     cost: {
-      costEventsForRun: Number(q(`SELECT count(*)::int AS n FROM cost_events WHERE heartbeat_run_id = $1`, [runId])[0].n),
+      events: run?.distributed_attempt_id
+        ? q(`SELECT c.id, c.company_id AS "companyId", c.cost_cents AS "costCents",
+                    c.source_idempotency_key AS "sourceIdempotencyKey", c.model, c.rate_version AS "rateVersion"
+               FROM cost_events c
+              WHERE c.company_id = $1 AND c.source_idempotency_key IN
+                    (SELECT 'usage:' || event_id::text FROM job_events WHERE attempt_id = $2 AND event_type = 'usage')`,
+          [t.companyId, run.distributed_attempt_id])
+        : [],
+      receipts: run?.distributed_attempt_id
+        ? q(`SELECT status, source_identity AS "sourceIdentity", target_aggregate_id AS "targetAggregateId",
+                    aggregate_kind AS "aggregateKind"
+               FROM job_projection_receipts WHERE attempt_id = $1 AND projection_kind = 'authoritative_cost'`,
+          [run.distributed_attempt_id])
+        : [],
       usageJson: run?.usage_json ?? null,
-      note: "JOB-016 prices accepted usage at ingest; the cost row is keyed to the usage EVENT, not to the heartbeat run, so this count can be 0 while a charge exists. The D1 spine profile (DEP-016) is what asserts cost cardinality; here it is recorded, not judged.",
+      note: "JOB-016 evidence is bound to this attempt's accepted usage event through source_idempotency_key and the authoritative_cost receipt.",
     },
     failureClassification: {
       runStatus: run?.status ?? null,
@@ -819,6 +864,10 @@ async function dispatch(state) {
     const t = state.tenants[key];
     const { issue, run } = await dispatchTenant(state, key);
     const signals = tenantSignals(state, key, run);
+    if (t.role === "enabled") {
+      const evidence = evaluateShippedBootEvidence(signals);
+      if (!evidence.pass) fail(`tenant ${key}: required audit/cost evidence failed: ${evidence.reasons.join("; ")}`);
+    }
     let verifierExit = null;
     let usageViolations = null;
     let verdict = null;
