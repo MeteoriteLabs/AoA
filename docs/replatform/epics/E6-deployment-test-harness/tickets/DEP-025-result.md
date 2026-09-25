@@ -85,8 +85,8 @@ assumes the family is handled.
 
 | Mutation | Result |
 |---|---|
-| Remove the per-stream loop entirely | `22 tests / 19 pass / 3 fail` — the two new per-stream controls **and** the stale-marker test's new suppressed half |
-| Collapse `summary.suppressedUnfired` back to the AND (**the twin alone**) | `22 tests / 20 pass / 2 fail` |
+| Remove the per-stream loop entirely | `27 tests / 24 pass / 3 fail` — the two new per-stream controls **and** the stale-marker test's new suppressed half |
+| Collapse `summary.suppressedUnfired` back to the AND (**the twin alone**) | `27 tests / 25 pass / 2 fail` |
 
 Both reverted; the file is byte-identical to the committed version afterwards (`git diff --stat` empty
 against the index).
@@ -131,7 +131,7 @@ mutation-proven control at all. In the judge it has one.
 
 | Mutation | Result |
 |---|---|
-| Remove both `requireArmSucceeded` calls | `22 tests / 20 pass / 2 fail` — the per-arm × per-status control, and the named `failed`-after-`attempt_started` shape |
+| Remove both `requireArmSucceeded` calls | `27 tests / 25 pass / 2 fail` — the per-arm × per-status control, and the named `failed`-after-`attempt_started` shape |
 
 Reverted. Again the pre-fix RED was `<no violations>`.
 
@@ -319,7 +319,7 @@ None of these is "flaky", and each names a different fact.
 | The judge refuses a suppressed marker on EITHER stream individually | **Demonstrated** (local, mutation-proven; `<no violations>` before) |
 | `summary.suppressedUnfired` / `positiveControlPassed` no longer pass on that shape | **Demonstrated** (local, its own mutation) |
 | The judge refuses either arm whose attempt did not reach `succeeded`, incl. an absent status | **Demonstrated** (local, mutation-proven, 4 statuses × 2 arms) |
-| The owning `pr.yml` step's eight suites still pass with the stricter judge | **Demonstrated** — `261 tests / 261 pass / 0 fail`, run locally |
+| The owning `pr.yml` step's eight suites still pass with the stricter judge | **Demonstrated** — `266 tests / 266 pass / 0 fail`, run locally |
 | The full guard set + `check-evidence-immutability --base origin/docs/replatform-program` are green | **Demonstrated** — `failures: 0` |
 | The register deltas are exactly mine, two-sided against the merge ref | **Demonstrated** — §7 |
 | The D1 twin's new assertion HOLDS on a live stack (the D1 attempt does reach `succeeded`) | **Demonstrated** by the free `d1-merge-train` run in §8 |
@@ -335,6 +335,18 @@ uses `ref: ${{ inputs.candidate }}`, and the candidate must be an ancestor of
 `redaction` phase does not run in `keyless` at all, so even a correct checkout could not exercise the
 code this ticket changes. Reading such a run as verification is `E6-F031`, and a run that cannot
 distinguish my change from its absence is not a hypothesis test (`E.3.2`).
+
+★ **EVERY mutation row above was RE-MEASURED against the FINAL tree** rather than left at the count it
+showed when it was first run (`A7`: count pins recomputed from the combined tree). The suite is `27`
+controls throughout the table, and one figure MOVED in the re-measurement — undoing the row degradation
+now reds **4** tests rather than 3, because the shared-token control added later also depends on it.
+A sixth row was added for that control:
+
+| Mutation | Red (final tree) |
+|---|---|
+| Re-spell the attempt-failure token in the row builder instead of calling the shared helper | `27 tests / 23 pass / 4 fail` |
+
+All six reverted; `git diff --stat` on the module is empty against the index afterwards.
 
 ---
 
@@ -512,8 +524,8 @@ same declaration the matrix reads. The attempt status was the one gap.
 
 | Mutation | Red |
 |---|---|
-| Undo the row's `injectionFired` / classification degradation | `26 tests / 23 pass / 3 fail` |
-| Undo the `positiveControlPassed` suppressed-status conjunct | `26 tests / 24 pass / 2 fail` |
+| Undo the row's `injectionFired` / classification degradation | `27 tests / 23 pass / 4 fail` |
+| Undo the `positiveControlPassed` suppressed-status conjunct | `27 tests / 25 pass / 2 fail` |
 
 Both reverted. Pre-fix RED was `actual: true, expected: false` on all four new controls — the row
 really was pass-shaped.
