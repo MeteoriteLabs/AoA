@@ -64,6 +64,9 @@ function completeProfile(profile) {
           scrubberMarkerControl: true,
           streams: [...REQUIRED_REDACTION_STREAMS],
           producer: "server/src/services/x.ts synthesiseRunSecrets",
+          // DEP-026 — the case must say WHERE its withheld-plant control lives, because the row
+          // field the grader can see (`positiveControlPassed`) only exists for an IN-RUN arm.
+          suppressedArm: { scope: "in_run" },
         },
       });
       continue;
@@ -302,6 +305,8 @@ function completeBundle(profile) {
             redactedOnAllStreams: true,
             scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
             streamBytesObserved: Object.fromEntries(c.redactionCase.streams.map((k) => [k, 1024])),
+            // DEP-026 — the withheld-plant arm's own row fact, for a case declaring an IN-RUN arm.
+            ...(c.redactionCase.suppressedArm?.scope === "in_run" ? { positiveControlPassed: true } : {}),
           }
           : {}),
       })),
@@ -539,4 +544,129 @@ test("DEP-018: the committed tests/d1/fault-matrix.json satisfies every declarat
   assert.ok(spine, "the committed matrix must declare M1-D1-SPINE");
   const required = spine.cases.filter((c) => c.evidence === "required");
   assert.ok(required.length >= 20, `M1-D1-SPINE must declare a real case list, saw ${required.length} required cases`);
+});
+
+// ── DEP-026: the SUPPRESSED (withheld-plant) arm is graded, per redaction case ───────────────
+//
+// DEP-025 §11 handed this up, verified at source: the `family === "redaction"` branch never read
+// `positiveControlPassed`, so when a probe's withheld-plant arm failed — a non-`succeeded` attempt,
+// or its own nonce-tagged marker on a stream — the probe cleared that field and NOTHING graded it.
+// Every field the branch did read stayed pass-shaped, so a standalone verdict over the RETAINED row
+// reported no violations while the run itself reded. That is `E6-F023` in artifact form: the bundle
+// disagreeing with its own run.
+//
+// ★ The grade is DECLARATION-DRIVEN, and that is the whole point. A withheld-plant control can live
+// in the run (a second arm, whose outcome the row can carry) or in a SEPARATE CAMPAIGN (a whole
+// re-run with the injection suppressed, whose outcome the row structurally cannot carry). So the
+// case DECLARES which, and:
+//   - `in_run`  → `positiveControlPassed === true` is REQUIRED on the row;
+//   - `none`    → the exemption, which must NAME its blocking finding and give a reason;
+//   - anything else, or absent → REFUSED. Fail-closed on a missing declaration is what stops this
+//     from being "the guard simply not looking", which is the defect the whole exercise unwinds.
+
+test("DEP-026 evidence: a redaction case declaring an IN-RUN suppressed arm reds without a passing control", () => {
+  for (const value of [false, null, undefined]) {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+    if (value === undefined) delete row.positiveControlPassed;
+    else row.positiveControlPassed = value;
+    const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+    assert.ok(
+      has(violations, "evidence:redaction_positive_control_missing"),
+      `${JSON.stringify(value)} must red: ${codes(violations)}`,
+    );
+  }
+});
+
+test("DEP-026 evidence: a redaction case that declares NO suppressed arm is REFUSED, not skipped", () => {
+  const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+  const decl = matrix.profiles
+    .find((p) => p.profile === GATE_PROFILES[0]).cases
+    .find((c) => c.case.includes("redaction.canary"));
+  delete decl.redactionCase.suppressedArm;
+  const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+  assert.ok(has(violations, "evidence:redaction_suppressed_arm_undeclared"), codes(violations).join(","));
+});
+
+test("DEP-026 evidence: an unknown suppressed-arm scope is REFUSED rather than read as exempt", () => {
+  for (const scope of ["campaign", "", null, 1]) {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    matrix.profiles
+      .find((p) => p.profile === GATE_PROFILES[0]).cases
+      .find((c) => c.case.includes("redaction.canary")).redactionCase.suppressedArm = { scope };
+    const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+    assert.ok(
+      has(violations, "evidence:redaction_suppressed_arm_undeclared"),
+      `scope ${JSON.stringify(scope)} must red: ${codes(violations)}`,
+    );
+  }
+});
+
+test("DEP-026 evidence: a JUSTIFIED `none` exemption passes without the row field; an UNJUSTIFIED one reds", () => {
+  const withArm = (suppressedArm, mutateRow = (r) => { delete r.positiveControlPassed; }) => {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    matrix.profiles
+      .find((p) => p.profile === GATE_PROFILES[0]).cases
+      .find((c) => c.case.includes("redaction.canary")).redactionCase.suppressedArm = suppressedArm;
+    mutateRow(bundle.cases.find((r) => r.case.includes("redaction.canary")));
+    return evaluateFaultMatrixEvidence(matrix, bundle).violations;
+  };
+  const justified = { scope: "none", blockedBy: ["E6-F033"], reason: "the logs stream carries no per-run token" };
+  assert.deepEqual(withArm(justified), [], "a justified exemption must not red, and must not need the row field");
+  // ★ And it is NARROW: every way of writing a bare exemption reds.
+  for (const arm of [
+    { scope: "none" },
+    { scope: "none", reason: "because" },
+    { scope: "none", blockedBy: ["E6-F033"] },
+    { scope: "none", blockedBy: [], reason: "because" },
+    { scope: "none", blockedBy: ["E6-F033"], reason: "  " },
+    { scope: "none", blockedBy: "E6-F033", reason: "not an array" },
+    { scope: "none", blockedBy: [""], reason: "an empty id" },
+  ]) {
+    const violations = withArm(arm);
+    assert.ok(
+      has(violations, "evidence:redaction_suppressed_arm_exemption_unjustified"),
+      `${JSON.stringify(arm)} must red: ${codes(violations)}`,
+    );
+  }
+});
+
+test("DEP-026 declaration: a REQUIRED redaction case must declare its suppressed arm, well-formed", () => {
+  const decl = (fn) => evaluateFaultMatrixDeclaration(mutate((m, at) => {
+    fn(at.caseIn(GATE_PROFILES[0], "redaction.canary").redactionCase);
+  }));
+  assert.ok(has(decl((r) => { delete r.suppressedArm; }), "declaration:redaction_suppressed_arm_missing"));
+  assert.ok(has(decl((r) => { r.suppressedArm = { scope: "campaign" }; }), "declaration:redaction_suppressed_arm_unknown_scope"));
+  assert.ok(has(decl((r) => { r.suppressedArm = "in_run"; }), "declaration:redaction_suppressed_arm_unknown_scope"));
+  assert.ok(has(decl((r) => { r.suppressedArm = { scope: "none" }; }), "declaration:redaction_suppressed_arm_exemption_unjustified"));
+  assert.ok(has(decl((r) => { r.suppressedArm = { scope: "none", blockedBy: ["E6-F033"], reason: "" }; }), "declaration:redaction_suppressed_arm_exemption_unjustified"));
+  // The two legal shapes are silent.
+  assert.deepEqual(decl((r) => { r.suppressedArm = { scope: "in_run" }; }), []);
+  assert.deepEqual(decl((r) => { r.suppressedArm = { scope: "none", blockedBy: ["E6-F033"], reason: "measured structural blocker" }; }), []);
+});
+
+test("DEP-026 declaration: a PENDING redaction case need not declare it yet, but a malformed one still reds", () => {
+  // The grader never reaches a `pending` case (the evidence loop `continue`s on it), and a case whose
+  // driver is unbuilt cannot honestly answer the question — `d2c.redaction.planted_canary_scrubbed`
+  // has no producer anywhere in the repo. So PRESENCE is required at the moment the field becomes
+  // load-bearing, which is the flip to `required`, and that makes the flip mechanical rather than
+  // prose. Well-formedness is required either way, so a pending case cannot park a broken shape.
+  const pendingNoArm = evaluateFaultMatrixDeclaration(mutate((m, at) => {
+    const c = at.caseIn(GATE_PROFILES[0], "redaction.canary");
+    c.evidence = "pending";
+    c.pendingKind = "keyed";
+    c.pendingReason = "the driver is unbuilt";
+    c.pendingOwner = "planning session";
+    delete c.redactionCase.suppressedArm;
+  }));
+  assert.ok(!has(pendingNoArm, "declaration:redaction_suppressed_arm_missing"), codes(pendingNoArm).join(","));
+  const pendingBadArm = evaluateFaultMatrixDeclaration(mutate((m, at) => {
+    const c = at.caseIn(GATE_PROFILES[0], "redaction.canary");
+    c.evidence = "pending";
+    c.pendingKind = "keyed";
+    c.pendingReason = "the driver is unbuilt";
+    c.pendingOwner = "planning session";
+    c.redactionCase.suppressedArm = { scope: "vibes" };
+  }));
+  assert.ok(has(pendingBadArm, "declaration:redaction_suppressed_arm_unknown_scope"), codes(pendingBadArm).join(","));
 });

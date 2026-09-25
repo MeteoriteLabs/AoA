@@ -2559,3 +2559,70 @@ provider echoing a per-run variable the harness names, so the line carries a val
 `markedProbeLine` requiring it, and the mutation that proves the arm reds when a line carrying
 another run's token is the only candidate. Resolve = flip this `Status` **and** delete the
 `scripts/finding-ownership.json` key in the same commit.
+---
+
+## E6-F034 — the D1 redaction case has NO case-scoped withheld-plant control, and its `events` half is buildable and unbuilt
+
+**Status:** open · **Owner:** `unowned` · **Severity:** MEDIUM
+
+Class: HARNESS. Found 2026-09-25 by `DEP-026` while deciding, at source, whether
+`d1.redaction.planted_canary_scrubbed` **can** report the withheld-plant arm the grader's redaction
+branch now requires. The answer split per stream, and the honest half of the split is a real gap
+rather than a structural blocker — so it is filed rather than absorbed into the exemption.
+
+**THE CLASS:** *a control that exists at a COARSER SCOPE than the claim it is supposed to support, so
+nothing mechanically ties the control's redness to the case that needs it.*
+
+**WHAT WAS MEASURED, link by link** (`E.3.1` — the chain, not the link that happened to be open):
+
+- **The case reports no withheld-plant arm at all.** `record("d1.redaction.planted_canary_scrubbed",
+  …)` (`tests/d1/m1-fault-matrix.test.mjs`) passes no `positiveControlPassed` key, and `record` sets
+  that field only `if (positiveControlPassed !== undefined)`.
+- **It structurally cannot, as written**, because this lane's suppression is a whole separate
+  campaign: `SUPPRESS_INJECTION` is `process.env.AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION === "1"`, read
+  ONCE at module load, so a single invocation is entirely graded or entirely suppressed.
+- **The campaign-scoped substitute is NOT case-scoped.** `.github/workflows/d1-merge-train.yml`'s
+  `POSITIVE CONTROL — with every injection suppressed` step asserts the suppressed run reds and then
+  `grep -F 'injection_did_not_fire'` over its output. **Any** of the profile's cases satisfies that
+  grep. So nothing anywhere ties *this* case's marker observation to *this* case's plant.
+- ★ **But an IN-RUN arm's `events` half IS available, and that is why this is a gap.** A second seeded
+  job with `workloadArgs: []` in the same invocation would be read by
+  `queryJobEventPayloadText({ jobId })` (`tests/d1/lib/e6f-harness.mjs`), whose SQL is
+  `WHERE job_id = $jobId` — strictly per-job, so that arm sees only its own stream and a marker on it
+  would be a genuine violation.
+- **Its `logs` half is NOT available**, and that half is `E6-F033`: `composeServiceLogs("worker-b")`
+  shells `docker compose logs --no-color --tail 5000 worker-b`, the whole service log with no job
+  scoping, and the probe log line carries no per-run token — `createUsageObserver`
+  (`packages/worker-daemon/src/supervisor/usage-observer.ts`) emits
+  `logger.info({ probeLine: line }, RUN_OUTPUT_PROBE_LOG_MESSAGE)` with no `jobId`, `attemptId` or
+  `runId`, and the line's own text is `AOA-RUN-OUTPUT-PROBE ANTHROPIC_API_KEY=<marker>`, identical
+  across runs.
+
+★ **Why it is filed rather than half-built.** `redactionCase.streams` names TWO streams and
+`positiveControlPassed` is ONE boolean, so reporting an events-only arm through it would flatten a
+per-stream requirement into a scalar in the PERMISSIVE direction — which is precisely `DEP-025`
+finding (a), the defect this surface spent three review rounds unwinding. Building the sound half
+while the field cannot express that it is only half would trade one silent hole for another.
+
+★ **Why MEDIUM rather than HIGH.** It cannot produce a false *denial*, and today it cannot produce a
+false pass either: the campaign-scoped control does red this lane, and the case's graded assertions
+(`markerOnEvents`, `markerOnLogs`, both streams clean, non-empty, and the attempt `succeeded`) all
+stand. What is missing is the *attribution* of that redness to this case — a property of the harness's
+structure, not an observed defect.
+
+★ **Ownership: `unowned`.** `DEP-023` authored the case, `DEP-024` and `DEP-025` the shipped-boot
+sibling, and all three stand at `gate_review` rather than `complete`, so none is a shipped ticket that
+could be named a successor (`E4-F013`). No groomed ticket covers it.
+
+**WHERE IT IS DECLARED RATHER THAN SILENT.** `DEP-026` made the grader's redaction branch require a
+declared `redactionCase.suppressedArm` and REFUSE an absent one, so this case now carries
+`{"scope": "none", "blockedBy": ["E6-F033", "E6-F034"], …}` in `tests/d1/fault-matrix.json`. The
+exemption is checked (`classifyRedactionSuppressedArm` reds it without a non-empty `blockedBy` and
+`reason`), so this finding cannot be forgotten by editing prose.
+
+**WHAT WOULD CLOSE IT:** `E6-F033` first — an attribution token intrinsic to the D1 probe line, which
+makes the `logs` half soundly readable. Then a second in-run withheld-plant job, its per-stream
+absence reported so the row's `positiveControlPassed` means the same thing it means on the shipped-boot
+lane, `suppressedArm` flipped to `{"scope": "in_run"}`, and the mutation proving the arm reds when a
+marker bearing the withheld job's own scope appears on either stream. Resolve = flip this `Status`
+**and** delete the `scripts/finding-ownership.json` key in the same commit.
