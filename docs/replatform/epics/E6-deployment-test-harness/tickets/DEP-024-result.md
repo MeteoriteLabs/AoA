@@ -154,6 +154,27 @@ so a line written OUTSIDE a live lease is still unprotected. The probe line is w
 The brief's condition — *the class must not be reachable through what you wire* — holds. The finding's
 wider exposure is untouched by this ticket and is not claimed closed.
 
+### 2.5 One inherited behaviour that now points at the journey's own target
+
+`seedSpineWorkerDrivenJob` opens with a **seed-hygiene UPDATE** that releases `active` leases of the
+seeded target's workers. On D1 that target is a purpose-built test target; on this lane it is
+**tenant A's own ratified target**, the one the journey's real worker enrolled on. That is a new
+exposure, named here rather than left for a reader to find.
+
+It is nonetheless safe, on three conjuncts read at source:
+
+- it is scoped to `l.worker_id IN (SELECT id FROM workers WHERE execution_target_id = $target)`, so
+  it cannot reach another tenant's worker;
+- it fires **only** where `a.status IN ('succeeded','failed','cancelled')` — a lease on a RUNNING
+  attempt is left exactly as it is, which is the function's own stated invariant;
+- the `redaction` phase runs **after** `dispatch`, so tenant A's journey run is already terminal by
+  the time it executes. The phase ordering is what makes the second conjunct vacuously satisfied
+  rather than merely respected.
+
+Removing the hygiene is not an option: the deployed worker has ONE batch slot and this phase seeds
+TWO jobs in sequence, so without it the second arm would never be offered and would red on a timeout
+rather than on its assertion — the failure the hygiene exists for.
+
 ### 2.4 Belt and braces in the driver
 
 The observer decides `injectionFired` from the scrubber's **own** marker on a line that also carries
@@ -266,6 +287,58 @@ remedied in the same commit that reports it.
 
 ---
 
+## 5.1 Codex round 1 — two findings, both real, both verified at source before acceptance
+
+**P1 — `reject candidates that predate the redaction phase`.** Right, and the same class DEP-020's
+preflight already guards. Verified at source: the new `redaction` step is MODE-gated, not
+CANDIDATE-gated, and `actions/checkout` uses `ref: ${{ inputs.candidate }}` — so a candidate older
+than this ticket reaches that step with a driver that has no such phase and dies on `unknown phase`
+**after** the images are built, the stack is booted and the keyed journey has already spent. Fixed:
+four pre-spend greps in the candidate preflight, in DEP-020's own style — the phase name, **both**
+modules it dispatches into (a candidate may carry the phase and not the modules), and the overlay's
+`AOA_WORKER_RUN_OUTPUT_PROBE`, because a candidate that predates the DEPLOYMENT half would run the
+phase and observe no marker on either stream. All four greps were checked against this tree (each
+matches), so the preflight is not one that can never pass.
+
+**P2 — `register the planted canary with the lane leak scanner`.** Right, and it is the more serious
+of the two. Verified at source: `collect` and `leak-scan` run in **separate processes** that read
+`state.secrets` / `state.redact` off the state file; `collect` copies the worker container logs into
+the evidence bundle under `if: always()`; `leak-scan` searches for NAMED secrets plus key material
+BY SHAPE, and `d2mcanary…` matches neither. So on **the one run that matters most** — the run where
+the redaction mechanism under test FAILED and the raw canary reached the worker log — the bundle
+would have been uploaded carrying the exact value the case was testing. The module's process-local
+`minted` chokepoint covers its own refusal text and nothing else.
+
+Fixed: the driver now takes a **required** `registerSecret` ledger (the journey's `trackSecret` +
+`saveState`) and registers each canary **before the seed writes it as a Company secret** and long
+before any sandbox can echo it — so it lands in `state.redact` (every retained log scrubbed), in
+`state.secrets` (the pre-upload scan searches both surfaces in raw, base64 and base64url form) and
+behind an `::add-mask::` directive. Absent ledger ⇒ the phase refuses, rather than proceeding with a
+canary known only to one process.
+
+### 5.2 The P2 class, swept in both directions
+
+**THE CLASS:** *a value this lane mints that is never registered with the journey's secret ledger,
+yet has a path to a RETAINED surface.*
+**THE DUAL:** *a value the journey registers that a module then puts somewhere the ledger does not
+reach* — searched; the ledger's two consumers are `redactSecrets` (every retained log) and
+`leak-scan` (both surfaces), and nothing in this diff writes outside them.
+
+**Enumeration:** `grep -rn "const minted = new Set\|function mint(" scripts/m1-shipped-boot/` → **2
+sites**, `cross-tenant.mjs` and `redaction.mjs`. Neither registered with the journey's ledger.
+**2 checked, 1 reachable, 1 fixed.**
+
+`cross-tenant.mjs` is **not** reachable, and this was measured rather than assumed: its minted values
+are resolved over HTTP by the harness, its `record(…)` details carry only `responseFacts`
+(status/outcome/code/reason), counts and ids — never a body — and its only path to a retained surface
+is its own `fail()` text, which its local chokepoint already scrubs. Nothing there routes a minted
+value into a container log, which is precisely what makes `redaction.mjs` the reachable member: it
+**deliberately** echoes its value into a sandbox whose output crosses into the worker log. Left
+unchanged, with the reason stated rather than silent: threading the ledger through that phase would
+change the signature of the driver whose two invocations are the lane's own positive control, for a
+path that does not exist. If the control plane ever begins logging a resolved value, that site joins
+this one.
+
 ## 6. Register deltas (two-sided, against the MERGE REF)
 
 Taken against the fetched `origin/docs/replatform-program`, as key-set diffs, printing both
@@ -319,6 +392,7 @@ keys; nothing earlier was rewritten.
 | The D1 twin still passes with the parameterised seeder | **Demonstrated** — see §8 |
 | The shipped worker's logger is wrapped in `createRedactingDestination`, so `E4-F019` is not reachable | **Argued from source**, whole chain, 4 links each read |
 | A canary cannot reach either stream unscrubbed | **Argued from source** (fail-closed capture ×2, envelope-level event scrub, transport-level log scrub) |
+| The candidate preflight greps match a current tree (so the gate can pass) | **Demonstrated** (each grep run against this tree) |
 | The probe line actually appears on both streams of a REAL E2B run | **NOT demonstrated.** This is the keyed run owed (§9) |
 | `sh` exists on the `aoa-canary-e2b` template | **Argued** — `ENV_PROBE_SH_WRAPPER` runs `sh` in that same sandbox on this same lane today |
 

@@ -87,6 +87,12 @@ class RedactionProbeError extends Error {
  * same value. Every field this module puts on a row is a boolean, a count or an id; no stream text
  * and no canary reaches `detail`, and `scripts/lib/__tests__/m1a-redaction-probe.test.mjs` asserts
  * that shape rather than trusting it.
+ *
+ * ★ AND THE CHOKEPOINT IS NOT SUFFICIENT ON ITS OWN, which Codex found and this module now says out
+ * loud: it is PROCESS-LOCAL, while `collect` and `leak-scan` are separate processes reading the
+ * journey's state file. Every canary is therefore ALSO registered with the journey's own ledger
+ * before the seed (see `arm`). The two are complements, not alternatives: `minted` covers this
+ * module's refusal text, the ledger covers every retained surface.
  */
 const minted = new Set();
 
@@ -125,6 +131,9 @@ const TERMINAL_TIMEOUT_MS = 600_000;
  * @param {object} opts.tenants     `state.tenants` — `{ a, b, c }`
  * @param {(sqlText: string, params: unknown[]) => any[]} opts.ownerSql
  * @param {string} opts.policyHash  the lane's own placement policy hash (ONE source, passed in)
+ * @param {(name: string, value: string) => void} opts.registerSecret  the JOURNEY's own secret
+ *   ledger (`trackSecret` + `saveState`). REQUIRED, and called BEFORE each arm is seeded — see the
+ *   note on `arm` below.
  * @param {string} [opts.workerService] the compose service whose container log is the `logs` stream
  * @param {(line: string) => void} [opts.log]
  * @returns {Promise<{rows: object[], detail: object}>}
@@ -133,6 +142,7 @@ export async function runRedactionProbeCases({
   tenants,
   ownerSql,
   policyHash,
+  registerSecret,
   workerService = "m1-worker-a",
   log = console.log,
 }) {
@@ -148,6 +158,11 @@ export async function runRedactionProbeCases({
   }
   if (A.organizationId === B.organizationId) fail("tenants a and b share an Organization — there is no cross-tenant arm to make");
   if (!/^[0-9a-f]{64}$/.test(String(policyHash))) fail(`the lane must pass its own 64-hex placement policy hash; got ${JSON.stringify(policyHash)}`);
+  // ★ FAIL CLOSED ON A MISSING LEDGER. Without it the canary would be known only to this process,
+  // and the whole point of registering it is the run where the mechanism under test FAILED.
+  if (typeof registerSecret !== "function") {
+    fail("the redaction phase requires the journey's `registerSecret` ledger: a canary known only to this process would survive `collect` and `leak-scan` on exactly the run where redaction failed");
+  }
 
   // ── the executing tenant's ratified target, read rather than assumed ───────
   const [target] = ownerSql(
@@ -192,6 +207,23 @@ export async function runRedactionProbeCases({
   const arm = ({ label, plant }) => {
     const nonce = randomBytes(6).toString("hex");
     const canary = mint(`d2mcanary${randomBytes(20).toString("hex")}`);
+    // ★★★ REGISTERED WITH THE JOURNEY BEFORE IT CAN EXIST ANYWHERE ELSE (Codex P2, PR #607, and the
+    // finding was right — verified at source).
+    //
+    // THE CLASS: *a value this lane mints that is never registered with the journey's secret ledger,
+    // yet has a path to a RETAINED surface.* The local `minted` set above covers this module's own
+    // refusal messages and nothing else. `collect` and `leak-scan` run in SEPARATE PROCESSES that
+    // read `state.secrets` / `state.redact` off the state file; `collect` copies the worker container
+    // logs into the evidence bundle under `if: always()`, and `leak-scan` searches for NAMED secrets
+    // plus key material BY SHAPE — and `d2mcanary…` matches neither. So on the one run that matters
+    // most, the run where the redaction mechanism under test FAILED and the raw canary reached the
+    // worker log, the bundle would have been uploaded carrying the exact value the case was testing.
+    //
+    // Registering it here, BEFORE the seed writes it as a Company secret and long before any sandbox
+    // can echo it, puts it into `state.redact` (so every retained log is scrubbed), into
+    // `state.secrets` (so the pre-upload scan searches for it on BOTH surfaces, in raw, base64 and
+    // base64url form) and behind an `::add-mask::` directive in the Actions log.
+    registerSecret(`REDACTION_CANARY_${label.toUpperCase()}_${nonce}`, canary);
     const ids = {
       issueId: randomUUID(),
       runId: randomUUID(),

@@ -172,6 +172,21 @@ jobs:
           # spent E2B and model tokens. Rejecting it here costs nothing and saves the run.
           grep -q "\"fault-matrix\": (args)" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates DEP-020: its driver has no fault-matrix phase, so the step below would fail after the keyed journey had already spent (missing the \"fault-matrix\" phase in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
           grep -q "REQUIRED_CREDENTIAL_REFUSAL_KINDS" scripts/lib/campaign-fault-matrix.mjs || { echo "::error::the candidate predates DEP-020: its fault-matrix verdicts do not carry the E5 clause-4 floor (missing REQUIRED_CREDENTIAL_REFUSAL_KINDS in scripts/lib/campaign-fault-matrix.mjs)"; exit 1; }
+          # ★ DEP-024 (Codex P1, PR #607), and the finding was right — verified at source: the
+          # `redaction` step below is MODE-gated, not CANDIDATE-gated, exactly like DEP-020's
+          # fault-matrix step, and `actions/checkout` replaces the workspace with the candidate. A
+          # candidate that predates DEP-024 would therefore reach that step with a driver that has no
+          # `redaction` phase and no modules behind it, and would die on `unknown phase` or a missing
+          # import — but only AFTER the images are built, the stack is booted and the KEYED journey
+          # has already spent E2B and model tokens. All three files are checked, not just the phase
+          # name: the phase dispatches into two modules the candidate may not carry either.
+          grep -q "  redaction: (args)" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates DEP-024: its driver has no redaction phase, so the step below would fail after the keyed journey had already spent (missing the redaction phase in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "runRedactionProbeCases" scripts/m1-shipped-boot/redaction.mjs || { echo "::error::the candidate predates DEP-024: it has no clause-5 redaction driver, and the phase would die on a missing import after the keyed journey had already spent (missing runRedactionProbeCases in scripts/m1-shipped-boot/redaction.mjs)"; exit 1; }
+          grep -q "evaluateRedactionProbeEvidence" scripts/lib/m1a-redaction-probe.mjs || { echo "::error::the candidate predates DEP-024: it has no clause-5 judge, so the phase could not refuse its own observations (missing evaluateRedactionProbeEvidence in scripts/lib/m1a-redaction-probe.mjs)"; exit 1; }
+          # The DEPLOYMENT half of DEP-024: a candidate whose overlay does not arm the probe would run
+          # the phase and find no scrubber marker on either stream, which is the expensive way to
+          # learn a missing line of configuration.
+          grep -q "AOA_WORKER_RUN_OUTPUT_PROBE" docker/m1-boot/docker-compose.m1-boot.yml || { echo "::error::the candidate predates DEP-024: its shipped-boot workers do not forward the run-output probe, so the clause-5 case would observe no scrubber marker on either stream after the keyed journey had already spent (missing AOA_WORKER_RUN_OUTPUT_PROBE in docker/m1-boot/docker-compose.m1-boot.yml)"; exit 1; }
           grep -q "is TRUNCATED" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not check that every capture that opened also closed, so a truncated log is judged clean (missing 'is TRUNCATED' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
           grep -q "insidePemBlock = !PEM_END.test(payload)" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor returns early on a mask directive, so a PEM masked by its armour publishes its BODY (missing 'insidePemBlock = !PEM_END.test(payload)' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
           grep -q "directiveJoined" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor does not run a mask directive PAYLOAD through the joined window, so a wrapped key masked by its first fragment publishes the rest (missing 'directiveJoined' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }

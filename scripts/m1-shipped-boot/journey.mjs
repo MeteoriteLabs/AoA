@@ -1237,6 +1237,14 @@ async function redaction(state) {
       tenants: state.tenants,
       ownerSql: (sqlText, params) => ownerSql(state, sqlText, params),
       policyHash: shippedBootPolicyHash(state.candidate),
+      // The journey's OWN secret ledger, handed to the driver so every canary it mints is masked in
+      // the Actions log, redacted from every retained log, and SEARCHED FOR by `leak-scan` before
+      // anything is uploaded. `saveState` on each registration because `collect` and `leak-scan` are
+      // separate processes that read the state file (Codex P2, PR #607).
+      registerSecret: (name, value) => {
+        trackSecret(state, name, value);
+        saveState(state);
+      },
       workerService: TENANTS.find((t) => t.key === "a").worker,
       log: (line) => console.log(redactSecrets(String(line), state.redact)),
     });
