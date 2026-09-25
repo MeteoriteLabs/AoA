@@ -410,7 +410,79 @@ without supplying `positiveControlPassed`, and the stricter grader adds no red.
   declared is not the one the live row needs, and the declaration would be corrected rather than the
   guard loosened.
 
-*(Result recorded in §8.1 when the run concludes.)*
+### 8.1 The run — HYPOTHESIS CONFIRMED
+
+**Run `36134477276`, `d1-merge-train` / `m1-fault-matrix`, head `7fc569c8b4`. Run conclusion `success`.**
+Cited by job and step with executed counts, not by run id alone. The checkout is asserted from the log
+itself rather than assumed: `git checkout … -B claude/m1-redaction-positive-control` at
+`7fc569c8b4c114433cb13ec21b5c87dfaa824ada`, so **this branch's code ran**.
+
+| Step | Executed | Result |
+|---|---|---|
+| Static preflight (the declaration, its reds, the compose invariants) | `tests 38 / pass 38 / fail 0` | **success** |
+| **Run the M1-D1-SPINE fault matrix (live)** | `tests 25 / pass 25 / fail 0` | **success** |
+| The matrix's own verdict over the retained bundle | — | **success** |
+| POSITIVE CONTROL — with every injection suppressed, the matrix MUST go red | — | **success** (i.e. it went red, as required) |
+
+★ **The step that matters is the third**, not the second: *"The matrix's own verdict over the retained
+bundle"* is the standalone `evaluateFaultMatrixEvidence` pass over the recorded rows, and it is where a
+wrong exemption would have surfaced. It is green, so `d1.redaction.planted_canary_scrubbed` passes the
+stricter grader **without supplying `positiveControlPassed`** — which is precisely what the declared
+exemption is for, judged by the production verdict rather than by my reading of it.
+
+★ **And the static preflight runs THIS SUITE** (`node --test scripts/check-campaign-fault-matrix.test.mjs`,
+read from the workflow rather than assumed), so the `38` above is this ticket's own control count at that
+head — the D1 lane re-checks the declaration half independently of `pr.yml`.
+
+### 8.2 A SECOND free run, on the FINAL head, so the round-1 fix is demonstrated and not argued
+
+Run `36134477276` was dispatched on `7fc569c8b4`, which **predates** the blocker cross-reference (§12).
+That fix touches two things the D1 lane executes — the static preflight's suite, and the driver's own
+module-load declaration block, which now calls `evaluateRedactionExemptionBlockers` with the real
+loader — so the earlier run cannot speak for it, and saying otherwise would be `E6-F031` in miniature.
+
+**Run `36138531579`, same lane, head `e5cbb0c8cf`.**
+
+**HYPOTHESIS:** the committed exemption's two blockers are open registered findings at this head, so the
+new production cross-reference is silent, the static preflight's suite reports `41` controls rather than
+`38`, and every verdict is unchanged from §8.1.
+
+- **If right:** the preflight green at `41/41/0`, the live matrix still `25/25/0`, the retained-bundle
+  verdict green, and the suppressed control still red.
+- **If wrong:** the preflight or the driver reds on `declaration:redaction_exemption_blocker_not_open` /
+  `…_undeclared` / `…_unverifiable`. On the committed tree that would mean `E6-F033` or `E6-F034` is not
+  actually an open register key where the lane reads it — a real record defect, not a broken test, and it
+  would be fixed in the register rather than by loosening the check.
+
+#### 8.2.1 The second run — HYPOTHESIS CONFIRMED, including the count prediction
+
+**Run `36138531579`, `d1-merge-train` / `m1-fault-matrix`, head
+`e5cbb0c8cf3b611ce63d8967f8387b4a8c807bb6` (asserted from the job log, not from the dispatch). Run
+conclusion `success`, and **all sixteen steps `success`** — not merely the run's conclusion, which on this
+programme's advisory lanes is not the same thing (`E6-F023`).**
+
+| Step | Executed | Result |
+|---|---|---|
+| Static preflight (the declaration, its reds, the compose invariants) | `tests 41 / pass 41 / fail 0` | **success** |
+| Run the M1-D1-SPINE fault matrix (live) | `tests 25 / pass 25 / fail 0` | **success** |
+| The matrix's own verdict over the retained bundle | — | **success** |
+| POSITIVE CONTROL — with every injection suppressed, the matrix MUST go red | — | **success** (it went red, as required) |
+| Collect / upload the retained evidence, tear down | — | **success** |
+
+★ **The count prediction is the part that makes this a test rather than a re-run.** §8.2 predicted the
+preflight would report `41` rather than §8.1's `38`, because that step runs
+`node --test scripts/check-campaign-fault-matrix.test.mjs` and this head carries nine new controls. It
+reports `41`. So the lane demonstrably executed **this** head's suite, and a stale-checkout reading of the
+result (`E6-F031`) is excluded by the evidence rather than by my assurance.
+
+★ **And the failing prediction did not fire:** `grep -c redaction_exemption_blocker` over the whole job log
+is **`0`**. No `…_not_open`, no `…_undeclared`, no `…_unverifiable` — so `E6-F033` and `E6-F034` are open
+register keys where the lane reads them, the new production cross-reference is silent on the committed
+tree, and the guard CLI (`node scripts/check-campaign-fault-matrix.mjs`, also in that preflight step) exits
+0 with it wired in.
+
+**So §12's fix is DEMONSTRATED on the live lane, not argued.** Both halves of it: the suite at `41`, and
+the guard CLI that `m1-shipped-boot.yml`'s keyed artifact-verdict step will run.
 
 ---
 
@@ -437,7 +509,8 @@ without supplying `positiveControlPassed`, and the stricter grader adds no red.
 | The owning `pr.yml` step's suites pass with the stricter judge | **Demonstrated** — `41/41/0`, and `194/194/0` with the two neighbouring pure suites |
 | The full guard set + `check-evidence-immutability --base origin/docs/replatform-program` are green | **Demonstrated** — `failures: 0`, `75 base records` all byte-identical |
 | The register deltas are exactly mine, two-sided against the merge ref | **Demonstrated** — §6 |
-| The live D1 lane is unaffected by the exemption | **See §8** — dispatched; `d1-merge-train` runs this branch's code |
+| The live D1 lane accepts the declared exemption, judged by the PRODUCTION verdict | **Demonstrated on a live stack** — free `d1-merge-train` run `36134477276` on head `7fc569c8b4`: static preflight `38/38/0`, live matrix `25/25/0`, *"The matrix's own verdict over the retained bundle"* **green**, suppressed control still red. Checkout asserted from the log (§8.1) |
+| The same holds WITH the round-1 blocker cross-reference | **Demonstrated on a live stack** — free run `36138531579` on the FINAL head `e5cbb0c8cf`, ALL SIXTEEN STEPS `success`: preflight `41/41/0` (the predicted move from `38`, which is what proves the lane ran THIS head's suite rather than a stale checkout), live matrix `25/25/0`, retained-bundle verdict green, suppressed control red, and `grep -c redaction_exemption_blocker` over the job log = `0` (§8.2.1) |
 | The probe line reaches both declared streams on a REAL E2B run | **NOT demonstrated**, and not claimed. This is the owed keyed run (§7.1) — unchanged since `DEP-024` |
 | **After the flip, `d2m`'s retained artifact alone is gradeable on BOTH arms** | **Argued** — demonstrated for the judge (the grader now requires the field, mutation-proven) and for the producer (`redactionProbeMatrixRow` sets it, mutation-proven by `DEP-025`); the composition of the two on a live keyed row is the owed run |
 
