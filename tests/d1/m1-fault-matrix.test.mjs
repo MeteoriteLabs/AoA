@@ -181,7 +181,7 @@ const bundle = {
 
 /** Record ONE declared case's evidence row. `observedClassification` is what the campaign
  * compares with the declaration; `detail` is kept beside the bundle for the reader. */
-function record(caseId, { injectionFired, observedClassification, positiveControlPassed, antiVacuityObservedForeignRow, redactedOnAllStreams, scrubberMarkerObservedOnStream, streamBytesObserved, detail }) {
+function record(caseId, { injectionFired, observedClassification, positiveControlPassed, antiVacuityObservedForeignRow, redactedOnAllStreams, scrubberMarkerObservedOnStream, streamBytesObserved, attemptStatus, detail }) {
   const row = { case: caseId, injectionFired: injectionFired === true, observedClassification: observedClassification ?? null };
   if (positiveControlPassed !== undefined) row.positiveControlPassed = positiveControlPassed === true;
   if (antiVacuityObservedForeignRow !== undefined) row.antiVacuityObservedForeignRow = antiVacuityObservedForeignRow === true;
@@ -196,6 +196,14 @@ function record(caseId, { injectionFired, observedClassification, positiveContro
   if (redactedOnAllStreams !== undefined) row.redactedOnAllStreams = redactedOnAllStreams === true;
   if (scrubberMarkerObservedOnStream !== undefined) row.scrubberMarkerObservedOnStream = scrubberMarkerObservedOnStream;
   if (streamBytesObserved !== undefined) row.streamBytesObserved = streamBytesObserved;
+  // ★★★ DEP-025 / Codex round 2 on PR #608 — THREADED HERE OR IT WOULD BE DROPPED, which is the very
+  // class the comment above records. `after()` writes this bundle whether or not a test threw, and
+  // `evaluateFaultMatrixEvidence` grades `bundle.cases` and never `bundle.detail`. So a case that
+  // asserts an attempt status AFTER calling `record` leaves a pass-shaped row in the retained
+  // evidence, and the artifact can be graded as a pass independently of the test that rejected the
+  // setup. Putting the status in `detail` only — which is what the first draft did — does not reach
+  // the grader. It is a ROW field now, and the case that files it also degrades its own pass fields.
+  if (attemptStatus !== undefined) row.attemptStatus = attemptStatus ?? null;
   bundle.cases.push(row);
   if (detail !== undefined) bundle.detail[caseId] = detail;
   return row;
@@ -1289,16 +1297,34 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
   // the planted value reached a scrubber and was replaced — i.e. the plant happened. A clean
   // stream cannot decide it (that is the vacuity this case exists to exclude), and the harness
   // asserting its own intent would not be an observation at all.
-  const injectionFired = markerOnEvents && markerOnLogs;
-  const observedClassification = injectionFired && redactedOnAllStreams
-    ? "canary_scrubbed_while_unseeded_twin_leaks"
-    : injectionFired
-      ? "canary_leaked_on_a_stream"
-      : "no_scrubber_marker_observed";
+  // ★★★ DEP-025 / Codex round 2 on PR #608 — THE ROW MUST FAIL WITH ITS ATTEMPT, not only the test.
+  //
+  // THE CLASS (the same one Codex found on the shipped-boot half of this ticket in round 1): *a fact
+  // asserted AFTER the row was written, which the row does not carry, in a bundle a different consumer
+  // grades later.* `after()` writes `m1-fault-matrix-evidence.json` whether or not a test threw, and
+  // `evaluateFaultMatrixEvidence` reads `bundle.cases` and never `bundle.detail`. So a run whose
+  // provider output was observed on both streams but whose attempt later ended `failed` would have left
+  // a fully pass-shaped row behind the assertion that rejected it — the retained evidence passing
+  // independently of the test.
+  //
+  // ★ And I owed this sweep myself: I fixed the identical shape in `redactionProbeMatrixRow` one round
+  // earlier and did not look at its twin here. `E` rule 3 — a known twin left behind is worse than the
+  // original. The naming matches the shipped-boot lane's token exactly so the two cannot drift.
+  const attemptSucceeded = observation.attemptStatus === "succeeded";
+  const injectionFired = markerOnEvents && markerOnLogs && attemptSucceeded;
+  const observedClassification = !attemptSucceeded
+    ? `graded_arm_attempt_${String(observation.attemptStatus ?? null)}`
+    : injectionFired && redactedOnAllStreams
+      ? "canary_scrubbed_while_unseeded_twin_leaks"
+      : injectionFired
+        ? "canary_leaked_on_a_stream"
+        : "no_scrubber_marker_observed";
 
   record("d1.redaction.planted_canary_scrubbed", {
     injectionFired,
     observedClassification,
+    // Carried as a ROW field, because `detail` does not reach the grader (see `record`).
+    attemptStatus: observation.attemptStatus ?? null,
     redactedOnAllStreams,
     scrubberMarkerObservedOnStream: { events: markerOnEvents, logs: markerOnLogs },
     streamBytesObserved: { events: events.bytes ?? 0, logs: logs.bytes ?? 0 },

@@ -463,8 +463,59 @@ missing arm has no attempt status **and never read a stream**, so naming the sca
 something that did not happen. The old expectation is recorded in a comment beside the new one rather
 than silently replaced.
 
-### 9.4 The round cap
+---
 
-One Codex round taken so far, against this programme's cap of two. If a second round raises anything,
-it will be fixed; a third goes to the planning session with my verification and a proposed fix rather
-than a third attempt.
+## 10. Codex round 2 — ONE finding, real, and it is THE SWEEP I OWED AND DID NOT DO
+
+**P2 — `make the retained D1 row fail with its attempt`
+(`tests/d1/m1-fault-matrix.test.mjs`).** **Real**, verified at source before acceptance.
+
+It is the **same class as round 1**, on the twin I had just edited. I fixed
+`redactionProbeMatrixRow` one round earlier and **did not look at the D1 row I had added an assertion
+to in the same PR.** `E` rule 3 exists for exactly this: *a known twin left behind is worse than the
+original, because the next reader sees a fixed neighbour and assumes the family is handled.* Round 1
+should have swept it; it did not, and a reviewer found it instead. Recorded as a miss, not as a
+discovery.
+
+**Verified at source, every link:**
+
+1. `after(() => { … writeFileSync(… "m1-fault-matrix-evidence.json" …) })` writes the bundle
+   **whether or not a test threw**.
+2. `record()` is called **before** my new assertion, and `evaluateFaultMatrixEvidence` grades
+   `bundle.cases` and **never** `bundle.detail` — where the status sat.
+3. So a run whose output was observed on both streams but whose attempt later ended `failed` left a
+   **fully pass-shaped row** behind the assertion that rejected it, and the retained artifact could be
+   graded as a pass independently of the test.
+
+★ **And the naive fix would have been INERT, which reading `record` is what caught.** That helper
+copies a **fixed set of fields** and silently drops anything else — a hazard its own comment records
+(Codex P1 on PR #593). Passing `attemptStatus` to `record` without threading it would have dropped it
+on the way into the bundle, leaving the grader exactly as blind while the diff looked like a fix. So
+`attemptStatus` is threaded through `record` as a **row** field, and the case degrades its own
+`injectionFired` and `observedClassification` using the same token the shipped-boot lane emits
+(`graded_arm_attempt_<status>`), so the two lanes cannot drift apart.
+
+`redactedOnAllStreams` is left **raw** here for the same reason as §9: forcing it false would make the
+bundle assert a leak the run does not support.
+
+### 10.1 The class, swept
+
+**THE CLASS:** *a fact asserted AFTER the row was written, which the row does not carry, in a bundle a
+different consumer grades later.*
+**THE DUAL:** *a fact carried on the row that nothing asserts* — which is finding (b) itself, the other
+end of the same stick. Both ends are now closed on both lanes.
+
+**Enumeration:** this PR added exactly **2** attempt-status assertions (the shipped-boot judge and the
+D1 case). **2 in the class, 2 fixed.** Asked of the pre-existing D1 cases as well, by reading rather
+than by memory: `d1.provider.worker_terminal_mapping` asserts `controlMapped`/`mappedByWorker`, both of
+which its row carries (`positiveControlPassed`, and its `observedClassification` encodes both statuses);
+the timeout/control pair's asserted statuses are encoded in its own classification. **No pre-existing
+case asserts a fact its row lacks.**
+
+### 10.2 The round cap is now reached
+
+**Two Codex fix rounds taken, which is this programme's hard cap** (`C`). Both findings were real, both
+verified at source before acceptance, both fixed at source, and both were in the class this ticket was
+written to close — which is itself worth reporting rather than smoothing over. A review is requested on
+the final head because the gate requires one, but **I will not take a third fix round**: anything raised
+now goes to the planning session with my verification at source and a proposed fix, for it to rule on.
