@@ -1097,6 +1097,13 @@ test("override: ★ dropping the DEP-017 probe reds (acceptance item 6 cannot be
   assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:probe_not_armed"));
 });
 
+// ★ DEP-024's class sweep found this one MISSING while its two neighbours above existed. A flag
+// armed on a lane whose drop nobody checks is the same defect as a check that evaluates nothing.
+test("override: ★ dropping the DEP-023 run-output probe reds (the E5 clause-5 streams cannot be dropped quietly)", () => {
+  const broken = overrideText().replace('AOA_WORKER_RUN_OUTPUT_PROBE: "1"', 'AOA_WORKER_RUN_OUTPUT_PROBE: "0"');
+  assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:run_output_probe_not_armed"));
+});
+
 test("override: dropping the event outbox reds", () => {
   const broken = overrideText().replace(/^\s*AOA_WORKER_EVENT_OUTBOX_PATH:.*$/m, "");
   assert.ok(codes(evaluateSpineOverrideText(broken)).includes("override:no_event_outbox"));

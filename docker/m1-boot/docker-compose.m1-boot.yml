@@ -64,6 +64,19 @@
 # summary back from `job_events` per enabled tenant. `evaluateShippedBootOverlayInvariants`
 # reds an overlay worker that drops the flag, so the probe cannot be silently removed.
 #
+# ★ DEP-024 — THE RUN-OUTPUT REDACTION PROBE. Every shipped-boot worker also sets
+# AOA_WORKER_RUN_OUTPUT_PROBE=1, which forwards AT MOST ONE tagged, truncated line of the
+# ALREADY-SCRUBBED run output to the two streams the E5 clause-5 redaction case is observed on: a
+# `log` event on the attempt, and one worker log line. Nothing unscrubbed can ride it — the input is
+# `createRunOutputCapture.close()`'s fail-closed return (any surviving needle drops the WHOLE tail),
+# the event half is scrubbed over the complete envelope in `EventSequencer.#emit`, and the log half
+# is scrubbed at the pino DESTINATION, below the `msg`/`time`/`level` the sink adds (which is what
+# keeps the `E4-F019` collision class out of this surface). See
+# packages/worker-daemon/src/supervisor/run-output-probe.ts. The `redaction` phase plants a canary AS
+# THE REDEEMED VALUE of its own seeded job — never a real provider key — and asserts the canary is
+# ABSENT while the scrubber's own marker is PRESENT on both streams.
+# `evaluateShippedBootOverlayInvariants` reds an overlay worker that drops the flag.
+#
 # ★ yaml-lite subset: no anchors, no block scalars, no sequences of mappings — the
 # always-on static check parses this file with scripts/lib/yaml-lite.mjs.
 # =============================================================================
@@ -257,6 +270,7 @@ services:
       AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
       AOA_WORKER_DISPATCH_ENABLED: "1"
       AOA_WORKER_ENV_PROBE: "1"
+      AOA_WORKER_RUN_OUTPUT_PROBE: "1"
       AOA_WORKER_KEY_STORE_MODE: "file_record"
       AOA_WORKER_STATE_DIR: "/worker"
       AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
@@ -299,6 +313,7 @@ services:
       AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
       AOA_WORKER_DISPATCH_ENABLED: "1"
       AOA_WORKER_ENV_PROBE: "1"
+      AOA_WORKER_RUN_OUTPUT_PROBE: "1"
       AOA_WORKER_KEY_STORE_MODE: "file_record"
       AOA_WORKER_STATE_DIR: "/worker"
       AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"
@@ -341,6 +356,7 @@ services:
       AOA_WORKER_PROVIDER_URL: "http://adapter-manager:8090"
       AOA_WORKER_DISPATCH_ENABLED: "1"
       AOA_WORKER_ENV_PROBE: "1"
+      AOA_WORKER_RUN_OUTPUT_PROBE: "1"
       AOA_WORKER_KEY_STORE_MODE: "file_record"
       AOA_WORKER_STATE_DIR: "/worker"
       AOA_WORKER_EVENT_OUTBOX_PATH: "/worker/event-outbox.db"

@@ -255,6 +255,21 @@ export function evaluateSpineOverrideText(text) {
         'worker-b must set AOA_WORKER_ENV_PROBE: "1" — DEP-016 acceptance item 6 is closed by asserting the probe RAN',
       ));
     }
+    // ★ THE TWIN DEP-023 LEFT STANDING, found by DEP-024's class sweep and fixed in the same PR.
+    //
+    // THE CLASS: *a flag-gated diagnostic surface whose DROP is not a free pre-boot red, although a
+    // `required` case depends on it.* `AOA_WORKER_DISPATCH_ENABLED` and `AOA_WORKER_ENV_PROBE` above
+    // are both held; `AOA_WORKER_RUN_OUTPUT_PROBE` — which DEP-023 armed on this very override, one
+    // line below them — was not. Drop it and `d1.redaction.planted_canary_scrubbed`, which is
+    // declared `required`, reds MID-CAMPAIGN as `no_scrubber_marker_observed`: a failure whose text
+    // names redaction while the cause is one missing line of configuration. That is the worst way to
+    // learn it, and it is the same argument the two clauses above already make.
+    if (!hasLine(workerBlock, /^\s*AOA_WORKER_RUN_OUTPUT_PROBE:\s*"1"\s*$/)) {
+      out.push(violation(
+        "override:run_output_probe_not_armed",
+        'worker-b must set AOA_WORKER_RUN_OUTPUT_PROBE: "1" — it produces BOTH streams the `required` E5 clause-5 case (d1.redaction.planted_canary_scrubbed) is observed on; without it that case reds mid-campaign as `no_scrubber_marker_observed`',
+      ));
+    }
     if (!hasLine(workerBlock, /^\s*AOA_WORKER_EVENT_OUTBOX_PATH:\s*"/)) {
       out.push(violation(
         "override:no_event_outbox",

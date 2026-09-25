@@ -26,9 +26,30 @@ export const JOURNEY_OWNED_CASES = Object.freeze([
 ]);
 
 /**
+ * DEP-024 - the cases a DEDICATED KEYED-ONLY PHASE decides, which the cross-tenant driver must not
+ * be held responsible for either.
+ *
+ * `d2m.redaction.planted_canary_scrubbed` cannot live in the cross-tenant phase: that phase runs in
+ * BOTH modes and `runCrossTenantCases`' own verdict refuses any row whose `injectionFired !== true`,
+ * while this case needs a REAL sandbox, which `keyless` never starts (no adapter-manager). Folding it
+ * in would make the free keyless rehearsal permanently red for a reason that says nothing about
+ * redaction. It therefore carries BOTH of its arms inside its own phase
+ * (`scripts/m1-shipped-boot/redaction.mjs` + `scripts/lib/m1a-redaction-probe.mjs`), which is a
+ * STRONGER arrangement than the one this file guards: the graded and withheld arms are produced by
+ * one phase, against one stack, in one run, so a stale suppressed bundle cannot stand in for a fresh
+ * one - and `evaluateRedactionProbeEvidence` refuses unless BOTH hold.
+ *
+ * Named rather than counted, for the same reason as the journey-owned three.
+ */
+export const PHASE_OWNED_CASES = Object.freeze([
+  "d2m.redaction.planted_canary_scrubbed",
+]);
+
+/**
  * Every case the cross-tenant driver is responsible for: the profile's `required` set minus the
- * journey-owned three. Derived from the DECLARATION, never from a hand-kept list, so flipping a
- * case to `required` automatically puts it under both checks.
+ * journey-owned three and the phase-owned one. Derived from the DECLARATION, never from a hand-kept
+ * list, so flipping a case to `required` automatically puts it under both checks - unless it is
+ * named above as owned elsewhere, and each of those names carries WHY.
  *
  * @param {object} matrix the parsed `tests/d1/fault-matrix.json`
  * @returns {string[]}
@@ -39,7 +60,9 @@ export function driverOwnedRequiredCases(matrix) {
     throw new Error(`the fault matrix declares no ${D2M_PROFILE} profile`);
   }
   return profile.cases
-    .filter((c) => c && c.evidence === "required" && !JOURNEY_OWNED_CASES.includes(c.case))
+    .filter((c) => c && c.evidence === "required"
+      && !JOURNEY_OWNED_CASES.includes(c.case)
+      && !PHASE_OWNED_CASES.includes(c.case))
     .map((c) => c.case);
 }
 

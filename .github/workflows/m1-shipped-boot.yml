@@ -382,6 +382,33 @@ jobs:
       # KEYED ONLY: in keyless mode only the control tenant is dispatched, so the two enabled
       # journeys have no observation at all and the phase fails closed rather than filing fewer
       # rows in one mode than the other.
+      # DEP-024 - THE E5 CLAUSE-5 (REDACTION) PHASE. KEYED ONLY, and it carries BOTH of its arms.
+      #
+      # It seeds two worker-driven jobs for tenant A on its own ratified target. The FIRST withholds
+      # the plant; the SECOND plants a high-entropy canary AS THE REDEEMED VALUE of its own secret
+      # handle and echoes it from the tenant command behind the run-output probe tag. The canary must
+      # be ABSENT from both declared streams and from the OTHER tenant's whole event stream, while the
+      # scrubber's OWN replacement marker must be PRESENT on a line that also carries this run's tag
+      # on both - and the withheld-plant arm must produce NO marker. Neither arm passes alone: a clean
+      # stream with no marker may be a run that emitted the value nowhere, and a marker with the
+      # canary still present is a partial scrub.
+      #
+      # ★ THE PLANTED VALUE IS NEVER A REAL PROVIDER KEY. It is a token this phase mints seconds
+      # earlier and writes as the job's own Company secret, with no authority anywhere. Echoing a live
+      # key into a third-party sandbox's stdout would put it into E2B's own service logs, which no
+      # scrubber of ours reaches; the design does not rely on redaction for that, it never plants it.
+      #
+      # ★ NO SEPARATE SUPPRESSED STEP, deliberately. The two arms are one phase, one stack, one run,
+      # so a stale control bundle cannot stand in for a fresh one - which the cross-tenant phase's
+      # two-invocation arrangement cannot rule out. The phase refuses unless BOTH hold, and it retains
+      # `redaction-observations.json` on either outcome.
+      #
+      # BEFORE `fault-matrix`, which folds the row - but ONLY while the declaration says `required`:
+      # the matrix verdict refuses a bundle that reports evidence for a `pending` case.
+      - name: Drive the M1a-D2-MECHANISM clause-5 redaction case, both arms (keyed only)
+        if: inputs.mode == 'keyed'
+        run: node scripts/m1-shipped-boot/journey.mjs redaction --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
       - name: Run the M1a-D2-MECHANISM fault matrix over the journey's observations (keyed only)
         if: inputs.mode == 'keyed'
         run: node scripts/m1-shipped-boot/journey.mjs fault-matrix --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"

@@ -497,6 +497,16 @@
       "status": "runs",
       "workflow": "pr.yml",
       "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
+    },
+    "scripts/lib/__tests__/dep-024-worker-driven-seed.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
+    },
+    "scripts/lib/__tests__/m1a-redaction-probe.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"
     }
   }
 }
