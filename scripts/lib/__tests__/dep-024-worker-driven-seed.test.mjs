@@ -116,9 +116,10 @@ test("★ RENDER + PARSE: the script the seeder builds is valid ESM, on BOTH lan
       targetId: "abababab-abab-4bab-8bab-abababababab",
       policyHash: "c".repeat(64),
       command: "sh",
-      // The real shipped-boot redaction plant: a tagged printf whose text carries quotes, a
-      // `$VAR` expansion and an escaped newline — exactly the shapes that broke a sibling template.
-      workloadArgs: ["-c", "printf 'AOA-RUN-OUTPUT-PROBE canary=%s\\n' \"$ANTHROPIC_API_KEY\""],
+      // The real shipped-boot redaction plant, byte for byte: a tagged printf whose text carries
+      // quotes, a `$VAR` expansion, an escaped newline AND the per-arm attribution nonce — exactly
+      // the shapes that broke a sibling template, plus the one Codex round 2 added.
+      workloadArgs: ["-c", "printf 'AOA-RUN-OUTPUT-PROBE arm=graded0123456789abcdef canary=%s\\n' \"$ANTHROPIC_API_KEY\""],
       secretValue: "d2r-canary-0123456789abcdef",
       secretName: "provider:d2r-canary",
     }],

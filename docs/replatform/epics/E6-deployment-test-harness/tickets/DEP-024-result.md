@@ -202,10 +202,11 @@ So it gets its own keyed-only phase carrying **both** arms: a withheld-plant job
 planted job. That is **stronger** than the cross-tenant phase's arrangement, where graded and
 suppressed are two separate invocations and a stale control bundle cannot be told from a fresh one.
 
-Order is load-bearing twice: the container log is shared by every run on the stack, so a marked line
-found during the graded arm can only have come from the graded job — and the suppressed arm's log
-check would not be attributable at all, which is why it grades the **per-job event stream only**. That
-limit is in the code, in the record, and in a test, rather than glossed.
+★ **An earlier draft of this section said the ORDER was what made the graded arm's log evidence
+attributable, and that the suppressed arm therefore graded the per-job event stream only. Codex round
+2 found that wrong and it was right** — see §5.3. Attribution is now intrinsic to the line, both arms
+grade both streams, and the order is kept only because it is the natural reading, not because
+anything rests on it.
 
 ### 3.1 On the brief's "must appear in the suppressed-injection reds"
 
@@ -339,6 +340,65 @@ change the signature of the driver whose two invocations are the lane's own posi
 path that does not exist. If the control plane ever begins logging a resolved value, that site joins
 this one.
 
+### 5.3 Codex round 2 — one finding, real, and it was a FALSE PASS on a gate clause
+
+**P2 — `bind the log marker to the graded arm`.** Right, and it is the most serious finding on this
+PR, because the failure direction is a false **pass**.
+
+What the first draft did: `markedProbeLine` required only the probe tag and the scrubber's marker on
+one line, and `composeServiceLogs` returns the **whole** `m1-worker-a` container log — every run the
+stack has done. The draft's defence was the ORDER of the arms: the suppressed arm runs first and
+plants nothing, so a marked line seen during the graded arm "can only have come from the graded job".
+
+That is a **positional** argument, and nothing enforced it. A repeated phase invocation, or any other
+probe-producing job on that worker, leaves a historical tagged+marked line; the graded log arm passes
+on it while this job's line never reached the sink; the unique canary is still absent from every
+stream, so `redactedOnAllStreams` passes too — and the run reports that both streams scrubbed a job
+whose probe line never arrived. ★ **And the suppressed arm could not have caught it, precisely because
+the draft had it ignore `markerOnLogs`.** The one control that should have seen the defect was blinded
+by the same asymmetry that created it. I had noticed the stale-line question while writing the driver
+and reasoned it away with "the stack is created fresh per workflow run" — which is true today and is
+not a property anything checks. That is the `E.3` failure exactly: an inference where a guarantee was
+needed.
+
+**The fix is not the one the finding suggested, and the difference matters.** Codex proposed capturing
+a pre-arm log boundary. That would work, but it is still positional — it makes the attribution depend
+on when the snapshot was taken. Instead the attribution is made **intrinsic to the line**: each arm
+mints a per-arm nonce (`arm=<8 random bytes of hex>`) which the workload carries in the probe line's
+**plaintext**, beside the value that gets scrubbed. A line counts only when it carries the tag, the
+scrubber's marker AND that arm's nonce, so a stale line from any earlier run is excluded by
+construction.
+
+Three things follow, and the third is the reason this is better than a boundary:
+
+1. the nonce is **not** a secret and is deliberately **not** registered with the ledger — masking it
+   would remove the very token the attribution depends on. Said in the code, next to the call;
+2. the `gradesLogArm` asymmetry is **gone**: both arms now grade both streams;
+3. so the **suppressed arm can now catch the stale-marker case** — the case it was structurally blind
+   to. The control that missed this defect is now the control that would find it.
+
+**Evidence.** A new test, `★ THE STALE-MARKER CASE the old asymmetry was blind to`, drives exactly the
+shape above (a log marker with no event marker) and asserts it reds on **both** arms; the asymmetry
+test it replaces is named in a comment rather than deleted silently. **Mutation:** collapsing
+`injectionFired` back to a single stream turned that test plus two neighbours red (15 pass / 3 fail),
+and reverting restored 18/18. The render-and-parse control now carries the real nonce-bearing `printf`
+byte for byte, so the added `arm=` token is covered by the template check too.
+
+**The class.** *A predicate over a SHARED, APPEND-ONLY surface that is scoped by when it was read
+rather than by something in the data.* Its dual: *a predicate scoped by data on a surface where the
+data cannot be unique.* The only other read of a shared surface in this diff is the graded arm's
+cross-tenant check, which scans the OTHER tenant's whole event stream for the **canary** — a value
+unique to one arm by construction, so it is already in the fixed form rather than the broken one.
+**2 shared-surface reads checked, 1 positional, 1 fixed.**
+
+### 5.4 The Codex round cap
+
+Two rounds taken, which is this programme's hard cap. Round 1 raised two findings, round 2 raised one,
+and all three were real, verified at source before acceptance, and fixed at source. A review is
+requested on the final head because the gate requires one, but **I will not take a third fix round**:
+anything raised now goes to the planning session with my verification and a proposed fix, for it to
+rule on.
+
 ## 6. Register deltas (two-sided, against the MERGE REF)
 
 Taken against the fetched `origin/docs/replatform-program`, as key-set diffs, printing both
@@ -393,6 +453,7 @@ keys; nothing earlier was rewritten.
 | The shipped worker's logger is wrapped in `createRedactingDestination`, so `E4-F019` is not reachable | **Argued from source**, whole chain, 4 links each read |
 | A canary cannot reach either stream unscrubbed | **Argued from source** (fail-closed capture ×2, envelope-level event scrub, transport-level log scrub) |
 | The candidate preflight greps match a current tree (so the gate can pass) | **Demonstrated** (each grep run against this tree) |
+| A stale tagged+marked line on the shared worker log cannot satisfy either arm | **Demonstrated** (local, mutation-proven; the control that reds is the one the old asymmetry blinded) |
 | The probe line actually appears on both streams of a REAL E2B run | **NOT demonstrated.** This is the keyed run owed (§9) |
 | `sh` exists on the `aoa-canary-e2b` template | **Argued** — `ENV_PROBE_SH_WRAPPER` runs `sh` in that same sandbox on this same lane today |
 

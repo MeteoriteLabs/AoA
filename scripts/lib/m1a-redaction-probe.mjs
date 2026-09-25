@@ -64,7 +64,6 @@ export const REDACTION_PROBE_EVIDENCE_MARKER = "[redaction-probe:evidence]";
  * @param {number}  o.eventBytes      bytes observed on the event stream
  * @param {number}  o.logBytes        bytes observed on the container log
  * @param {number}  o.foreignBytes    bytes observed on the other tenant's stream
- * @param {boolean} o.gradesLogArm    false for the SUPPRESSED arm (see below)
  */
 export function classifyRedactionObservation(o) {
   const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -74,14 +73,25 @@ export function classifyRedactionObservation(o) {
   if (num(o.foreignBytes) <= 0) vacuity.push("the OTHER tenant's event stream is empty, so its cross-tenant clean arm is vacuous");
 
   const redactedOnAllStreams = o.ownEventsClean === true && o.logsClean === true && o.crossTenantClean === true;
-  // ★ THE SUPPRESSED ARM GRADES THE EVENT STREAM ONLY, and this is a real limit rather than a
-  // convenience. `composeServiceLogs` returns the WHOLE container log — every run the stack has
-  // done — so "no marked probe line in the log" is not attributable to ONE job. The event stream IS
-  // per-job, so it is. The phase therefore runs the suppressed job FIRST, which also means that a
-  // marked line found in the log during the GRADED arm can only have come from the graded job.
-  const injectionFired = o.gradesLogArm === false
-    ? o.markerOnEvents === true
-    : o.markerOnEvents === true && o.markerOnLogs === true;
+  // ★★★ BOTH ARMS GRADE BOTH STREAMS, because attribution is INTRINSIC to the line (Codex round 2 on
+  // PR #607, and the finding was right).
+  //
+  // An earlier draft graded the suppressed arm on the EVENT stream only, reasoning that
+  // `composeServiceLogs` returns the WHOLE container log — every run the stack has done — so "no
+  // marked probe line in the log" is not attributable to one job, while the per-job event stream is.
+  // It then leaned on ORDER (suppressed first) to make the graded arm's log line attributable. That
+  // is a POSITIONAL argument, and nothing enforced it: a repeated phase invocation, or any other
+  // probe-producing job on that worker, leaves a historical tagged+marked line, and the graded log
+  // arm would have passed on it while this job's line never arrived — a FALSE PASS on a gate clause,
+  // which the suppressed arm could not have caught precisely because it ignored the log arm.
+  //
+  // The fix is not a pre-arm log boundary but a per-arm NONCE carried in the probe line's own
+  // plaintext (`arm=<nonce>`, chosen by the driver, never a secret and therefore never scrubbed). A
+  // line counts only when it carries the tag, the scrubber's marker AND this arm's nonce, so a stale
+  // line from any earlier run is excluded by construction rather than by ordering — and the
+  // suppressed arm regains its log arm, which is what makes it able to catch the stale-marker case
+  // at all.
+  const injectionFired = o.markerOnEvents === true && o.markerOnLogs === true;
 
   const observedClassification = injectionFired && redactedOnAllStreams
     ? REDACTION_PROBE_EXPECTED_CLASSIFICATION

@@ -42,10 +42,17 @@
 //
 // ── BOTH ARMS, IN ONE RUN ────────────────────────────────────────────────────
 // The SUPPRESSED arm runs FIRST and plants nothing; the GRADED arm runs second and plants the leak.
-// Order is load-bearing twice over: the container log is shared by every run on the stack, so a
-// marked line found during the graded arm can only have come from the graded job, and the suppressed
-// arm's own log check would not be attributable at all (which is why it grades the per-job EVENT
-// stream only — see `classifyRedactionObservation`).
+//
+// ★ ORDER IS NO LONGER THE ATTRIBUTION ARGUMENT. It used to be: the container log is shared by every
+// run on the stack, and this file once reasoned that a marked line seen during the graded arm could
+// only have come from the graded job, while the suppressed arm's log check was not attributable at
+// all (so it graded the per-job EVENT stream only). Nothing enforced that, and a repeated invocation
+// or any other probe-producing job on the worker would have satisfied the graded log arm on a
+// HISTORICAL line — a false pass on a gate clause, which the suppressed arm could not have caught
+// precisely because it ignored the log arm (Codex round 2, PR #607). Attribution is now INTRINSIC:
+// every probe line carries a per-arm nonce in its plaintext, and a line counts only when it carries
+// the tag, the scrubber's marker AND that nonce. So BOTH arms now grade BOTH streams, and the
+// suppressed arm can catch a stale marker — exactly the case it was blind to before.
 //
 // ── WHY NOT IN `cross-tenant.mjs` ───────────────────────────────────────────
 // That phase runs in BOTH modes and its verdict refuses any row that did not fire. This case cannot
@@ -191,10 +198,27 @@ export async function runRedactionProbeCases({
     return res.result;
   };
 
-  const markedProbeLine = (text) =>
+  /**
+   * A line of THIS ARM's probe output: it carries the probe tag, the scrubber's OWN replacement
+   * marker, AND this arm's nonce.
+   *
+   * ★★★ THE NONCE IS WHAT MAKES THE LOG ARM ATTRIBUTABLE (Codex round 2, PR #607 — verified at
+   * source before accepting it). `composeServiceLogs` returns the WHOLE `m1-worker-a` container log,
+   * every run the stack has done. Without the nonce a historical tagged+marked line — from a
+   * repeated phase invocation, or any other probe-producing job on that worker — satisfies the graded
+   * log arm while THIS job's line never arrives, and the run reports that both streams scrubbed a job
+   * whose line never reached the sink. Ordering the arms does not fix that: it is an argument about
+   * what usually happens, and nothing enforces it.
+   *
+   * The nonce is NOT a secret and is deliberately NOT registered with the ledger: masking it would
+   * remove the very token the attribution depends on. It is 8 random bytes of hex per arm, carried in
+   * the probe line's plaintext beside the scrubbed value.
+   */
+  const markedProbeLine = (text, nonce) =>
     String(text ?? "")
       .split(/\r?\n/)
-      .some((line) => line.includes(H.RUN_OUTPUT_PROBE_TAG) && line.includes(H.REDACTION_MARKER));
+      .some((line) =>
+        line.includes(H.RUN_OUTPUT_PROBE_TAG) && line.includes(H.REDACTION_MARKER) && line.includes(`arm=${nonce}`));
 
   /**
    * One arm: seed a worker-driven job for tenant A with its own canary as the redeemed value, let
@@ -235,9 +259,12 @@ export async function runRedactionProbeCases({
     // worker redeemed through `synthesiseRunSecrets`, which is what puts it into the run's canary
     // array. A literal would prove the scrubber can remove a string the harness chose, not that it
     // removes what the run redeemed.
+    // The per-arm attribution token. Plaintext, not a secret, never registered (see
+    // `markedProbeLine`): it must survive the scrub, which is the whole point of it.
+    const armNonce = `${label}${randomBytes(8).toString("hex")}`;
     const workloadArgs = plant
-      ? ["-c", `printf '${H.RUN_OUTPUT_PROBE_TAG} canary=%s\\n' "$ANTHROPIC_API_KEY"`]
-      : ["-c", "printf 'd2m-redaction: the plant is WITHHELD on this arm\\n'"];
+      ? ["-c", `printf '${H.RUN_OUTPUT_PROBE_TAG} arm=${armNonce} canary=%s\\n' "$ANTHROPIC_API_KEY"`]
+      : ["-c", `printf 'd2m-redaction arm=${armNonce}: the plant is WITHHELD on this arm\\n'`];
     const seeded = step(
       H.seedSpineWorkerDrivenJob({
         tenant: A,
@@ -263,15 +290,14 @@ export async function runRedactionProbeCases({
     if (foreign.ok !== true) fail(`${label} cross-tenant event stream read: ${truncate({ ok: foreign.ok, error: foreign.error ?? null })}`);
 
     const row = classifyRedactionObservation({
-      markerOnEvents: markedProbeLine(events.text),
-      markerOnLogs: markedProbeLine(logs.text),
+      markerOnEvents: markedProbeLine(events.text, armNonce),
+      markerOnLogs: markedProbeLine(logs.text, armNonce),
       ownEventsClean: !String(events.text ?? "").includes(canary),
       logsClean: !String(logs.text ?? "").includes(canary),
       crossTenantClean: !String(foreign.text ?? "").includes(canary),
       eventBytes: events.bytes ?? 0,
       logBytes: logs.bytes ?? 0,
       foreignBytes: foreign.bytes ?? 0,
-      gradesLogArm: plant,
     });
     log(
       `redaction: arm=${label} plant=${plant} attempt=${observation.attemptStatus ?? "none"} ` +
@@ -282,6 +308,7 @@ export async function runRedactionProbeCases({
       facts: {
         arm: label,
         planted: plant,
+        armNonce,
         jobId: ids.jobId,
         attemptStatus: observation.attemptStatus ?? null,
         eventCount: Number(events.events ?? 0),

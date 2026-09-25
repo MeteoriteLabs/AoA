@@ -31,11 +31,10 @@ const GRADED = {
   eventBytes: 4096,
   logBytes: 65_536,
   foreignBytes: 2048,
-  gradesLogArm: true,
 };
 
 /** The suppressed arm: the same run shape with nothing planted. */
-const SUPPRESSED = { ...GRADED, markerOnEvents: false, markerOnLogs: false, gradesLogArm: false };
+const SUPPRESSED = { ...GRADED, markerOnEvents: false, markerOnLogs: false };
 
 const classify = (o) => classifyRedactionObservation(o);
 const evaluate = (graded, suppressed, declaredStreams) =>
@@ -69,10 +68,28 @@ test("a marker WITH the canary still present is classified as a leak, not a pass
   assert.equal(row.observedClassification, "canary_leaked_on_a_stream");
 });
 
-test("the SUPPRESSED arm grades the event stream only, and says so by not needing the log arm", () => {
-  // The log is shared across every run on the stack, so it is not attributable to one job.
-  assert.equal(classify({ ...SUPPRESSED, markerOnLogs: true }).injectionFired, false);
-  assert.equal(classify({ ...SUPPRESSED, markerOnEvents: true }).injectionFired, true);
+// ★ REPLACES an earlier test that asserted the SUPPRESSED arm graded the EVENT stream only, because
+// the container log is shared across every run on the stack. That asymmetry is GONE: attribution is
+// now intrinsic to the line (a per-arm nonce the driver carries in the probe line's plaintext), so
+// BOTH arms grade BOTH streams and a stale marked line from any earlier run is excluded by
+// construction rather than by the order the arms happen to run in (Codex round 2, PR #607).
+test("BOTH arms grade BOTH streams — one stream's marker alone never decides `fired`", () => {
+  for (const base of [GRADED, SUPPRESSED]) {
+    assert.equal(classify({ ...base, markerOnEvents: true, markerOnLogs: false }).injectionFired, false);
+    assert.equal(classify({ ...base, markerOnEvents: false, markerOnLogs: true }).injectionFired, false);
+    assert.equal(classify({ ...base, markerOnEvents: true, markerOnLogs: true }).injectionFired, true);
+  }
+});
+
+test("★ THE STALE-MARKER CASE the old asymmetry was blind to: a log marker with no event marker", () => {
+  // A historical tagged+marked line on the shared worker log, while THIS job's line never arrived.
+  // Under the old contract the suppressed arm ignored `markerOnLogs` and could not see this at all,
+  // and the graded arm would have PASSED on it. Now it reds on both arms.
+  const stale = classify({ ...SUPPRESSED, markerOnLogs: true });
+  assert.equal(stale.injectionFired, false);
+  assert.equal(stale.observedClassification, "no_scrubber_marker_observed");
+  const { violations } = evaluate({ ...GRADED, markerOnEvents: false, markerOnLogs: true }, SUPPRESSED);
+  assert.ok(has(violations, /no scrubber marker on both declared streams/), violations.join("\n"));
 });
 
 test("an empty stream is reported as VACUITY on the row, never thrown away", () => {
@@ -97,7 +114,8 @@ test("POSITIVE CONTROL — a MISSING suppressed arm is refused", () => {
 });
 
 test("POSITIVE CONTROL — a suppressed arm that STILL FIRES is refused", () => {
-  const { violations } = evaluate(GRADED, { ...SUPPRESSED, markerOnEvents: true });
+  // Both markers, because `fired` is now the conjunction on every arm.
+  const { violations } = evaluate(GRADED, { ...SUPPRESSED, markerOnEvents: true, markerOnLogs: true });
   assert.ok(has(violations, /suppressed arm: recorded injectionFired=true/), violations.join("\n"));
 });
 
