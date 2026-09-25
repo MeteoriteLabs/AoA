@@ -27,12 +27,52 @@ import {
   redactSecrets,
   extractRolloutResolution,
   CANARY_EXECUTION_TARGET_SLUG,
+  M1_SHIPPED_BOOT_MODEL,
+  shippedBootAgentCreatePayload,
+  evaluateShippedBootEvidence,
 } from "../m1-shipped-boot.mjs";
 
 const A = "0febb760-5562-4289-a76a-f2f63139ee2d";
 const B = "1b3c5d7e-9f01-4a23-8b45-6789abcdef01";
 const C = "2c4e6a80-1a2b-4c3d-9e4f-5a6b7c8d9e0f";
 const tenants = { enabled: [A, B], control: C };
+
+test("campaign agents pin the authoritative-pricing model", () => {
+  const payload = shippedBootAgentCreatePayload("Tenant Agent");
+  assert.equal(payload.adapterType, "claude_local");
+  assert.equal(payload.adapterConfig.model, M1_SHIPPED_BOOT_MODEL);
+});
+
+test("campaign evidence fails closed without audit, cost, or applied receipts", () => {
+  const usageEventId = "10000000-0000-4000-8000-000000000001";
+  const startedEventId = "10000000-0000-4000-8000-000000000002";
+  const terminalEventId = "10000000-0000-4000-8000-000000000003";
+  const good = {
+    usageEvents: [{ eventId: usageEventId }],
+    audit: {
+      jobSubmitted: [{}],
+      attemptLifecycle: [{ id: "a1", action: "job.attempt_started" }, { id: "a2", action: "job.attempt_terminal" }],
+      attemptEvents: [{ eventId: startedEventId, eventType: "attempt_started" }, { eventId: terminalEventId, eventType: "terminal" }],
+      activityReceipts: [
+        { status: "applied", sourceIdentity: `activity:company:${startedEventId}`, targetAggregateId: "a1", aggregateKind: "activity_log" },
+        { status: "applied", sourceIdentity: `activity:company:${terminalEventId}`, targetAggregateId: "a2", aggregateKind: "activity_log" },
+      ],
+    },
+    cost: {
+      events: [{ id: "c1", costCents: 1, sourceIdempotencyKey: `usage:${usageEventId}` }],
+      receipts: [{ status: "applied", sourceIdentity: `usage:${usageEventId}`, targetAggregateId: "c1", aggregateKind: "cost_events" }],
+    },
+  };
+  assert.deepEqual(evaluateShippedBootEvidence(good), { pass: true, reasons: [] });
+  for (const broken of [
+    { ...good, audit: { ...good.audit, jobSubmitted: [] } },
+    { ...good, audit: { ...good.audit, attemptLifecycle: [] } },
+    { ...good, cost: { ...good.cost, events: [] } },
+    { ...good, cost: { ...good.cost, receipts: [{ status: "pending" }] } },
+    { ...good, cost: { ...good.cost, receipts: [{ ...good.cost.receipts[0], sourceIdentity: "usage:wrong" }] } },
+    { ...good, audit: { ...good.audit, activityReceipts: [{ ...good.audit.activityReceipts[0], targetAggregateId: "a2" }, good.audit.activityReceipts[1]] } },
+  ]) assert.equal(evaluateShippedBootEvidence(broken).pass, false);
+});
 
 // === the F10 tenant set =================================================================
 

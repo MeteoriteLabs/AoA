@@ -52,6 +52,13 @@ async function jobCount(key: string): Promise<number> {
   const [row] = await admin!<{ n: number }[]>`SELECT count(*)::int AS n FROM jobs WHERE idempotency_key = ${key}`;
   return row!.n;
 }
+async function submittedAuditCount(jobId: string): Promise<number> {
+  const [row] = await admin!<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM activity_log
+     WHERE action = 'job.submitted' AND company_id = ${COMPANY} AND entity_id = ${jobId}
+  `;
+  return row!.n;
+}
 async function issueRow(id: string) {
   const [row] = await admin!<{ status: string; assignee_agent_id: string | null; checkout_run_id: string | null; execution_run_id: string | null; started_at: Date | null }[]>`
     SELECT status, assignee_agent_id, checkout_run_id, execution_run_id, started_at FROM issues WHERE id = ${id}
@@ -160,6 +167,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(replay.replayed).toBe(true);
       expect(replay.jobId).toBe(first.jobId);
       expect(await jobCount(key)).toBe(1);
+      expect(await submittedAuditCount(first.jobId)).toBe(1);
       const afterReplay = await issueRow(issue);
       expect(afterReplay.execution_run_id).toBe(run);
       // The replay must NOT re-run checkout: started_at is stable (checkout sets it to now
