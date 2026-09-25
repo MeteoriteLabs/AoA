@@ -635,6 +635,15 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
         v("evidence:redaction_suppressed_arm_exemption_unjustified", `case ${id}: the declaration claims \`suppressedArm.scope: "none"\` without naming its blocking finding ids in \`blockedBy\` and a \`reason\` — an exemption nobody can check is indistinguishable from the guard not looking`);
       } else if (arm.scope === "in_run" && row.positiveControlPassed !== true) {
         v("evidence:redaction_positive_control_missing", `case ${id}: the withheld-plant arm did not pass (positiveControlPassed=${JSON.stringify(row.positiveControlPassed ?? null)}) — its attempt did not reach a succeeded terminal, or it carried the scrubber's marker on a stream, so the seeded arm's marker is not shown to be this case's injection at work`);
+      } else if (arm.scope === "none" && row.positiveControlPassed !== undefined) {
+        // ★ THE DUAL (`E.1b`), and the file already sets the precedent — `evidence:pending_case_reported`
+        // refuses a `pending` case that DID produce evidence, on the reasoning that inheriting the pass
+        // would be the silent drift this matrix exists to stop. The same reasoning applies here with the
+        // polarity flipped: a case claiming it CANNOT report a withheld-plant arm, whose row reports one,
+        // means the exemption is stale — the driver grew the arm and nobody deleted the exemption, so the
+        // field the grader would have required is present and DELIBERATELY UNGRADED. Rewrite the
+        // declaration (flip to `in_run`) rather than let an exemption outlive its reason.
+        v("evidence:redaction_suppressed_arm_exemption_stale", `case ${id}: the declaration claims \`suppressedArm.scope: "none"\` (blocked by ${JSON.stringify(rc?.suppressedArm?.blockedBy ?? null)}) but the bundle reports positiveControlPassed=${JSON.stringify(row.positiveControlPassed)} — the driver now HAS the arm the exemption says it cannot have, so flip the declaration to \`in_run\` rather than leave the field ungraded`);
       }
     }
     const t = isPlainObject(c.tenantCase) ? c.tenantCase : null;

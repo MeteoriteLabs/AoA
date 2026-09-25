@@ -613,6 +613,17 @@ test("DEP-026 evidence: a JUSTIFIED `none` exemption passes without the row fiel
   };
   const justified = { scope: "none", blockedBy: ["E6-F033"], reason: "the logs stream carries no per-run token" };
   assert.deepEqual(withArm(justified), [], "a justified exemption must not red, and must not need the row field");
+  // ★ THE DUAL, in the same control: an exemption that OUTLIVED its reason. The file's own
+  // `evidence:pending_case_reported` refuses a pending case that DID produce evidence; this is that
+  // shape with the polarity flipped -- a case claiming it cannot report the arm, whose row reports one.
+  assert.ok(
+    has(withArm(justified, (r) => { r.positiveControlPassed = true; }), "evidence:redaction_suppressed_arm_exemption_stale"),
+    "an exemption whose row DOES carry the field must red -- the arm exists and is deliberately ungraded",
+  );
+  assert.ok(
+    has(withArm(justified, (r) => { r.positiveControlPassed = false; }), "evidence:redaction_suppressed_arm_exemption_stale"),
+    "and it reds on a FAILING reported arm too: the field's presence is the drift, not its value",
+  );
   // ★ And it is NARROW: every way of writing a bare exemption reds.
   for (const arm of [
     { scope: "none" },

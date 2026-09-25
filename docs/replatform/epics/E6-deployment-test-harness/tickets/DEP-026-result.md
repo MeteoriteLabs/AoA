@@ -154,11 +154,14 @@ only the committed change).
 | **M4** remove the DECLARATION half's presence requirement (the second source, `E.2.1`) | `38 / 37 / 1` |
 | **M5** accept the row field as TRUTHY rather than strictly `true` | `38 / 37 / 1` |
 | **M6** (§4.5) name a PHANTOM blocker id in the committed declaration's exemption — `blockedBy: ["E6-F033", "E6-F901"]` | `39 / 38 / 1`, with the exact message `d1.redaction.planted_canary_scrubbed: suppressedArm.blockedBy names E6-F901, which no epic's findings.md declares` |
+| **M7** (§4.7) remove the STALE-EXEMPTION refusal (the dual) | `39 / 38 / 1` |
 
-All five reverted, plus M6, which mutated `tests/d1/fault-matrix.json` itself and was restored
-byte-identically (asserted in the script, not eyeballed). The M1–M5 counts are the ones measured against
-the six-control tree; M6 was added afterwards and is measured against the seven-control tree, which is
-why its total is `39`. Stated rather than silently re-normalised. **M5 is the fail-closed row**: it is what makes `undefined`/`null` a refusal rather
+All seven reverted. M6 mutated `tests/d1/fault-matrix.json` itself and was restored byte-identically
+(asserted in the script, not eyeballed). The M1–M5 counts were measured against the six-control
+tree; M6 and M7 were added afterwards by self-audit (§4.5, §4.7) and are measured against the
+seven-control tree, which is why their totals are `39`. Stated rather than silently re-normalised.
+
+**M5 is the fail-closed row**: it is what makes `undefined`/`null` a refusal rather
 than a pass, and the control that catches it iterates `[false, null, undefined]` rather than asserting
 one value.
 
@@ -171,6 +174,10 @@ no consumer of that row grades — so the artifact alone passes while the run re
 
 **THE DUAL (`E.1b`), searched and reported:** *a row field the grader GRADES that no producer SETS* —
 which fails the other way, making a case permanently red or its grade vacuous.
+
+★ **A SECOND dual, found by turning the sentence on my own new branch** (`E.1a`+`E.1b` together): *a
+case declaring it CANNOT report the arm whose row reports one* — an exemption that outlived its reason.
+My first pass missed it. Fixed in §4.7.
 
 ### 4.1 Enumeration, quoted not remembered
 
@@ -252,6 +259,27 @@ its register key (`E.2` rule 5), and an exemption may legitimately name a blocke
 closed — so the register would red on a *correct* declaration. The prose heading survives closure; the
 register key does not. Checking the wrong source here would have been a check that fails wrongly, which is
 the dual of the one it replaces.
+
+### 4.7 ★ THE DUAL of my own fix — an exemption that OUTLIVED its reason
+
+`E.1b` says a class has a dual and your grep will miss it. Mine did, on the first pass: I wrote a check
+that can **fail wrongly is impossible** and did not ask what can **pass wrongly** on the other side of
+the same branch.
+
+**THE DUAL:** *a case declaring `scope: "none"` whose ROW nonetheless reports `positiveControlPassed`.*
+That means the driver GREW the arm and nobody deleted the exemption — so the field the grader would have
+required is present and **deliberately ungraded**, which is the original defect restored by a stale
+declaration rather than by a missing branch.
+
+★ **And the file already sets the precedent**, which is how I knew this was in-pattern rather than
+invented: `evidence:pending_case_reported` refuses a `pending` case that DID produce evidence, on the
+stated reasoning that *"inheriting the pass would be exactly the silent drift this matrix exists to
+stop."* This is that shape with the polarity flipped, so it is spelled the same way —
+`evidence:redaction_suppressed_arm_exemption_stale`, telling the reader to **flip the declaration to
+`in_run`** rather than to delete the row field.
+
+Its control asserts the red on `positiveControlPassed: true` **and** on `false`: the *presence* of the
+field is the drift, not its value — an exempt case has no business reporting either. `M7` is its mutation.
 
 ### 4.6 `E6-F033` — checked, and it does **NOT** close
 
@@ -390,6 +418,7 @@ without supplying `positiveControlPassed`, and the stricter grader adds no red.
 | The row field is required STRICTLY `true`, so `null`/`undefined` refuse | **Demonstrated** (M5; the control iterates `[false, null, undefined]`) |
 | The declaration half is a genuine SECOND source, not a restatement | **Demonstrated** (M4 reds the declaration control alone, with the evidence half intact) |
 | A declared exemption cannot name a PHANTOM finding | **Demonstrated** (§4.5; M6 reds on the committed file with the id named, and the control carries two non-vacuity assertions of its own) |
+| An exemption that OUTLIVED its reason is refused (the dual) | **Demonstrated** (§4.7; M7; the control reds on a reported `true` and a reported `false`) |
 | The D1 row reports no suppressed arm | **Demonstrated at source** — `record(…)` passes no such key |
 | The D1 `events` half IS buildable — so this is `(a)`, a real gap, not impossibility | **Argued from source, and the load-bearing link was READ**: `queryJobEventPayloadText`'s SQL is `WHERE job_id = $jobId`. NOT built here, and filed as `E6-F034` |
 | The D1 `logs` half is NOT buildable — so that half is `(c)` | **Argued from source, three links read**: the whole-service `docker compose logs`, the tokenless `logger.info({ probeLine }, …)`, and the constant line text |
