@@ -669,11 +669,12 @@ export function evaluateShippedBootEvidence(signals) {
   if ((signals?.cost?.receipts ?? []).length !== 1 || signals.cost.receipts[0]?.status !== "applied") {
     reasons.push("expected one applied authoritative_cost receipt");
   }
-  const usageEventId = signals?.usageEvents?.[0]?.eventId;
+  const usageEvent = signals?.usageEvents?.[0];
+  const usageEventId = usageEvent?.eventId;
   const costRow = signals?.cost?.events?.[0];
   const costReceipt = signals?.cost?.receipts?.[0];
   if (usageEventId && costRow && costReceipt && (
-    costRow.sourceIdempotencyKey !== `usage:${usageEventId}` ||
+    costRow.sourceIdempotencyKey !== `cost:${usageEvent.companyId}:${usageEventId}` ||
     costReceipt.sourceIdentity !== `usage:${usageEventId}` ||
     costReceipt.targetAggregateId !== costRow.id ||
     costReceipt.aggregateKind !== "cost_events"

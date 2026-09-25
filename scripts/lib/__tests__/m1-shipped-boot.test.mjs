@@ -48,7 +48,7 @@ test("campaign evidence fails closed without audit, cost, or applied receipts", 
   const startedEventId = "10000000-0000-4000-8000-000000000002";
   const terminalEventId = "10000000-0000-4000-8000-000000000003";
   const good = {
-    usageEvents: [{ eventId: usageEventId }],
+    usageEvents: [{ eventId: usageEventId, companyId: "company-1" }],
     audit: {
       jobSubmitted: [{}],
       attemptLifecycle: [{ id: "a1", action: "job.attempt_started" }, { id: "a2", action: "job.attempt_terminal" }],
@@ -59,7 +59,7 @@ test("campaign evidence fails closed without audit, cost, or applied receipts", 
       ],
     },
     cost: {
-      events: [{ id: "c1", costCents: 1, sourceIdempotencyKey: `usage:${usageEventId}` }],
+      events: [{ id: "c1", costCents: 1, sourceIdempotencyKey: `cost:company-1:${usageEventId}` }],
       receipts: [{ status: "applied", sourceIdentity: `usage:${usageEventId}`, targetAggregateId: "c1", aggregateKind: "cost_events" }],
     },
   };
@@ -69,6 +69,7 @@ test("campaign evidence fails closed without audit, cost, or applied receipts", 
     { ...good, audit: { ...good.audit, attemptLifecycle: [] } },
     { ...good, cost: { ...good.cost, events: [] } },
     { ...good, cost: { ...good.cost, receipts: [{ status: "pending" }] } },
+    { ...good, cost: { ...good.cost, events: [{ ...good.cost.events[0], sourceIdempotencyKey: `usage:${usageEventId}` }] } },
     { ...good, cost: { ...good.cost, receipts: [{ ...good.cost.receipts[0], sourceIdentity: "usage:wrong" }] } },
     { ...good, audit: { ...good.audit, activityReceipts: [{ ...good.audit.activityReceipts[0], targetAggregateId: "a2" }, good.audit.activityReceipts[1]] } },
   ]) assert.equal(evaluateShippedBootEvidence(broken).pass, false);

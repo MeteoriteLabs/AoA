@@ -828,9 +828,10 @@ function tenantSignals(state, key, run) {
       events: run?.distributed_attempt_id
         ? q(`SELECT c.id, c.company_id AS "companyId", c.cost_cents AS "costCents",
                     c.source_idempotency_key AS "sourceIdempotencyKey", c.model, c.rate_version AS "rateVersion"
-               FROM cost_events c
+              FROM cost_events c
               WHERE c.company_id = $1 AND c.source_idempotency_key IN
-                    (SELECT 'usage:' || event_id::text FROM job_events WHERE attempt_id = $2 AND event_type = 'usage')`,
+                    (SELECT 'cost:' || company_id::text || ':' || event_id::text
+                       FROM job_events WHERE attempt_id = $2 AND event_type = 'usage')`,
           [t.companyId, run.distributed_attempt_id])
         : [],
       receipts: run?.distributed_attempt_id
