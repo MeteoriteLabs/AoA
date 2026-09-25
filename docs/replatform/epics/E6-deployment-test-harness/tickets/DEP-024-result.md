@@ -399,6 +399,52 @@ requested on the final head because the gate requires one, but **I will not take
 anything raised now goes to the planning session with my verification and a proposed fix, for it to
 rule on.
 
+### 5.5 Codex round 3 — TWO findings, both real, both HANDED TO THE PLANNING SESSION unfixed
+
+This is the cap, and it is being honoured rather than argued with. Both findings were verified at
+source before being written up; neither is dismissed; neither is fixed here.
+
+**(a) `reject a marker on either suppressed stream`** — `scripts/lib/m1a-redaction-probe.mjs`, the
+`suppressed.injectionFired !== false` check. **Real, and it is a regression MY OWN round-2 fix
+introduced.** Making `injectionFired` the conjunction of both streams (§5.3) means a suppressed arm
+that observes its **own nonce-tagged** marker on exactly ONE stream yields `injectionFired === false`,
+so no violation is raised and the phase can pass — while a marker bearing the withheld arm's nonce on
+either stream already proves something other than the planted leak can generate the evidence. That is
+E.1(a) in its purest form: the first place to look for a class is the code I had just written, and I
+did not look there after round 2.
+
+*Proposed fix (not applied):* in the suppressed branch, assert
+`suppressed.scrubberMarkerObservedOnStream.events === false` **and** `…logs === false` individually,
+rather than accepting any `injectionFired === false`. Its control is the mutation that sets one of the
+two true and expects a violation.
+
+**(b) `require the suppressed job to succeed`** — `scripts/m1-shipped-boot/redaction.mjs`.
+**Real.** `attemptStatus` is read, logged and carried on the row's `detail`, and **never asserted**:
+`grep -n attemptStatus scripts/m1-shipped-boot/redaction.mjs` returns one log line and three detail
+fields, no predicate. So a suppressed job that reaches a terminal `failed` **after** emitting
+`attempt_started` has a non-empty event stream and no markers, and satisfies the suppressed control
+although the withheld command never ran — non-vacuity claimed from a failed setup. §9's red-shape list
+already says a `failed` terminal with no events means the handle did not materialise, so the record
+anticipated the diagnosis without the driver enforcing it, which is the gap.
+
+*Proposed fix (not applied):* require `attemptStatus === "succeeded"` on **both** arms before their
+rows are used, as a refusal naming the arm and the observed status. Its control is the mutation that
+feeds a `failed` status and expects the refusal.
+
+**Why these are handed up rather than fixed — argued, not merely asserted.** Rule C caps a PR at two
+Codex rounds, and I committed to it on the thread one round ago. More to the point, **three
+consecutive rounds each found a real defect in this driver's control logic**, which is precisely the
+regenerating-property signal the cap exists to catch: *"a ticket is not the place to converge on a
+property that keeps regenerating."*
+
+And the interim is SAFE, which is a measurement rather than a preference: the case is declared
+`pending`, and `faultMatrix` folds this phase's row into the graded bundle **only** while the
+declaration says `required` (§1, gap 3). So the driver cannot contribute evidence to any graded bundle
+until the planning session **both** flips that field and dispatches the keyed run — both of which are
+its own actions. **There is no window in which these two holes can produce a false pass.** Closing
+them is a precondition of the flip, not of the merge, and they belong in the same hand as the envelope
+that makes the case fire.
+
 ## 6. Register deltas (two-sided, against the MERGE REF)
 
 Taken against the fetched `origin/docs/replatform-program`, as key-set diffs, printing both
@@ -505,10 +551,15 @@ behaves exactly as before.
    - the withheld-plant arm reporting `injectionFired: true` ⇒ the marker is produced by something
      other than this case's injection, and the case proves nothing;
    - `redactedOnAllStreams=false` ⇒ a REAL leak; revert the surface, do not debug it.
-2. **The flip itself.** `faultMatrix` reads the declaration to decide whether to fold the row, so the
-   row enters the graded bundle on the SAME commit that flips `evidence` to `required` and not a
-   moment before — a bundle reporting evidence for a `pending` case is refused by the matrix's own
-   verdict. The flip is one field plus the run id in this record.
+2. **The flip itself, and TWO fixes that are its preconditions.** `faultMatrix` reads the declaration
+   to decide whether to fold the row, so the row enters the graded bundle on the SAME commit that
+   flips `evidence` to `required` and not a moment before — a bundle reporting evidence for a
+   `pending` case is refused by the matrix's own verdict. Before that flip, the two round-3 findings
+   in §5.5 should be closed: the suppressed arm must reject a marker on **either** stream
+   individually (a hole my own round-2 fix opened), and **both** arms must require
+   `attemptStatus === "succeeded"`. Each is a few lines with a named mutation control, and neither can
+   produce a false pass while the case stays `pending`. The flip is then one field plus the keyed run
+   id in this record.
 3. **`d2c.redaction.planted_canary_scrubbed`** (`M1-D2-CODING`) is untouched and is not made stale by
    this ticket: that profile is the same shipped-boot lane on the M1b candidate and is unscheduled at
    M1a, so the wiring here serves it when it is scheduled.
