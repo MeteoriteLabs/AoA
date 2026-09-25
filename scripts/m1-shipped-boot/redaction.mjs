@@ -298,6 +298,13 @@ export async function runRedactionProbeCases({
       eventBytes: events.bytes ?? 0,
       logBytes: logs.bytes ?? 0,
       foreignBytes: foreign.bytes ?? 0,
+      // ★ DEP-025 finding (b) — the arm's OWN setup must have succeeded, and until now this status
+      // was read, logged and put on the row's `detail` while NOTHING asserted it. The harness says
+      // so itself: `awaitSpineWorkerDrivenTerminal`'s docstring records that a timeout is "judged by
+      // the verdict … never swallowed here", i.e. it delegates the assertion to its caller. Carried
+      // into the PURE judge rather than asserted here, so it has a mutation-proven control
+      // (`evaluateRedactionProbeEvidence` refuses any arm whose status is not `succeeded`).
+      attemptStatus: observation.attemptStatus ?? null,
     });
     log(
       `redaction: arm=${label} plant=${plant} attempt=${observation.attemptStatus ?? "none"} ` +
@@ -319,7 +326,10 @@ export async function runRedactionProbeCases({
     };
   };
 
-  // SUPPRESSED FIRST — see the header: it is what makes the graded arm's log evidence attributable.
+  // SUPPRESSED FIRST — the natural reading order, and NOTHING rests on it. Attribution is intrinsic
+  // to the line (the per-arm nonce), not positional; see the header. This comment used to claim the
+  // order "is what makes the graded arm's log evidence attributable", which was the very argument
+  // Codex round 2 falsified on PR #607 — the code moved and the comment did not.
   const suppressed = arm({ label: "suppressed", plant: false });
   const graded = arm({ label: "graded", plant: true });
 
@@ -338,6 +348,11 @@ export async function runRedactionProbeCases({
     suppressedAttemptStatus: suppressed.facts.attemptStatus,
     suppressedEventCount: suppressed.facts.eventCount,
     suppressedFired: suppressed.row.injectionFired,
+    // ★ PER STREAM, so a refusal names WHICH stream carried the withheld arm's marker (DEP-025
+    // finding (a)): the AND-collapsed `suppressedFired` above cannot distinguish "neither" from
+    // "exactly one", and "exactly one" is the shape that used to pass.
+    suppressedMarkerOnEvents: suppressed.row.scrubberMarkerObservedOnStream?.events === true,
+    suppressedMarkerOnLogs: suppressed.row.scrubberMarkerObservedOnStream?.logs === true,
     suppressedUnfired: summary.suppressedUnfired,
     crossTenantEventCount: graded.facts.crossTenantEventCount,
     crossTenantCanaryAbsent: graded.facts.crossTenantCanaryAbsent,

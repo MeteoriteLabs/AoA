@@ -1313,6 +1313,26 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
     },
   });
 
+  // ★★★ DEP-025 — THE CLASS TWIN, found by sweeping finding (b) rather than by review.
+  //
+  // THE CLASS: *an attempt's terminal status read into a record or a log for reporting, but never
+  // asserted, so a FAILED SETUP satisfies a control whose only non-vacuity requirement is a
+  // non-empty stream.* DEP-024 §5.5(b) filed this against the shipped-boot arm of the same case;
+  // this D1 twin had it too — `attemptStatus` went onto the row's `detail` five lines above and
+  // nothing checked it. A job that reached a durable `failed` AFTER `attempt_started` has events,
+  // has no marker, and would satisfy every remaining check here for the wrong reason.
+  //
+  // Asserted on BOTH runs (before the suppressed return), exactly as
+  // `d1.provider.worker_terminal_mapping` asserts its control arm unconditionally: the suppression
+  // changes only `workloadArgs`, never whether the seeded job runs, so a non-succeeded attempt is a
+  // broken setup in either mode rather than an expected consequence of withholding the plant.
+  // Placed AFTER `record` so the row carries the observation that refuses.
+  assert.equal(
+    observation.attemptStatus,
+    "succeeded",
+    `the seeded job's attempt must reach a durable succeeded terminal, else its streams are a failed setup rather than a clean run: ${truncate(observation)}`,
+  );
+
   if (SUPPRESS_INJECTION) return;
   assert.equal(ownEventsClean, true, "the planted canary survived onto its own tenant's event stream");
   assert.equal(crossTenantClean, true, "the planted canary appeared on the OTHER tenant's event stream");

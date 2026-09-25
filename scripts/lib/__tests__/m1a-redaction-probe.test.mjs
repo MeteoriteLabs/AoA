@@ -31,6 +31,11 @@ const GRADED = {
   eventBytes: 4096,
   logBytes: 65_536,
   foreignBytes: 2048,
+  // DEP-025 finding (b): the arm's own attempt must have reached a durable `succeeded` terminal
+  // before anything it observed is used. A withheld-plant job that terminated `failed` AFTER
+  // `attempt_started` has a non-empty event stream and no markers, and satisfied the old suppressed
+  // control although the command never ran.
+  attemptStatus: "succeeded",
 };
 
 /** The suppressed arm: the same run shape with nothing planted. */
@@ -90,6 +95,11 @@ test("★ THE STALE-MARKER CASE the old asymmetry was blind to: a log marker wit
   assert.equal(stale.observedClassification, "no_scrubber_marker_observed");
   const { violations } = evaluate({ ...GRADED, markerOnEvents: false, markerOnLogs: true }, SUPPRESSED);
   assert.ok(has(violations, /no scrubber marker on both declared streams/), violations.join("\n"));
+  // ★ AND ON THE SUPPRESSED ARM TOO, which is what the comment above always claimed and what the
+  // PAIR VERDICT did not do until DEP-025: `injectionFired` is false on this shape, so the
+  // AND-collapsed suppressed check passed it. See the per-stream controls below.
+  const suppressedStale = evaluate(GRADED, { ...SUPPRESSED, markerOnLogs: true }).violations;
+  assert.ok(has(suppressedStale, /marker was observed on stream "logs"/), suppressedStale.join("\n") || "<no violations>");
 });
 
 test("an empty stream is reported as VACUITY on the row, never thrown away", () => {
@@ -122,6 +132,66 @@ test("POSITIVE CONTROL — a suppressed arm that STILL FIRES is refused", () => 
 test("POSITIVE CONTROL — a suppressed arm that never RAN is refused (empty own stream)", () => {
   const { violations } = evaluate(GRADED, { ...SUPPRESSED, eventBytes: 0 });
   assert.ok(has(violations, /indistinguishable from `never ran`/), violations.join("\n"));
+});
+
+// ── DEP-025 finding (a): the suppressed arm, PER STREAM ──────────────────────
+// ★★★ THE HOLE ROUND 2'S OWN FIX OPENED. Making `injectionFired` the conjunction of both streams
+// (so a stale log marker could no longer satisfy the graded arm alone) also made the suppressed
+// arm's `injectionFired !== false` check PERMISSIVE: a withheld-plant arm observing its OWN
+// nonce-tagged marker on exactly ONE stream yields `injectionFired === false`, so nothing was
+// raised — while such a marker already proves something other than this case's injection can
+// generate the evidence. The requirement is per stream; the AND-collapse cannot express it.
+test("POSITIVE CONTROL — a suppressed arm with a marker on EXACTLY ONE stream is refused", () => {
+  for (const stream of ["events", "logs"]) {
+    const other = stream === "events" ? "logs" : "events";
+    const { violations, summary } = evaluate(GRADED, {
+      ...SUPPRESSED,
+      [stream === "events" ? "markerOnEvents" : "markerOnLogs"]: true,
+    });
+    assert.ok(
+      has(violations, new RegExp(`suppressed arm: the scrubber's marker was observed on stream "${stream}"`)),
+      `a marker on ${stream} alone (${other} clean) must be refused: ${violations.join("\n") || "<no violations>"}`,
+    );
+    // ★ THE TWIN, in the same shape: `suppressedUnfired` is what becomes the matrix row's
+    // `positiveControlPassed`, so the AND-collapse there reports a passing positive control on the
+    // very observation that refuses.
+    assert.equal(summary.suppressedUnfired, false, `summary.suppressedUnfired must be false when ${stream} carries a marker`);
+  }
+});
+
+test("POSITIVE CONTROL — a suppressed arm that does not REPORT a stream's observation is refused", () => {
+  // Fail-closed on missing input: an unreported stream is refused, never read as clean.
+  const row = classify(SUPPRESSED);
+  delete row.scrubberMarkerObservedOnStream.logs;
+  const { violations, summary } = evaluateRedactionProbeEvidence({ graded: classify(GRADED), suppressed: row });
+  assert.ok(has(violations, /suppressed arm: stream "logs" reported no marker observation/), violations.join("\n"));
+  assert.equal(summary.suppressedUnfired, false);
+});
+
+// ── DEP-025 finding (b): each arm's attempt must have SUCCEEDED ──────────────
+test("POSITIVE CONTROL — an arm whose attempt did not reach `succeeded` is refused, per arm", () => {
+  // Substring, not a regex: the expected text embeds JSON quotes, which a regex would re-escape.
+  const hasText = (violations, text) => violations.some((line) => line.includes(text));
+  for (const status of ["failed", "cancelled", "running", null]) {
+    const want = `attempt terminated ${JSON.stringify(status)}, not "succeeded"`;
+    const g = evaluate({ ...GRADED, attemptStatus: status }, SUPPRESSED).violations;
+    assert.ok(
+      hasText(g, `graded arm: the seeded job's ${want}`),
+      `graded attemptStatus=${JSON.stringify(status)} must be refused: ${g.join("\n") || "<no violations>"}`,
+    );
+    const s = evaluate(GRADED, { ...SUPPRESSED, attemptStatus: status }).violations;
+    assert.ok(
+      hasText(s, `suppressed arm: the seeded job's ${want}`),
+      `suppressed attemptStatus=${JSON.stringify(status)} must be refused: ${s.join("\n") || "<no violations>"}`,
+    );
+  }
+});
+
+test("★ the shape finding (b) names: a suppressed job that FAILED after `attempt_started`", () => {
+  // Non-empty event stream, no markers, terminal `failed`. Under the old contract this satisfied
+  // every suppressed check — non-vacuity claimed from a failed setup.
+  const { violations } = evaluate(GRADED, { ...SUPPRESSED, attemptStatus: "failed", eventBytes: 512 });
+  assert.ok(has(violations, /suppressed arm: the seeded job's attempt terminated "failed"/), violations.join("\n"));
 });
 
 test("POSITIVE CONTROL — a MISSING graded arm is refused", () => {

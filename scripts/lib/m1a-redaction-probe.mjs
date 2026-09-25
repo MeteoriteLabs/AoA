@@ -46,6 +46,21 @@ export const REDACTION_PROBE_EXPECTED_CLASSIFICATION = "canary_scrubbed_while_un
 export const REDACTION_PROBE_EVIDENCE_MARKER = "[redaction-probe:evidence]";
 
 /**
+ * The durable terminal EVERY arm's own seeded job must reach before anything it observed is used.
+ *
+ * ★ DEP-025 finding (b), handed up by DEP-024 §5.5(b) and verified at source before acceptance. The
+ * harness's own docstring on `awaitSpineWorkerDrivenTerminal` says a timeout is "judged by the
+ * verdict (as `attempt_not_succeeded`), never swallowed here" — i.e. the harness delegates the
+ * assertion to its caller, and this judge is that caller. Before this constant existed the status
+ * was read, logged and carried on the row's `detail` and never asserted anywhere, so a suppressed
+ * job that terminated `failed` AFTER `attempt_started` had a non-empty event stream and no markers
+ * and satisfied every suppressed check — NON-VACUITY CLAIMED FROM A FAILED SETUP. It is checked on
+ * BOTH arms, because the graded arm has the mirror shape: a job that failed after emitting its probe
+ * line would grade a partial run.
+ */
+export const REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS = "succeeded";
+
+/**
  * One arm's observation → its classification, plus the vacuity findings that make the
  * classification meaningful at all.
  *
@@ -64,6 +79,9 @@ export const REDACTION_PROBE_EVIDENCE_MARKER = "[redaction-probe:evidence]";
  * @param {number}  o.eventBytes      bytes observed on the event stream
  * @param {number}  o.logBytes        bytes observed on the container log
  * @param {number}  o.foreignBytes    bytes observed on the other tenant's stream
+ * @param {string|null} o.attemptStatus the arm's OWN attempt terminal, as the control plane recorded
+ *   it. Carried onto the row so the PAIR VERDICT can refuse an arm whose setup did not succeed
+ *   (DEP-025 finding (b)); absent ⇒ `null` ⇒ refused, never read as fine.
  */
 export function classifyRedactionObservation(o) {
   const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -103,6 +121,10 @@ export function classifyRedactionObservation(o) {
     injectionFired,
     observedClassification,
     redactedOnAllStreams,
+    // DEP-025 finding (b): read here, ASSERTED by `evaluateRedactionProbeEvidence`. Normalised to
+    // `null` rather than to a passing default, because the absence of a status is exactly the
+    // "not run" this case must not read as clean.
+    attemptStatus: typeof o.attemptStatus === "string" ? o.attemptStatus : null,
     scrubberMarkerObservedOnStream: { events: o.markerOnEvents === true, logs: o.markerOnLogs === true },
     streamBytesObserved: { events: num(o.eventBytes), logs: num(o.logBytes) },
     vacuity,
@@ -140,10 +162,26 @@ export function evaluateRedactionProbeEvidence(input) {
   const graded = input?.graded ?? null;
   const suppressed = input?.suppressed ?? null;
 
+  /**
+   * ★ DEP-025 finding (b) — EVERY arm's own setup must have succeeded, or nothing it observed is a
+   * measurement. Applied to BOTH arms from one helper rather than written twice, so the two cannot
+   * drift apart (the asymmetry that produced finding (a) in the first place).
+   */
+  const requireArmSucceeded = (arm, row) => {
+    if (row.attemptStatus !== REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS) {
+      violations.push(
+        `${arm} arm: the seeded job's attempt terminated ${JSON.stringify(row.attemptStatus ?? null)}, not ` +
+        `${JSON.stringify(REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS)} — a job that did not reach a durable succeeded ` +
+        "terminal proves nothing about redaction, and its empty-or-markerless streams are a failed setup rather than a clean run",
+      );
+    }
+  };
+
   if (!graded || typeof graded !== "object") {
     violations.push("the GRADED arm produced no row — the phase cannot claim a case it did not observe");
   } else {
     for (const v of graded.vacuity ?? []) violations.push(`graded arm: ${v}`);
+    requireArmSucceeded("graded", graded);
     if (graded.injectionFired !== true) {
       violations.push(
         "graded arm: no scrubber marker on both declared streams, so the plant is not observed to have been scrubbed " +
@@ -178,6 +216,38 @@ export function evaluateRedactionProbeEvidence(input) {
     if (Number(suppressed.streamBytesObserved?.events ?? 0) <= 0) {
       violations.push("suppressed arm: its own event stream is empty, so `no marker` is indistinguishable from `never ran`");
     }
+    requireArmSucceeded("suppressed", suppressed);
+    // ★★★ DEP-025 finding (a) — PER STREAM, NOT THROUGH THE AND-COLLAPSED `injectionFired`.
+    //
+    // THE CLASS: *a per-stream requirement enforced through the AND-collapsed `injectionFired`
+    // instead of over each stream's own observation, in the polarity where "ANY marker is a
+    // violation" — where the collapse is permissive rather than merely imprecise.*
+    //
+    // This hole was opened by DEP-024's OWN round-2 fix (E.1(a): the first place to look for a class
+    // is the code you just wrote). Making `injectionFired` the conjunction of both streams closed a
+    // false pass on the GRADED arm and, in the same stroke, made `suppressed.injectionFired !== false`
+    // unable to see a suppressed arm carrying its own nonce-tagged marker on exactly ONE stream:
+    // `true && false === false`, so nothing was raised. But such a marker bears THIS arm's nonce and
+    // the plant was withheld, so it already proves that something other than this case's injection
+    // can generate the evidence — which is the entire property the suppressed arm exists to exclude.
+    //
+    // The AND-collapse is kept BELOW as a backstop for a row whose `injectionFired` was computed
+    // some other way; it is no longer the thing that decides.
+    for (const stream of declared) {
+      const observed = suppressed.scrubberMarkerObservedOnStream?.[stream];
+      if (observed === true) {
+        violations.push(
+          `suppressed arm: the scrubber's marker was observed on stream ${JSON.stringify(stream)} while the plant was ` +
+          "WITHHELD — a marker carrying THIS arm's own nonce means something other than this case's injection can " +
+          "generate the evidence, and the case proves nothing",
+        );
+      } else if (observed !== false) {
+        violations.push(
+          `suppressed arm: stream ${JSON.stringify(stream)} reported no marker observation ` +
+          `(${JSON.stringify(observed ?? null)}) — an unreported stream is REFUSED rather than read as clean`,
+        );
+      }
+    }
     if (suppressed.injectionFired !== false) {
       violations.push(
         `suppressed arm: recorded injectionFired=${JSON.stringify(suppressed.injectionFired ?? null)} — ` +
@@ -187,7 +257,12 @@ export function evaluateRedactionProbeEvidence(input) {
     if (suppressed.redactedOnAllStreams !== true) {
       violations.push("suppressed arm: a canary appeared on a stream although nothing planted it");
     }
-    summary.suppressedUnfired = suppressed.injectionFired === false;
+    // ★ THE TWIN, fixed with it. This is what becomes the matrix row's `positiveControlPassed`, so
+    // the AND-collapse here would have reported a PASSING positive control on the very observation
+    // the loop above refuses — a known twin left behind is worse than the original defect.
+    summary.suppressedUnfired =
+      suppressed.injectionFired === false
+      && declared.every((stream) => suppressed.scrubberMarkerObservedOnStream?.[stream] === false);
   }
 
   return { violations, summary };
