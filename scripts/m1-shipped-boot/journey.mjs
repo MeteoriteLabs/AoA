@@ -70,10 +70,12 @@ import { REDACTION_PROBE_EVIDENCE_MARKER, runRedactionProbeCases } from "./redac
 import { REDACTION_PROBE_CASE } from "../lib/m1a-redaction-probe.mjs";
 import {
   evaluateFaultMatrixDeclaration,
+  evaluateRedactionExemptionBlockers,
   evaluateFaultMatrixEvidence,
   formatViolations as formatMatrixViolations,
   FAULT_MATRIX_PATH,
 } from "../lib/campaign-fault-matrix.mjs";
+import { readFindingSources } from "../lib/finding-sources.mjs";
 import {
   buildRolloutPolicy,
   evaluateTenantRollout,
@@ -1284,7 +1286,12 @@ function faultMatrix(state) {
   const journey = JSON.parse(readFileSync(journeyPath, "utf8"));
 
   const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
-  const declarationViolations = evaluateFaultMatrixDeclaration(matrix);
+  const declarationViolations = [
+    ...evaluateFaultMatrixDeclaration(matrix),
+    // DEP-026 (Codex P2 x2 on PR #609) — a redaction exemption whose blocking finding is phantom or
+    // RESOLVED cannot justify skipping the withheld-plant arm. Fail-closed on unusable sources.
+    ...evaluateRedactionExemptionBlockers(matrix, readFindingSources(repoRoot)),
+  ];
   if (declarationViolations.length > 0) {
     fail(`${FAULT_MATRIX_PATH} is not a valid declaration:\n${formatMatrixViolations(declarationViolations)}`);
   }

@@ -132,13 +132,13 @@ the point: this was never a wrong message or a near-miss, it was a branch that d
 
 ### 3.2 GREEN
 
-**`39 tests / 39 pass / 0 fail`** on `scripts/check-campaign-fault-matrix.test.mjs` (`38/38/0` before §4.5's
-seventh control was added).
+**`41 tests / 41 pass / 0 fail`** on `scripts/check-campaign-fault-matrix.test.mjs` — `38/38/0` at the first
+push, `39/39/0` after §4.5 and §4.7, `41/41/0` after Codex round 1 (§12).
 
 The owning `pr.yml` step (`Campaign fault matrix declaration (DEP-018)`) runs
 `node scripts/check-campaign-fault-matrix.mjs` **and** that suite; both are green, the guard reporting
 `3 gate profile(s) and 83 case(s) (46 required, 37 pending)`. Run with the two neighbouring pure suites
-(`m1a-redaction-probe`, `m1-spine-assertions`): **`192 tests / 192 pass / 0 fail`**.
+(`m1a-redaction-probe`, `m1-spine-assertions`): **`194 tests / 194 pass / 0 fail`**.
 
 ### 3.3 The mutation table — each behaviour removed, the red shown, reverted
 
@@ -254,11 +254,17 @@ the heading scan must find ≥ 50 ids (so a moved layout or a broken regex reds 
 vacuously), and at least one exemption must declare a blocker (so an exemption-free matrix does not make
 the loop evaluate nothing). M6 is its mutation.
 
-★ **`findings.md` and NOT `scripts/finding-ownership.json`, deliberately.** Closing a finding **deletes**
-its register key (`E.2` rule 5), and an exemption may legitimately name a blocker that has since been
-closed — so the register would red on a *correct* declaration. The prose heading survives closure; the
-register key does not. Checking the wrong source here would have been a check that fails wrongly, which is
-the dual of the one it replaces.
+★★★ **SUPERSEDED BY §12.1 — and the superseded reasoning is kept here rather than rewritten.** This
+paragraph said: *"`findings.md` and NOT `scripts/finding-ownership.json`, deliberately. Closing a finding
+DELETES its register key (`E.2` rule 5), and an exemption may legitimately name a blocker that has since
+been closed — so the register would red on a correct declaration. The prose heading survives closure; the
+register key does not."* **That was backwards.** Closing the blocker is PRECISELY what must invalidate the
+exemption — the D1 case's own `reason` says *"Closing both means deleting this exemption and declaring
+`scope: "in_run"`."* I had optimised the check to survive its blockers' closure, when failing on closure is
+the entire point. Codex round 1 caught it; §12.1 has the measurement that settles it and the fix, which
+requires each id to be a CURRENTLY OPEN registered finding and keeps the heading set only for the
+existence half. The control now lives in the PRODUCTION path as well (§12.2), which was the second half of
+the same round.
 
 ### 4.7 ★ THE DUAL of my own fix — an exemption that OUTLIVED its reason
 
@@ -417,7 +423,10 @@ without supplying `positiveControlPassed`, and the stricter grader adds no red.
 | A bare or half-filled `none` exemption reds on both halves of the matrix | **Demonstrated** (M3; seven malformed shapes) |
 | The row field is required STRICTLY `true`, so `null`/`undefined` refuse | **Demonstrated** (M5; the control iterates `[false, null, undefined]`) |
 | The declaration half is a genuine SECOND source, not a restatement | **Demonstrated** (M4 reds the declaration control alone, with the evidence half intact) |
-| A declared exemption cannot name a PHANTOM finding | **Demonstrated** (§4.5; M6 reds on the committed file with the id named, and the control carries two non-vacuity assertions of its own) |
+| A declared exemption cannot name a PHANTOM finding | **Demonstrated** (M6, and M10 through the guard CLI) |
+| A declared exemption cannot name a RESOLVED finding, so closing the blocker FORCES the flip | **Demonstrated** (§12.1; M9 and M10; `E9-F003` asserted declared-but-not-open first, so the control is not vacuous) |
+| The blocker cross-reference runs in the PRODUCTION path, not only in the self-test | **Demonstrated** (§12.2; M8 reds the anti-orphan control, M10 exits 1 from the guard CLI the keyed lane actually runs) |
+| No OTHER production file validates the declaration without the cross-reference | **Demonstrated** — an enumeration, not a memory: the anti-orphan control walks four directories for `evaluateFaultMatrixDeclaration(` and asserts set EQUALITY with the three known callers |
 | An exemption that OUTLIVED its reason is refused (the dual) | **Demonstrated** (§4.7; M7; the control reds on a reported `true` and a reported `false`) |
 | The D1 row reports no suppressed arm | **Demonstrated at source** — `record(…)` passes no such key |
 | The D1 `events` half IS buildable — so this is `(a)`, a real gap, not impossibility | **Argued from source, and the load-bearing link was READ**: `queryJobEventPayloadText`'s SQL is `WHERE job_id = $jobId`. NOT built here, and filed as `E6-F034` |
@@ -425,7 +434,7 @@ without supplying `positiveControlPassed`, and the stricter grader adds no red.
 | The D1 lane's campaign-scoped control is not case-scoped | **Demonstrated at source** — the workflow step's `grep -F 'injection_did_not_fire'` is satisfied by any case |
 | `attemptStatus` is in the class shape but is NOT a hole | **Argued from source**, and deliberately not claimed as a fix: the fact is graded via `injectionFired` and `observedClassification` |
 | `E6-F033` closes | ★ **FALSE, and not claimed.** Untouched; now machine-cited by the exemption rather than only by prose |
-| The owning `pr.yml` step's suites pass with the stricter judge | **Demonstrated** — `39/39/0`, and `192/192/0` with the two neighbouring pure suites |
+| The owning `pr.yml` step's suites pass with the stricter judge | **Demonstrated** — `41/41/0`, and `194/194/0` with the two neighbouring pure suites |
 | The full guard set + `check-evidence-immutability --base origin/docs/replatform-program` are green | **Demonstrated** — `failures: 0`, `75 base records` all byte-identical |
 | The register deltas are exactly mine, two-sided against the merge ref | **Demonstrated** — §6 |
 | The live D1 lane is unaffected by the exemption | **See §8** — dispatched; `d1-merge-train` runs this branch's code |
@@ -444,19 +453,111 @@ cannot fail my hypothesis is not a hypothesis test (`E.3.2`).
 | File | Change |
 |---|---|
 | `scripts/lib/campaign-fault-matrix.mjs` | `REDACTION_SUPPRESSED_ARM_SCOPES` + `classifyRedactionSuppressedArm`; the declaration half validates `redactionCase.suppressedArm` (presence on `required`, well-formedness always); the evidence half grades the withheld-plant arm and fails closed |
-| `scripts/check-campaign-fault-matrix.test.mjs` | 7 new controls (`32 → 39`); the anchor declares `in_run` and its bundle row carries the field; the seventh cross-checks every exemption's `blockedBy` against the epics' `findings.md` headings |
+| `scripts/check-campaign-fault-matrix.test.mjs` | 9 new controls (`32 → 41`); the anchor declares `in_run` and its bundle row carries the field; three of them cover the blocker cross-reference (open-registered, the failure shapes incl. fail-closed sources, and the anti-orphan caller sweep) |
 | `tests/d1/fault-matrix.json` | `d1` → the declared `none` exemption naming `E6-F033`/`E6-F034`; `d2m` → `in_run`, with its `pendingReason` superseded in place |
 | `docs/replatform/epics/E6-deployment-test-harness/findings.md` | `E6-F034` filed |
 | `scripts/finding-ownership.json` | `E6-F034` added as a delta |
+| `scripts/lib/campaign-fault-matrix.mjs` (§12) | `evaluateRedactionExemptionBlockers` — the exemption's blockers cross-referenced against the finding register, fail-closed on unusable sources |
+| `scripts/lib/finding-sources.mjs` | NEW. Loads the two finding sources: `openFindingIds` (register keys — OPENNESS, shrinks on closure) and `declaredFindingIds` (findings.md headings — EXISTENCE, survives closure) |
+| `scripts/check-campaign-fault-matrix.mjs`, `scripts/m1-shipped-boot/journey.mjs`, `tests/d1/m1-fault-matrix.test.mjs` | the three production declaration-validating paths now make the cross-reference |
 | `docs/replatform/epics/E6-deployment-test-harness/tickets/DEP-026-result.md` | this record |
 
 ---
 
 ## 11. What I stopped on
 
-**Nothing was handed up unfixed, and no Codex finding was deferred.** The one judgement worth a
-reviewer's attention is §2's split verdict: I built the `(c)` shape (a declared, checked, narrowly-scoped
-exemption) for a case whose `events` half is honestly `(a)` (a buildable gap), and filed that half as
-`E6-F034` rather than building it. The reason is in §2.1 and it is a measured one — a one-boolean field
-cannot express a two-stream partial control without recreating `DEP-025` finding (a) — but it is a
-judgement, and a reviewer who disagrees should say so rather than assume it was an oversight.
+**Nothing was handed up unfixed.** Codex round 1 raised two P2s, both real, both verified at source and
+both fixed in this PR (§12) — one of them reversing a judgement written into §4.5 of this record, which
+is corrected in place with the superseded reasoning kept. Counted honestly (`E.3` rule 5) that is **one
+round with two findings**, so rule `C`'s two-round cap still has a round in hand.
+
+The one judgement worth a reviewer's attention is §2's split verdict: I built the `(c)` shape (a declared,
+checked, narrowly-scoped exemption) for a case whose `events` half is honestly `(a)` (a buildable gap),
+and filed that half as `E6-F034` rather than building it. The reason is in §2.1 and it is measured — a
+one-boolean field cannot express a two-stream partial control without recreating `DEP-025` finding (a) —
+but it is a judgement, and a reviewer who disagrees should say so rather than assume it was an oversight.
+## 12. Codex round 1 — TWO P2s, both REAL, both fixed
+
+Both were verified at source before any code moved, and the second one **reversed a judgement I had
+written into §4.5 of this very record**. That is recorded as a reversal rather than smoothed over,
+because a correction is as suspect as the thing it corrects (`E.3.1` corollary) and the reader is owed
+the new link rather than new reasoning.
+
+### 12.1 P2 (a) — a blocker that is phantom **or resolved** leaves the exemption unchecked
+
+> *"this predicate accepts any non-empty strings in `blockedBy` … A typo—or later resolution and removal
+> of E6-F033/E6-F034 from the open-finding register—therefore leaves the D1 case permanently exempt and
+> green without its withheld-plant arm, even though the documented closure requires switching it to
+> `in_run`."*
+
+**The first clause I had already closed** in §4.5, by cross-referencing the epics' `findings.md`
+headings. **The second clause is the one that matters, and my §4.5 rationale was backwards.** I had
+argued *against* using `scripts/finding-ownership.json` on the grounds that closure DELETES its key, so
+the register would red on a correct declaration naming a since-closed blocker. But **closing the blocker
+is precisely what must invalidate the exemption** — the D1 case's own `reason` says so: *"Closing both
+means DELETING this exemption and declaring `scope: "in_run"`."* I had optimised the check to survive its
+blockers' closure, when failing on closure is the entire point.
+
+★ **THE NEW LINK I MEASURED**, which the first pass had not: `E9-F003` and `E9-F007` are closed, are
+**absent from the register**, and their `##` headings **survive** in `findings.md` — 232 headings against
+104 register keys, 40 headings explicitly `resolved`. So the two sources answer two different questions,
+and the register is the one the exemption must depend on.
+
+**The fix** requires each id to be a **currently open registered finding**, which subsumes the phantom
+case (a phantom id is in neither set) and adds the closure case. The two codes are kept distinct so a
+reader is told which failure they have: `…_blocker_undeclared` (no heading anywhere) versus
+`…_blocker_not_open` (a real, resolved finding). A control asserts they do not collapse.
+
+### 12.2 P2 (b) — the cross-reference lived only in the self-test
+
+> *"This cross-reference exists only inside the self-test, so neither `evaluateFaultMatrixDeclaration`
+> nor `check-campaign-fault-matrix.mjs` performs it … consequently the standalone checker used by the
+> keyed `m1-shipped-boot.yml` artifact-verdict step also accepts the phantom exemption whenever the test
+> suite is not run alongside it."*
+
+**Verified at source and exactly right.** `scripts/check-campaign-fault-matrix.mjs` called only the pure
+`evaluateFaultMatrixDeclaration(matrix)`, and it is invoked at `m1-shipped-boot.yml:438` (the keyed
+artifact-verdict step) and `d1-merge-train.yml:806` and `:858` — in none of those alongside this suite.
+`scripts/m1-shipped-boot/journey.mjs:1287` calls the pure evaluator directly too. So my check was a
+check that the production path never ran: the class this ticket is about, in my own diff.
+
+**The fix** puts it in the lib as `evaluateRedactionExemptionBlockers(matrix, sources)`, kept SEPARATE
+from `evaluateFaultMatrixDeclaration` because the sets come from the filesystem and that evaluator is
+pure. The two sources are loaded once by `scripts/lib/finding-sources.mjs`. **Three production callers
+now make the call** — the guard CLI, the keyed `journey.mjs` fault-matrix phase, and the live D1 driver.
+
+★ **FAIL-CLOSED ON ABSENT SOURCES.** A matrix that declares an exemption while the caller supplied no
+usable sets is REFUSED (`declaration:redaction_exemption_blockers_unverifiable`), so a caller cannot
+obtain silence by not looking. Six unusable shapes are controlled: `undefined`, `{}`, either set alone,
+an empty `Set`, and arrays-instead-of-`Set`s. A matrix with **no** exemption needs no sources — the
+refusal is scoped to callers that actually depend on it, rather than made a tax on every caller.
+
+★ **AND AN ANTI-ORPHAN CONTROL**, which is `REL-004`'s lesson applied to my own new verifier: it walks
+`scripts/`, `scripts/m1-shipped-boot/`, `scripts/lib/` and `tests/d1/` for every file containing
+`evaluateFaultMatrixDeclaration(` and asserts that set **equals** the three known callers. So a NEW
+production validator cannot be added without being swept, and a caller that drops the call reds in
+`policy`. That is the second source (`E.2.1`) for a completeness claim I would otherwise be making from
+memory.
+
+### 12.3 The mutations for round 1
+
+| Mutation | Red |
+|---|---|
+| **M8** remove the cross-reference from the GUARD CLI — P2 (b)'s exact shape | `41 / 40 / 1`, the anti-orphan control |
+| **M9** source OPENNESS from the headings instead of the register — the reasoning P2 (a) reversed | `41 / 39 / 2`, both blocker controls |
+| **M10** a RESOLVED blocker (`E9-F003`) in the committed declaration, judged **through the guard CLI end-to-end** | `exit 1`, `declaration:redaction_exemption_blocker_not_open: … names "E9-F003", which is RESOLVED …` |
+
+All reverted; baseline `41 / 41 / 0` restored and the mutated files asserted byte-identical. M10 is the
+one that answers P2 (b) on its own terms: the refusal now comes out of the **CLI the keyed lane runs**,
+not out of a suite that lane does not run.
+
+**`32 → 41` controls. Full guard set `failures: 0`; `194 / 194 / 0` with the two neighbouring pure
+suites.**
+
+### 12.4 Honest counting
+
+Rounds counted per `E.3` rule 5: this is **round 1 with two findings**, not two rounds. Rule `C`'s
+two-round cap therefore still has a round in hand, and nothing is being handed up. P2 (a) and P2 (b) are
+**one class in two places** — *a check whose input cannot answer the question being asked*: (a) asked
+"does this id exist?" when the question was "is it still open?", and (b) asked it somewhere the
+production path never looked. Both are the ticket's own subject matter turned on the ticket's own diff.

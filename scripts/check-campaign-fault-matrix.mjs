@@ -29,8 +29,10 @@ import {
   FAULT_MATRIX_PATH,
   evaluateFaultMatrixDeclaration,
   evaluateFaultMatrixEvidence,
+  evaluateRedactionExemptionBlockers,
   formatViolations,
 } from "./lib/campaign-fault-matrix.mjs";
+import { readFindingSources } from "./lib/finding-sources.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -54,7 +56,13 @@ if (evidenceIndex !== -1 && evidenceFiles.length === 0) {
 const matrixFile = path.join(repoRoot, FAULT_MATRIX_PATH);
 const matrix = readJson(matrixFile, FAULT_MATRIX_PATH);
 
-const declarationViolations = evaluateFaultMatrixDeclaration(matrix);
+const declarationViolations = [
+  ...evaluateFaultMatrixDeclaration(matrix),
+  // DEP-026 (Codex P2 x2 on PR #609) — cross-referenced HERE, in the production path, because
+  // m1-shipped-boot.yml's keyed artifact-verdict step and d1-merge-train.yml both invoke this CLI
+  // WITHOUT the self-test. Fail-closed on unusable sources.
+  ...evaluateRedactionExemptionBlockers(matrix, readFindingSources(repoRoot)),
+];
 if (declarationViolations.length > 0) {
   console.error(`FAIL: ${FAULT_MATRIX_PATH} violates ${declarationViolations.length} DEP-018 declaration invariant(s):`);
   console.error(formatViolations(declarationViolations));

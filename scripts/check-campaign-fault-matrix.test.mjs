@@ -32,8 +32,10 @@ import {
   MIN_ENABLED_TENANT_JOURNEYS,
   evaluateFaultMatrixDeclaration,
   evaluateFaultMatrixEvidence,
+  evaluateRedactionExemptionBlockers,
   formatViolations,
 } from "./lib/campaign-fault-matrix.mjs";
+import { readFindingSources } from "./lib/finding-sources.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -682,71 +684,114 @@ test("DEP-026 declaration: a PENDING redaction case need not declare it yet, but
   assert.ok(has(pendingBadArm, "declaration:redaction_suppressed_arm_unknown_scope"), codes(pendingBadArm).join(","));
 });
 
-// ★ DEP-026 — AN EXEMPTION THAT NAMES A PHANTOM FINDING IS AN UNCHECKED EXEMPTION.
+// ★★★ DEP-026 — A BLOCKER THAT IS PHANTOM *OR RESOLVED* MAKES THE EXEMPTION UNCHECKED.
 //
-// Found by self-auditing this ticket's OWN diff (`E.1a`: you are the most recent author of the defect
-// you are describing). `classifyRedactionSuppressedArm` checks that `blockedBy` is a non-empty array of
-// non-empty strings — which answers "is what I wrote well-formed?" and NOT "does the thing it names
-// exist?". A typo, or an id invented to satisfy the shape, would pass every check above while the
-// exemption pointed at nothing. That is precisely the class this whole surface has been unwinding, one
-// level out.
+// Two Codex P2s on PR #609, both real, both verified at source. The narrative is in
+// `evaluateRedactionExemptionBlockers`'s own header; what matters here is that these controls exercise
+// THE PRODUCTION FUNCTION with the PRODUCTION LOADER, not a copy of the logic living in the test.
 //
-// Completeness is a claim about something the artefact does not contain, so it needs a SECOND SOURCE
-// (`E.2.1`): the epics' `findings.md` headings. Deliberately NOT `scripts/finding-ownership.json` —
-// closing a finding DELETES its register key, and an exemption may legitimately name a blocker that has
-// since been closed, so the register would red on a correct declaration. The prose heading survives
-// closure; the register key does not.
-function declaredFindingHeadings() {
-  const ids = new Set();
-  const dir = path.join(repoRoot, "docs/replatform/epics");
-  for (const epic of readdirSync(dir, { withFileTypes: true })) {
-    if (!epic.isDirectory()) continue;
-    const file = path.join(dir, epic.name, "findings.md");
-    if (!existsSync(file)) continue;
-    for (const m of readFileSync(file, "utf8").matchAll(/^##\s+([A-Z][A-Z0-9]*-F\d+)\b/gm)) ids.add(m[1]);
-  }
-  return ids;
-}
+// ★ The first version of this control DID live only in the test, which was Codex's second finding:
+// `check-campaign-fault-matrix.mjs` — invoked by `m1-shipped-boot.yml`'s keyed artifact-verdict step
+// and twice by `d1-merge-train.yml`, in neither case alongside this suite — did not perform it. So the
+// check moved into the lib, three production callers now make it, and the LAST control below is the
+// anti-orphan one (`REL-004`'s lesson: three admission verifiers that had zero callers).
 
-/** Every `blockedBy` id any redaction exemption names, as `[caseId, findingId]` pairs. */
-function declaredSuppressedArmBlockers(matrix) {
-  const out = [];
-  for (const p of matrix.profiles ?? []) {
-    for (const c of p.cases ?? []) {
-      const arm = c.redactionCase?.suppressedArm;
-      if (arm?.scope !== "none") continue;
-      for (const id of Array.isArray(arm.blockedBy) ? arm.blockedBy : []) out.push([c.case, String(id)]);
+test("DEP-026: the committed exemption's blockers are OPEN registered findings (production function + loader)", () => {
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
+  const sources = readFindingSources(repoRoot);
+  // Non-vacuity FIRST, three times: an empty register, a heading scan that found nothing, or a matrix
+  // with no exemption at all would each make this pass while checking nothing.
+  assert.ok(sources.openFindingIds.size >= 50, `the open-finding register holds only ${sources.openFindingIds.size} ids — the layout moved`);
+  assert.ok(
+    sources.declaredFindingIds.size > sources.openFindingIds.size,
+    `${sources.declaredFindingIds.size} headings vs ${sources.openFindingIds.size} open keys — headings must SURVIVE closure, which is the whole reason they cannot be the openness source`,
+  );
+  const exempt = matrix.profiles.flatMap((p) => p.cases.filter((c) => c.redactionCase?.suppressedArm?.scope === "none"));
+  assert.ok(exempt.length > 0, "no redaction exemption is declared, so these controls evaluated nothing");
+  assert.deepEqual(evaluateRedactionExemptionBlockers(matrix, sources), [], "the committed exemption's blockers must all be open registered findings");
+});
+
+test("DEP-026: a PHANTOM blocker, a RESOLVED blocker, and ABSENT sources each red", () => {
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
+  const sources = readFindingSources(repoRoot);
+  const withBlockers = (ids) => {
+    const m = JSON.parse(JSON.stringify(matrix));
+    for (const p of m.profiles) {
+      for (const c of p.cases) {
+        if (c.redactionCase?.suppressedArm?.scope === "none") c.redactionCase.suppressedArm.blockedBy = ids;
+      }
+    }
+    return m;
+  };
+  assert.ok(
+    has(evaluateRedactionExemptionBlockers(withBlockers(["E6-F999"]), sources), "declaration:redaction_exemption_blocker_undeclared"),
+    "a PHANTOM blocker must red",
+  );
+  // ★ THE SHAPE MY FIRST PASS MISSED, and the reason the register is the openness source: `E9-F003` is
+  // a REAL, closed finding — its findings.md heading survives, its register key is gone — so it passes
+  // the existence check and must fail the openness one. Resolving the blocker is what forces the flip.
+  assert.ok(sources.declaredFindingIds.has("E9-F003"), "E9-F003's heading must still exist, else this control measures the wrong thing");
+  assert.ok(!sources.openFindingIds.has("E9-F003"), "E9-F003 must be CLOSED (absent from the register), else this control is vacuous");
+  const resolved = evaluateRedactionExemptionBlockers(withBlockers(["E9-F003"]), sources);
+  assert.ok(has(resolved, "declaration:redaction_exemption_blocker_not_open"), codes(resolved).join(","));
+  assert.ok(!has(resolved, "declaration:redaction_exemption_blocker_undeclared"), "a resolved finding is DECLARED — the two codes must not collapse");
+
+  // ★ FAIL-CLOSED ON ABSENT SOURCES. A caller cannot obtain silence by not looking, which is the class
+  // this whole ticket is about. Every unusable shape refuses.
+  const unusable = [
+    undefined,
+    {},
+    { openFindingIds: sources.openFindingIds },
+    { declaredFindingIds: sources.declaredFindingIds },
+    { openFindingIds: new Set(), declaredFindingIds: sources.declaredFindingIds },
+    { openFindingIds: ["E6-F033"], declaredFindingIds: ["E6-F033"] },
+  ];
+  for (const bad of unusable) {
+    assert.ok(
+      has(evaluateRedactionExemptionBlockers(matrix, bad), "declaration:redaction_exemption_blockers_unverifiable"),
+      `${JSON.stringify(bad ?? null)} must refuse rather than pass silently`,
+    );
+  }
+  // And a matrix with NO exemption needs no sources — the refusal is scoped to callers that depend on it.
+  const none = JSON.parse(JSON.stringify(matrix));
+  for (const p of none.profiles) {
+    for (const c of p.cases) if (c.redactionCase?.suppressedArm) c.redactionCase.suppressedArm = { scope: "in_run" };
+  }
+  assert.deepEqual(evaluateRedactionExemptionBlockers(none, undefined), [], "a matrix with no exemption must not demand sources");
+});
+
+test("DEP-026 ANTI-ORPHAN: every production declaration-checking path performs the blocker cross-reference", () => {
+  // `REL-004`'s lesson, applied to my own new verifier: a check with zero callers is a check that
+  // evaluates nothing, and Codex's second P2 was exactly that — the cross-reference existed only here.
+  const callers = [
+    "scripts/check-campaign-fault-matrix.mjs",
+    "scripts/m1-shipped-boot/journey.mjs",
+    "tests/d1/m1-fault-matrix.test.mjs",
+  ];
+  for (const rel of callers) {
+    const src = readFileSync(path.join(repoRoot, rel), "utf8");
+    assert.match(src, /evaluateRedactionExemptionBlockers\(/, `${rel} must call evaluateRedactionExemptionBlockers`);
+    assert.match(src, /readFindingSources\(/, `${rel} must supply the finding sources, else the call fails closed`);
+  }
+  // Non-vacuity, and the SECOND SOURCE for completeness (`E.2.1`): every file that validates the
+  // declaration at all must be in the list above, so a NEW production caller cannot be added without
+  // being swept. An enumeration, not a memory.
+  const dirs = ["scripts", "scripts/m1-shipped-boot", "scripts/lib", "tests/d1"];
+  const validators = [];
+  for (const dir of dirs) {
+    const abs = path.join(repoRoot, dir);
+    if (!existsSync(abs)) continue;
+    for (const f of readdirSync(abs, { withFileTypes: true })) {
+      if (!f.isFile() || !f.name.endsWith(".mjs")) continue;
+      const rel = `${dir}/${f.name}`;
+      if (rel === "scripts/lib/campaign-fault-matrix.mjs" || rel === "scripts/check-campaign-fault-matrix.test.mjs") continue;
+      if (/evaluateFaultMatrixDeclaration\(/.test(readFileSync(path.join(abs, f.name), "utf8"))) validators.push(rel);
     }
   }
-  return out;
-}
-
-test("DEP-026: every redaction exemption's `blockedBy` names a finding that EXISTS", () => {
-  const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
-  const known = declaredFindingHeadings();
-  // Non-vacuity FIRST, twice over: a broken heading regex, or a matrix with no exemption at all, would
-  // make the loop below pass while checking nothing.
-  assert.ok(known.size >= 50, `the findings-heading scan found only ${known.size} ids — the regex or the layout moved`);
-  const pairs = declaredSuppressedArmBlockers(matrix);
-  assert.ok(pairs.length > 0, "no redaction exemption declares a blocker, so this control evaluated nothing");
-  for (const [caseId, id] of pairs) {
-    assert.ok(known.has(id), `${caseId}: suppressedArm.blockedBy names ${id}, which no epic's findings.md declares`);
-  }
-  // And the control's own control: a phantom id must red.
-  assert.throws(
-    () => {
-      const phantom = JSON.parse(JSON.stringify(matrix));
-      declaredSuppressedArmBlockers(phantom).length; // shape check before mutating
-      for (const p of phantom.profiles) {
-        for (const c of p.cases) {
-          if (c.redactionCase?.suppressedArm?.scope === "none") c.redactionCase.suppressedArm.blockedBy = ["E6-F999"];
-        }
-      }
-      for (const [caseId, id] of declaredSuppressedArmBlockers(phantom)) {
-        assert.ok(known.has(id), `${caseId}: ${id}`);
-      }
-    },
-    /E6-F999/,
-    "a phantom blocker id must red — else this control proves nothing",
+  assert.ok(validators.length > 0, "found no production declaration validator at all — this control evaluated nothing");
+  assert.deepEqual(
+    validators.sort(),
+    [...callers].sort(),
+    "a file validates the declaration without cross-referencing the exemption's blockers — add it to this list AND give it the call",
   );
 });

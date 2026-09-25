@@ -664,3 +664,64 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
 export function formatViolations(violations) {
   return (violations ?? []).map((v) => `  - ${v.code}: ${v.message}`).join("\n");
 }
+
+// ── 3. the redaction exemption's blockers, cross-referenced against the FINDING REGISTER ──────
+//
+// ★★★ Codex P2 ×2 on PR #609, both REAL and both verified at source before fixing.
+//
+// (1) `classifyRedactionSuppressedArm` accepts any non-empty strings in `blockedBy`, so a typo — or
+//     the later RESOLUTION of `E6-F033`/`E6-F034` — would leave the D1 case permanently exempt and
+//     green without its withheld-plant arm. ★ THE SECOND HALF REVERSED MY OWN EARLIER REASONING: I
+//     had cross-referenced the epics' `findings.md` headings and argued AGAINST the register because
+//     closure DELETES its key. Closing the blocker is PRECISELY what must invalidate the exemption —
+//     the D1 case's own `reason` says *"Closing both means deleting this exemption and declaring
+//     `scope: "in_run"`"*. So the register is the right source for OPENNESS, and the headings for
+//     EXISTENCE. Measured: `E9-F003` and `E9-F007` are closed, absent from the register, and their
+//     headings survive (232 headings vs 104 register keys, 40 headings explicitly `resolved`).
+//
+// (2) The cross-reference lived only in the self-test, so `check-campaign-fault-matrix.mjs` — which
+//     `m1-shipped-boot.yml`'s keyed artifact-verdict step and `d1-merge-train.yml` both invoke
+//     WITHOUT the suite — did not perform it. It is therefore in the PRODUCTION path now, called by
+//     every entry point that validates the declaration, with an anti-orphan control in the self-test
+//     (the `REL-004` lesson: three admission verifiers with zero callers).
+//
+// It is a SEPARATE function rather than part of `evaluateFaultMatrixDeclaration` because the sets
+// come from the filesystem and that evaluator is pure. FAIL-CLOSED ON ABSENT SOURCES: a matrix that
+// declares an exemption while the caller supplied no sets is REFUSED, so a caller cannot obtain
+// silence by not looking — which is the class this whole ticket is about.
+/**
+ * @param {object} matrix
+ * @param {{openFindingIds?: Set<string>, declaredFindingIds?: Set<string>}} [sources]
+ * @returns {{code:string,message:string}[]}
+ */
+export function evaluateRedactionExemptionBlockers(matrix, sources) {
+  const out = [];
+  const v = (code, message) => out.push(violation(DECLARATION_MARKER, code, message));
+  const exemptions = [];
+  for (const p of matrix?.profiles ?? []) {
+    if (!isPlainObject(p)) continue;
+    for (const c of p.cases ?? []) {
+      if (!isPlainObject(c) || c.family !== "redaction") continue;
+      const arm = isPlainObject(c.redactionCase) ? c.redactionCase.suppressedArm : null;
+      if (!isPlainObject(arm) || arm.scope !== "none") continue;
+      exemptions.push({ where: `${p.profile} / ${c.case}`, blockedBy: Array.isArray(arm.blockedBy) ? arm.blockedBy : [] });
+    }
+  }
+  if (exemptions.length === 0) return out;
+  const usable = (s) => s instanceof Set && s.size > 0;
+  if (!usable(sources?.openFindingIds) || !usable(sources?.declaredFindingIds)) {
+    v("declaration:redaction_exemption_blockers_unverifiable", `${exemptions.length} redaction exemption(s) declare blocking findings, but the caller supplied no finding sources to check them against — an exemption nobody verified is an exemption nobody can rely on, so this refuses rather than passing silently`);
+    return out;
+  }
+  for (const { where, blockedBy } of exemptions) {
+    for (const raw of blockedBy) {
+      const id = String(raw);
+      if (!sources.declaredFindingIds.has(id)) {
+        v("declaration:redaction_exemption_blocker_undeclared", `${where}: suppressedArm.blockedBy names ${JSON.stringify(id)}, which no epic's findings.md declares at all — a phantom blocker cannot justify skipping the withheld-plant arm`);
+      } else if (!sources.openFindingIds.has(id)) {
+        v("declaration:redaction_exemption_blocker_not_open", `${where}: suppressedArm.blockedBy names ${JSON.stringify(id)}, which is RESOLVED (its findings.md heading survives closure, but its scripts/finding-ownership.json key is deleted on resolve) — resolving the blocker is exactly what must force this case to \`scope: "in_run"\`, so the exemption fails closed rather than outliving its reason`);
+      }
+    }
+  }
+  return out;
+}
