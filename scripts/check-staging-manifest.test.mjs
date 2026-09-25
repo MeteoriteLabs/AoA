@@ -574,6 +574,27 @@ test("DEP-017 REJECT: an overlay worker whose env probe is not exactly \"1\"", (
   assert.ok(anyMatch(violations, /'m1-worker-c' must set 'AOA_WORKER_ENV_PROBE'/), violations.join("\n"));
 });
 
+test("DEP-024: every real shipped-boot worker forwards the bounded run-output redaction probe", () => {
+  const overlay = realOverlay();
+  for (const name of SHIPPED_BOOT_OVERLAY_WORKERS) {
+    assert.equal(overlay.services[name].environment.AOA_WORKER_RUN_OUTPUT_PROBE, "1", name);
+  }
+});
+
+test("DEP-024 REJECT (positive control): an overlay worker that DROPPED the run-output probe", () => {
+  const overlay = realOverlay();
+  delete overlay.services["m1-worker-a"].environment.AOA_WORKER_RUN_OUTPUT_PROBE;
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /'m1-worker-a' must set 'AOA_WORKER_RUN_OUTPUT_PROBE'/), violations.join("\n"));
+});
+
+test("DEP-024 REJECT: an overlay worker whose run-output probe is not exactly \"1\"", () => {
+  const overlay = realOverlay();
+  overlay.services["m1-worker-b"].environment.AOA_WORKER_RUN_OUTPUT_PROBE = "true";
+  const violations = evalOverlay(realBase(), overlay);
+  assert.ok(anyMatch(violations, /'m1-worker-b' must set 'AOA_WORKER_RUN_OUTPUT_PROBE'/), violations.join("\n"));
+});
+
 test("DEP-015 REJECT: the E2B key on a shipped-boot worker (the provider-control boundary still holds)", () => {
   const overlay = realOverlay();
   overlay.services["m1-worker-a"].environment.E2B_API_KEY = "${E2B_API_KEY}";

@@ -2952,12 +2952,38 @@ try {
  * the redeemed value to be a HIGH-ENTROPY CANARY UNIQUE TO ITS RUN rather than the lane's shared
  * reference credential. Both default to exactly what this function used before, so every existing
  * caller is byte-identical; the secret is still written through the server's own `secretService`.
+ *
+ * ★★★ `targetId` / `policyHash` / `command` ADDED 2026-09-25 by DEP-024, so the SHIPPED-BOOT lane
+ * can seed the same worker-driven job against ITS OWN deployed target. The three D1-specific facts
+ * this function used to hard-code are exactly those three: the committed profile's target id, that
+ * profile's `policyHash`, and the reference provider's `claude` entrypoint. Every one DEFAULTS to
+ * the byte-identical previous value, and `scripts/lib/__tests__/e6f-harness-binding.test.mjs`'s
+ * sibling control for this function asserts that — the same default-identical + explicit-override
+ * shape DEP-022 used for the stack binding. Writing a second seeder for the second lane is how two
+ * lanes come to disagree about what "the same case" means.
+ *
+ * `command` is the TENANT COMMAND. On the reference provider it is scripted through `workloadArgs`;
+ * on a real sandbox it is whatever the seeded workload names, which is what lets the shipped-boot
+ * redaction case PLANT its leak without any product code knowing about it.
  */
-export function seedSpineWorkerDrivenJob({ tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs = [], target, secretName = SPINE_PROVIDER_SECRET_NAME, secretValue = "m1-spine-reference-credential" }) {
+export function seedSpineWorkerDrivenJob({
+  tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs = [], target,
+  secretName = SPINE_PROVIDER_SECRET_NAME, secretValue = "m1-spine-reference-credential",
+  targetId = SPINE_DEPLOYED_TARGET_ID, policyHash = SPINE_DEPLOYED_POLICY_HASH, command = "claude",
+  // ★ THE RENDER SEAM (DEP-024). `dexecModule` spawns `docker`, so nothing could look at the
+  // script this function BUILDS without a live stack — and a template defect in it costs a whole
+  // ~25-minute lane cycle to find (DEP-023 §5.1 lost one to a real newline inside a JS string
+  // literal in a SIBLING of this template, and its record says a local render+parse check was put
+  // in place; no such check exists in the tree at this revision, so DEP-024 builds it). Injecting
+  // the executor lets `scripts/lib/__tests__/dep-024-worker-driven-seed.test.mjs` render this
+  // template on the `policy` lane and PARSE it, with no Docker anywhere. Default-identical.
+  dexec = dexecModule,
+}) {
   const params = {
     ...tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs, secretValue,
-    targetId: SPINE_DEPLOYED_TARGET_ID,
-    policyHash: SPINE_DEPLOYED_POLICY_HASH,
+    targetId,
+    policyHash,
+    command,
     secretName,
     profileHash: target.profileHash,
     providerDigest: target.providerDigest,
@@ -2998,7 +3024,7 @@ try {
   await sql\`INSERT INTO issues (id, company_id, title, assignee_agent_id)
     VALUES (\${P.issueId}, \${P.companyId}, \${"m1-spine worker-driven " + P.jobId.slice(0, 8)}, \${P.agentId})\`;
   const sourceIntent = { kind: "task_run", runId: P.runId, issueId: P.issueId, assigneeAgentId: P.agentId };
-  const workload = { command: "claude", args: P.workloadArgs, stdinArtifactId: null, maxRuntimeSeconds: 600 };
+  const workload = { command: P.command, args: P.workloadArgs, stdinArtifactId: null, maxRuntimeSeconds: 600 };
   const requirements = { workloadType: "batch", requiredCapabilities: [] };
   const placementRequest = { policyId: "job-submission-default", policyVersion: 1, requestedTarget: null };
   await sql\`INSERT INTO jobs
@@ -3034,7 +3060,7 @@ try {
 `;
   // Same chokepoint scrub as `seedResolvableProviderSecretHandle`: when a caller overrides
   // `secretValue` with a per-run canary, that value must not be printable from either stream.
-  return dexecModule("control-plane", script, { secrets: [secretValue] });
+  return dexec("control-plane", script, { secrets: [secretValue] });
 }
 
 /** What the DEPLOYED worker wrote for one attempt: the accepted events WITH the worker id each

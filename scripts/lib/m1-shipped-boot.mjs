@@ -17,6 +17,8 @@
 //   verdict-json line          ← main()                  server/src/cli/verify-e7-1-distributed-run.ts
 // -----------------------------------------------------------------------------
 
+import { createHash } from "node:crypto";
+
 /** The per-org slug every canary Organization's `dedicated_worker` target must carry (E11-F008). */
 export const CANARY_EXECUTION_TARGET_SLUG = "aoa-canary-e2b";
 
@@ -762,6 +764,22 @@ export function extractEnvProbeSummary(messages) {
  * The metadata observation is RECORDED (the DE-08 residual) and never judged: DE-08 leaves H-06
  * unmet, and nothing here claims egress enforcement.
  */
+/**
+ * DEP-024 - the lane's own placement policy hash, derived from the frozen candidate.
+ *
+ * ONE SOURCE. `provision-targets` puts this value into every tenant's registered target profile,
+ * and any job seeded onto one of those targets must carry the SAME value in `jobs.policy_hash` or it
+ * is never offered. It was computed inline in `journey.mjs`; the redaction phase needs it too, and a
+ * second copy of a derivation is a copy that drifts - silently, into a job that is simply never
+ * offered and a case that reds on a timeout instead of on the thing it asserts.
+ */
+export function shippedBootPolicyHash(candidate) {
+  if (!/^[0-9a-f]{40}$/.test(String(candidate))) {
+    throw new Error(`shippedBootPolicyHash: the candidate must be a 40-hex revision; got ${JSON.stringify(candidate)}`);
+  }
+  return createHash("sha256").update(`dep-015-policy:${candidate}`).digest("hex");
+}
+
 export function evaluateEnvProbeEvidence(summary) {
   const reasons = [];
   if (summary === null || summary === undefined) {

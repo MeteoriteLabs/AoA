@@ -35,6 +35,15 @@
 //                      DEP-017: each enabled tenant's attempt must also carry a clean live
 //                      env-absence probe summary (read from its `job_events`), with a red
 //                      planted control; keyless observes no probe (no sandbox exists).
+//   redaction          KEYED ONLY (DEP-024). The E5 clause-5 case: two worker-driven jobs for
+//                      tenant A on its own ratified target - the first WITHHOLDS the plant, the
+//                      second plants a high-entropy canary AS the redeemed value of its own
+//                      secret handle and echoes it from the tenant command behind the
+//                      run-output probe tag. The canary must be ABSENT from both declared
+//                      streams (this job's events, the worker container log) and from the OTHER
+//                      tenant's whole stream, while the scrubber's OWN marker must be PRESENT on
+//                      a line carrying this run's tag on both. The planted value is never a real
+//                      provider key. Keyless has no sandbox, so the phase refuses there.
 //   fault-matrix       KEYED ONLY. Maps the journey's own per-tenant observations onto the three
 //                      `M1a-D2-MECHANISM` cases they decide (the two enabled journeys and the
 //                      control tenant's refusal), writes `fault-matrix-bundle.json`, and re-judges
@@ -57,6 +66,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CROSS_TENANT_EVIDENCE_MARKER, runCrossTenantCases } from "./cross-tenant.mjs";
+import { REDACTION_PROBE_EVIDENCE_MARKER, runRedactionProbeCases } from "./redaction.mjs";
+import { REDACTION_PROBE_CASE } from "../lib/m1a-redaction-probe.mjs";
 import {
   evaluateFaultMatrixDeclaration,
   evaluateFaultMatrixEvidence,
@@ -82,6 +93,7 @@ import {
   KEY_MATERIAL_MARKERS,
   extractRolloutResolution,
   CANARY_EXECUTION_TARGET_SLUG,
+  shippedBootPolicyHash,
   // DEP-017 — the live env-absence probe's read side.
   plantedTenantCanary,
   extractEnvProbeSummary,
@@ -574,7 +586,7 @@ function assertTenants(state) {
 }
 
 async function provisionTargets(state) {
-  const policyHash = createHash("sha256").update(`dep-015-policy:${state.candidate}`).digest("hex");
+  const policyHash = shippedBootPolicyHash(state.candidate);
   for (const t of TENANTS) {
     const tenant = state.tenants[t.key];
     // The provider digest with the server's OWN canonicalizer (no drift): computed in the image.
@@ -1199,6 +1211,64 @@ async function crossTenant(state, { suppressInjection = false } = {}) {
   console.log(`${CROSS_TENANT_EVIDENCE_MARKER} ${observations.rows.length} case(s) recorded`);
 }
 
+/**
+ * DEP-024 - the E5 clause-5 (redaction) phase. KEYED ONLY, and it carries BOTH of its arms.
+ *
+ * The case seeds two worker-driven jobs for tenant A on its own ratified target: the first withholds
+ * the plant, the second plants a high-entropy canary AS THE REDEEMED VALUE of that job's own secret
+ * handle and echoes it from the tenant command behind the run-output probe tag. The value planted is
+ * NEVER a real provider key - see `scripts/m1-shipped-boot/redaction.mjs`, whose header is the
+ * safety argument, link by link, for this lane.
+ *
+ * It refuses in `keyless`: with no adapter-manager there is no sandbox, nothing can echo anything,
+ * and a phase that recorded `injectionFired: false` there would be filing a not-run as an
+ * observation. The same reason `dispatch`'s enabled tenants and the `fault-matrix` phase are keyed.
+ */
+async function redaction(state) {
+  if (state.mode !== "keyed") {
+    fail(`the redaction phase runs on the KEYED lane only (mode=${JSON.stringify(state.mode)}): the adapter-manager is never started in keyless mode, so no sandbox exists and nothing can plant or echo a canary`);
+  }
+  bindHarnessToThisStack(state);
+  console.log("redaction: driving the M1a-D2-MECHANISM clause-5 case (withheld-plant arm, then the planted arm)");
+  let observations = null;
+  let error = null;
+  try {
+    observations = await runRedactionProbeCases({
+      tenants: state.tenants,
+      ownerSql: (sqlText, params) => ownerSql(state, sqlText, params),
+      policyHash: shippedBootPolicyHash(state.candidate),
+      // The journey's OWN secret ledger, handed to the driver so every canary it mints is masked in
+      // the Actions log, redacted from every retained log, and SEARCHED FOR by `leak-scan` before
+      // anything is uploaded. `saveState` on each registration because `collect` and `leak-scan` are
+      // separate processes that read the state file (Codex P2, PR #607).
+      registerSecret: (name, value) => {
+        trackSecret(state, name, value);
+        saveState(state);
+      },
+      workerService: TENANTS.find((t) => t.key === "a").worker,
+      log: (line) => console.log(redactSecrets(String(line), state.redact)),
+    });
+  } catch (err) {
+    error = err;
+  }
+  // Retained on BOTH outcomes: a phase that only wrote evidence when it passed would leave a
+  // failure with nothing to read - and on the failure path the rows come OFF the error, because the
+  // driver's verdict throws after it has gathered them.
+  writeEvidence(state, "redaction-observations.json", {
+    ticket: "DEP-024",
+    profile: "M1a-D2-MECHANISM",
+    candidate: state.candidate,
+    mode: state.mode,
+    producedBy: "scripts/m1-shipped-boot/journey.mjs redaction",
+    finishedAt: new Date().toISOString(),
+    cases: observations?.rows ?? error?.rows ?? [],
+    detail: observations?.detail ?? error?.detail ?? {},
+    error: error ? redactSecrets(String(error.message ?? error), state.redact).slice(0, 4000) : null,
+  });
+  if (error) fail(`redaction: ${redactSecrets(String(error.message ?? error), state.redact)}`);
+  console.log(`${REDACTION_PROBE_EVIDENCE_MARKER} ${observations.rows.length} case(s) recorded`);
+}
+
 /** One declared case's row, with the fact that decided it. */
 function matrixRow(caseId, { injectionFired, observedClassification, detail }) {
   return { case: caseId, injectionFired: injectionFired === true, observedClassification, detail };
@@ -1297,13 +1367,46 @@ function faultMatrix(state) {
   }
   for (const row of cross.cases) rows.push(row);
 
+  // DEP-024 - the clause-5 redaction row, from the phase that drove it.
+  //
+  // ★ FOLDED ONLY WHILE THE DECLARATION SAYS `required`, and this conditional is not a convenience.
+  // `evaluateFaultMatrixEvidence` REFUSES a bundle that reports evidence for a case declared
+  // `pending` ("a pending case is never a pass, and reds if a bundle reports evidence for it"). The
+  // case is wired here and left `pending` until a keyed run has shown it fire, which is ruling F8's
+  // to dispatch - so while it is pending the phase still runs, still refuses on its own two arms,
+  // and still retains `redaction-observations.json`, but its row does not enter the graded bundle.
+  // The condition is read off the DECLARATION rather than held as a flag, so the row appears on the
+  // same commit that flips the case and never a moment before or after.
+  {
+    const declared = (matrix.profiles ?? [])
+      .find((pr) => pr && pr.profile === profile)?.cases
+      ?.find((c) => c && c.case === REDACTION_PROBE_CASE) ?? null;
+    const redactionPath = path.join(evidenceDir(state), "redaction-observations.json");
+    if (!existsSync(redactionPath)) {
+      fail("no redaction-observations.json - the `redaction` phase must run BEFORE `fault-matrix`");
+    }
+    const observed = JSON.parse(readFileSync(redactionPath, "utf8"));
+    if (!Array.isArray(observed.cases) || observed.cases.length === 0) {
+      fail("redaction-observations.json carries no cases");
+    }
+    if (declared?.evidence === "required") {
+      for (const row of observed.cases) rows.push(row);
+    } else {
+      console.log(
+        `fault-matrix: ${REDACTION_PROBE_CASE} is declared ${JSON.stringify(declared?.evidence ?? null)}, ` +
+        "so its observed row is retained in redaction-observations.json and NOT folded into the graded bundle " +
+        "(a bundle that reported evidence for a pending case is refused by the matrix's own verdict)",
+      );
+    }
+  }
+
   const bundle = {
     profile,
-    ticket: "DEP-015 + DEP-022",
+    ticket: "DEP-015 + DEP-022 + DEP-024",
     candidate: state.candidate,
     mode: state.mode,
     producedBy: "scripts/m1-shipped-boot/journey.mjs fault-matrix",
-    note: "Rows come from two sources, both of them observations of THIS stack: the journey's own per-tenant outcomes (DEP-015) and the cross-tenant/cost/legacy/lease-binding drivers (DEP-022, cross-tenant-observations.json). Every case still declared `pending` carries its kind, reason and owner; see tests/d1/fault-matrix.json.",
+    note: "Rows come from three sources, all of them observations of THIS stack: the journey's own per-tenant outcomes (DEP-015), the cross-tenant/cost/legacy/lease-binding drivers (DEP-022, cross-tenant-observations.json), and the clause-5 redaction phase (DEP-024, redaction-observations.json - folded ONLY while that case is declared `required`, because the matrix verdict refuses a bundle that reports evidence for a pending case). Every case still declared `pending` carries its kind, reason and owner; see tests/d1/fault-matrix.json.",
     crossTenantObservations: { producedBy: cross.producedBy ?? null, finishedAt: cross.finishedAt ?? null, cases: cross.cases.length },
     startedAt: journey.startedAt ?? null,
     finishedAt: new Date().toISOString(),
@@ -1351,6 +1454,7 @@ const PHASES = {
   "probe-presign": (args) => probePresign(loadState(args.out)),
   dispatch: (args) => dispatch(loadState(args.out)),
   "cross-tenant": (args) => crossTenant(loadState(args.out), { suppressInjection: args.suppressInjection === true }),
+  redaction: (args) => redaction(loadState(args.out)),
   "fault-matrix": (args) => faultMatrix(loadState(args.out)),
   collect: (args) => collect(loadState(args.out)),
   "leak-scan": (args) => leakScan(loadState(args.out)),

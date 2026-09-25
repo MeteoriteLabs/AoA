@@ -550,6 +550,15 @@ const SHIPPED_BOOT_ALLOWANCE = Symbol("dep-015-shipped-boot-overlay");
 // failure at the end of a paid run; this makes the drop a free, pre-boot red instead.
 export const SHIPPED_BOOT_ENV_PROBE_ENV = Object.freeze({ AOA_WORKER_ENV_PROBE: "1" });
 
+// ★ DEP-024 — every shipped-boot worker also FORWARDS the bounded run-output redaction probe. The
+// E5 clause-5 case (`d2m.redaction.planted_canary_scrubbed`) is observed on exactly two streams,
+// and BOTH of them are produced by this flag: the `log` event and the one worker log line
+// (`packages/worker-daemon/src/supervisor/run-output-probe.ts`). Without it the lane's redaction
+// phase would seed a canary, execute a real sandbox, and then find no scrubber marker on either
+// stream — `no_scrubber_marker_observed` at the end of a PAID run. The flag is the same strict
+// grammar as the env probe's (exactly `"1"`), and this makes the drop a free pre-boot red.
+export const SHIPPED_BOOT_RUN_OUTPUT_PROBE_ENV = Object.freeze({ AOA_WORKER_RUN_OUTPUT_PROBE: "1" });
+
 /** Every service that RUNS the worker image — the four named staging workers plus any other
  * service whose image is a worker image OR whose name says it is a worker (a rendered manifest
  * carries a concrete tag, so the image test alone could miss one). Enumerating by a fixed name
@@ -811,6 +820,11 @@ export function evaluateShippedBootOverlayInvariants(base, overlay, options = {}
     for (const [key, expected] of Object.entries(SHIPPED_BOOT_ENV_PROBE_ENV)) {
       if (String(envValue(svc, key) ?? "") !== expected) {
         v.push(`shipped-boot worker '${name}' must set '${key}' to exactly ${JSON.stringify(expected)} (DEP-017: the live env-absence probe runs in every shipped-boot sandbox)`);
+      }
+    }
+    for (const [key, expected] of Object.entries(SHIPPED_BOOT_RUN_OUTPUT_PROBE_ENV)) {
+      if (String(envValue(svc, key) ?? "") !== expected) {
+        v.push(`shipped-boot worker '${name}' must set '${key}' to exactly ${JSON.stringify(expected)} (DEP-024: the bounded run-output redaction probe produces BOTH streams the E5 clause-5 case is observed on)`);
       }
     }
   }
