@@ -16,7 +16,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -669,4 +669,73 @@ test("DEP-026 declaration: a PENDING redaction case need not declare it yet, but
     c.redactionCase.suppressedArm = { scope: "vibes" };
   }));
   assert.ok(has(pendingBadArm, "declaration:redaction_suppressed_arm_unknown_scope"), codes(pendingBadArm).join(","));
+});
+
+// ★ DEP-026 — AN EXEMPTION THAT NAMES A PHANTOM FINDING IS AN UNCHECKED EXEMPTION.
+//
+// Found by self-auditing this ticket's OWN diff (`E.1a`: you are the most recent author of the defect
+// you are describing). `classifyRedactionSuppressedArm` checks that `blockedBy` is a non-empty array of
+// non-empty strings — which answers "is what I wrote well-formed?" and NOT "does the thing it names
+// exist?". A typo, or an id invented to satisfy the shape, would pass every check above while the
+// exemption pointed at nothing. That is precisely the class this whole surface has been unwinding, one
+// level out.
+//
+// Completeness is a claim about something the artefact does not contain, so it needs a SECOND SOURCE
+// (`E.2.1`): the epics' `findings.md` headings. Deliberately NOT `scripts/finding-ownership.json` —
+// closing a finding DELETES its register key, and an exemption may legitimately name a blocker that has
+// since been closed, so the register would red on a correct declaration. The prose heading survives
+// closure; the register key does not.
+function declaredFindingHeadings() {
+  const ids = new Set();
+  const dir = path.join(repoRoot, "docs/replatform/epics");
+  for (const epic of readdirSync(dir, { withFileTypes: true })) {
+    if (!epic.isDirectory()) continue;
+    const file = path.join(dir, epic.name, "findings.md");
+    if (!existsSync(file)) continue;
+    for (const m of readFileSync(file, "utf8").matchAll(/^##\s+([A-Z][A-Z0-9]*-F\d+)\b/gm)) ids.add(m[1]);
+  }
+  return ids;
+}
+
+/** Every `blockedBy` id any redaction exemption names, as `[caseId, findingId]` pairs. */
+function declaredSuppressedArmBlockers(matrix) {
+  const out = [];
+  for (const p of matrix.profiles ?? []) {
+    for (const c of p.cases ?? []) {
+      const arm = c.redactionCase?.suppressedArm;
+      if (arm?.scope !== "none") continue;
+      for (const id of Array.isArray(arm.blockedBy) ? arm.blockedBy : []) out.push([c.case, String(id)]);
+    }
+  }
+  return out;
+}
+
+test("DEP-026: every redaction exemption's `blockedBy` names a finding that EXISTS", () => {
+  const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
+  const known = declaredFindingHeadings();
+  // Non-vacuity FIRST, twice over: a broken heading regex, or a matrix with no exemption at all, would
+  // make the loop below pass while checking nothing.
+  assert.ok(known.size >= 50, `the findings-heading scan found only ${known.size} ids — the regex or the layout moved`);
+  const pairs = declaredSuppressedArmBlockers(matrix);
+  assert.ok(pairs.length > 0, "no redaction exemption declares a blocker, so this control evaluated nothing");
+  for (const [caseId, id] of pairs) {
+    assert.ok(known.has(id), `${caseId}: suppressedArm.blockedBy names ${id}, which no epic's findings.md declares`);
+  }
+  // And the control's own control: a phantom id must red.
+  assert.throws(
+    () => {
+      const phantom = JSON.parse(JSON.stringify(matrix));
+      declaredSuppressedArmBlockers(phantom).length; // shape check before mutating
+      for (const p of phantom.profiles) {
+        for (const c of p.cases) {
+          if (c.redactionCase?.suppressedArm?.scope === "none") c.redactionCase.suppressedArm.blockedBy = ["E6-F999"];
+        }
+      }
+      for (const [caseId, id] of declaredSuppressedArmBlockers(phantom)) {
+        assert.ok(known.has(id), `${caseId}: ${id}`);
+      }
+    },
+    /E6-F999/,
+    "a phantom blocker id must red — else this control proves nothing",
+  );
 });

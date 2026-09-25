@@ -120,7 +120,8 @@ Well-formedness is required either way, so no case can park a broken shape behin
 
 ### 3.1 The RED, and its shape
 
-Six controls written first, run against the unfixed grader:
+Six controls written first (a seventh was added later by self-audit — §4.5), run against the unfixed
+grader:
 
 **`38 tests / 32 pass / 6 fail`.**
 
@@ -131,12 +132,13 @@ the point: this was never a wrong message or a near-miss, it was a branch that d
 
 ### 3.2 GREEN
 
-**`38 tests / 38 pass / 0 fail`** on `scripts/check-campaign-fault-matrix.test.mjs`.
+**`39 tests / 39 pass / 0 fail`** on `scripts/check-campaign-fault-matrix.test.mjs` (`38/38/0` before §4.5's
+seventh control was added).
 
 The owning `pr.yml` step (`Campaign fault matrix declaration (DEP-018)`) runs
 `node scripts/check-campaign-fault-matrix.mjs` **and** that suite; both are green, the guard reporting
 `3 gate profile(s) and 83 case(s) (46 required, 37 pending)`. Run with the two neighbouring pure suites
-(`m1a-redaction-probe`, `m1-spine-assertions`): **`191 tests / 191 pass / 0 fail`**.
+(`m1a-redaction-probe`, `m1-spine-assertions`): **`192 tests / 192 pass / 0 fail`**.
 
 ### 3.3 The mutation table — each behaviour removed, the red shown, reverted
 
@@ -151,8 +153,12 @@ only the committed change).
 | **M3** let a bare `{scope:"none"}` exemption through | `38 / 36 / 2` |
 | **M4** remove the DECLARATION half's presence requirement (the second source, `E.2.1`) | `38 / 37 / 1` |
 | **M5** accept the row field as TRUTHY rather than strictly `true` | `38 / 37 / 1` |
+| **M6** (§4.5) name a PHANTOM blocker id in the committed declaration's exemption — `blockedBy: ["E6-F033", "E6-F901"]` | `39 / 38 / 1`, with the exact message `d1.redaction.planted_canary_scrubbed: suppressedArm.blockedBy names E6-F901, which no epic's findings.md declares` |
 
-All five reverted. **M5 is the fail-closed row**: it is what makes `undefined`/`null` a refusal rather
+All five reverted, plus M6, which mutated `tests/d1/fault-matrix.json` itself and was restored
+byte-identically (asserted in the script, not eyeballed). The M1–M5 counts are the ones measured against
+the six-control tree; M6 was added afterwards and is measured against the seven-control tree, which is
+why its total is `39`. Stated rather than silently re-normalised. **M5 is the fail-closed row**: it is what makes `undefined`/`null` a refusal rather
 than a pass, and the control that catches it iterates `[false, null, undefined]` rather than asserting
 one value.
 
@@ -226,7 +232,28 @@ The first place I looked after writing the class sentence. Two things came out o
    for the same reason `DEP-025` made `requireArmSucceeded` one helper: an asymmetry between two readers
    of the same fact is what finding (a) cost.
 
-### 4.5 `E6-F033` — checked, and it does **NOT** close
+### 4.5 ★ A phantom blocker id would have been an unchecked exemption — found in my own diff, fixed here
+
+The self-audit's family 8 (*fail-closed on missing input*) pointed at my own new field.
+`classifyRedactionSuppressedArm` checks that `blockedBy` is a non-empty array of non-empty strings, which
+answers *"is what I wrote well-formed?"* and **not** *"does the thing it names exist?"* — `E.2.1`'s exact
+distinction. A typo, or an id invented to satisfy the shape, would have passed every check in §2.1 while
+the exemption pointed at nothing. **An exemption naming a phantom finding is an unchecked exemption**, and
+the whole argument for taking the general fix is that a declared exemption is checkable.
+
+So a seventh control cross-references every declared `blockedBy` id against a **second source**: the
+`## <ID>` headings of every `docs/replatform/epics/*/findings.md`. Two non-vacuity assertions come first —
+the heading scan must find ≥ 50 ids (so a moved layout or a broken regex reds rather than passing
+vacuously), and at least one exemption must declare a blocker (so an exemption-free matrix does not make
+the loop evaluate nothing). M6 is its mutation.
+
+★ **`findings.md` and NOT `scripts/finding-ownership.json`, deliberately.** Closing a finding **deletes**
+its register key (`E.2` rule 5), and an exemption may legitimately name a blocker that has since been
+closed — so the register would red on a *correct* declaration. The prose heading survives closure; the
+register key does not. Checking the wrong source here would have been a check that fails wrongly, which is
+the dual of the one it replaces.
+
+### 4.6 `E6-F033` — checked, and it does **NOT** close
 
 **It does not, and my change does not touch it.** `E6-F033` is about the D1 **graded** arm's `logs`
 attribution being positional — `markedProbeLine` carrying no per-run token over a shared append-only
@@ -362,13 +389,14 @@ without supplying `positiveControlPassed`, and the stricter grader adds no red.
 | A bare or half-filled `none` exemption reds on both halves of the matrix | **Demonstrated** (M3; seven malformed shapes) |
 | The row field is required STRICTLY `true`, so `null`/`undefined` refuse | **Demonstrated** (M5; the control iterates `[false, null, undefined]`) |
 | The declaration half is a genuine SECOND source, not a restatement | **Demonstrated** (M4 reds the declaration control alone, with the evidence half intact) |
+| A declared exemption cannot name a PHANTOM finding | **Demonstrated** (§4.5; M6 reds on the committed file with the id named, and the control carries two non-vacuity assertions of its own) |
 | The D1 row reports no suppressed arm | **Demonstrated at source** — `record(…)` passes no such key |
 | The D1 `events` half IS buildable — so this is `(a)`, a real gap, not impossibility | **Argued from source, and the load-bearing link was READ**: `queryJobEventPayloadText`'s SQL is `WHERE job_id = $jobId`. NOT built here, and filed as `E6-F034` |
 | The D1 `logs` half is NOT buildable — so that half is `(c)` | **Argued from source, three links read**: the whole-service `docker compose logs`, the tokenless `logger.info({ probeLine }, …)`, and the constant line text |
 | The D1 lane's campaign-scoped control is not case-scoped | **Demonstrated at source** — the workflow step's `grep -F 'injection_did_not_fire'` is satisfied by any case |
 | `attemptStatus` is in the class shape but is NOT a hole | **Argued from source**, and deliberately not claimed as a fix: the fact is graded via `injectionFired` and `observedClassification` |
 | `E6-F033` closes | ★ **FALSE, and not claimed.** Untouched; now machine-cited by the exemption rather than only by prose |
-| The owning `pr.yml` step's suites pass with the stricter judge | **Demonstrated** — `38/38/0`, and `191/191/0` with the two neighbouring pure suites |
+| The owning `pr.yml` step's suites pass with the stricter judge | **Demonstrated** — `39/39/0`, and `192/192/0` with the two neighbouring pure suites |
 | The full guard set + `check-evidence-immutability --base origin/docs/replatform-program` are green | **Demonstrated** — `failures: 0`, `75 base records` all byte-identical |
 | The register deltas are exactly mine, two-sided against the merge ref | **Demonstrated** — §6 |
 | The live D1 lane is unaffected by the exemption | **See §8** — dispatched; `d1-merge-train` runs this branch's code |
@@ -387,7 +415,7 @@ cannot fail my hypothesis is not a hypothesis test (`E.3.2`).
 | File | Change |
 |---|---|
 | `scripts/lib/campaign-fault-matrix.mjs` | `REDACTION_SUPPRESSED_ARM_SCOPES` + `classifyRedactionSuppressedArm`; the declaration half validates `redactionCase.suppressedArm` (presence on `required`, well-formedness always); the evidence half grades the withheld-plant arm and fails closed |
-| `scripts/check-campaign-fault-matrix.test.mjs` | 6 new controls; the anchor declares `in_run` and its bundle row carries the field |
+| `scripts/check-campaign-fault-matrix.test.mjs` | 7 new controls (`32 → 39`); the anchor declares `in_run` and its bundle row carries the field; the seventh cross-checks every exemption's `blockedBy` against the epics' `findings.md` headings |
 | `tests/d1/fault-matrix.json` | `d1` → the declared `none` exemption naming `E6-F033`/`E6-F034`; `d2m` → `in_run`, with its `pendingReason` superseded in place |
 | `docs/replatform/epics/E6-deployment-test-harness/findings.md` | `E6-F034` filed |
 | `scripts/finding-ownership.json` | `E6-F034` added as a delta |
