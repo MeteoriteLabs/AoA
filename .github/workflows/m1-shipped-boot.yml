@@ -410,8 +410,18 @@ jobs:
         run: |
           set -uo pipefail
           out="${RUNNER_TEMP}/m1-cross-tenant-suppressed.txt"
+          # The step's whole purpose is to run a phase that MUST exit non-zero, and the job shell is
+          # `bash -eo pipefail` (see `defaults.run.shell` above). Without `set +e` the expected
+          # failure aborts the step BEFORE `status="${PIPESTATUS[0]}"` is read, so the control dies
+          # on its own success condition and never reaches any of its four assertions -- observed
+          # live in run 36063928987, where the suppressed phase reded correctly with "14
+          # injection(s) did not fire, 14 not denied" and the step still failed. The `collect` step
+          # below already does this for the same reason. Re-enabled immediately after the capture,
+          # so every assertion that follows keeps failing the step as intended.
+          set +e
           node scripts/m1-shipped-boot/journey.mjs cross-tenant --out "$M1_OUT" --suppress-injection 2>&1             | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" | tee "$out"
           status="${PIPESTATUS[0]}"
+          set -e
           if [ "$status" -eq 0 ]; then
             echo "::error::the cross-tenant phase PASSED with every injection suppressed — it is measuring nothing"
             exit 1
