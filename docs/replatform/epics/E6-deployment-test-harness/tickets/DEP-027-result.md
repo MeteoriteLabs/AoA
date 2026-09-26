@@ -42,6 +42,19 @@ After implementation:
 Each required mutation independently reds the grader, and restoring the production behavior returns
 the focused suites to green.
 
+## Review corrections
+
+Codex review found two valid retained-evidence gaps. First, the D1 live assertion checked the foreign
+Company stream after writing the row, so that row could remain pass-shaped when the canary crossed a
+Company boundary. The foreign-stream result is now a required row field, is folded into
+`redactedOnAllStreams`, and is independently required by the standalone grader. A mutation with
+`crossTenantCanaryAbsent: false` reds artifact-only grading.
+
+Second, the shipped-boot compatibility row initially inferred withheld-stream observation from total
+lifecycle byte counts. Its withheld command now emits a tagged nonce-bearing inert control line, and
+each stream is considered observed only when that exact tagged nonce is present. Ordinary lifecycle
+output, the former untagged line, and another arm's nonce all fail the pure control.
+
 ## Repository verification
 
 - `pnpm -r typecheck` — PASS.

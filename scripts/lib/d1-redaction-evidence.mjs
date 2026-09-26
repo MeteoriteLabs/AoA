@@ -33,7 +33,7 @@ function observeArm(arm) {
   };
 }
 
-export function evaluateD1RedactionEvidence({ canary, graded, suppressed }) {
+export function evaluateD1RedactionEvidence({ canary, crossTenantCanaryAbsent, graded, suppressed }) {
   const gradedEvidence = observeArm({ ...graded, canary });
   const suppressedEvidence = observeArm(suppressed);
   const gradedSucceeded = gradedEvidence.attemptStatus === D1_REDACTION_REQUIRED_ATTEMPT_STATUS;
@@ -42,7 +42,8 @@ export function evaluateD1RedactionEvidence({ canary, graded, suppressed }) {
   const gradedMarked = D1_REDACTION_STREAMS.every(
     (stream) => gradedEvidence.scrubberMarkerObservedOnStream[stream] === true,
   );
-  const gradedClean = D1_REDACTION_STREAMS.every((stream) => gradedEvidence.canaryAbsentOnStream[stream] === true);
+  const ownStreamsClean = D1_REDACTION_STREAMS.every((stream) => gradedEvidence.canaryAbsentOnStream[stream] === true);
+  const gradedClean = ownStreamsClean && crossTenantCanaryAbsent === true;
   const suppressedObserved = D1_REDACTION_STREAMS.every(
     (stream) => suppressedEvidence.observedOnStream[stream] === true,
   );
@@ -63,6 +64,7 @@ export function evaluateD1RedactionEvidence({ canary, graded, suppressed }) {
             ? "canary_leaked_on_a_stream"
             : "no_scrubber_marker_observed",
       attemptStatus: gradedEvidence.attemptStatus,
+      crossTenantCanaryAbsent: crossTenantCanaryAbsent === true,
       redactedOnAllStreams: gradedClean,
       scrubberMarkerObservedOnStream: gradedEvidence.scrubberMarkerObservedOnStream,
       streamBytesObserved: gradedEvidence.streamBytesObserved,

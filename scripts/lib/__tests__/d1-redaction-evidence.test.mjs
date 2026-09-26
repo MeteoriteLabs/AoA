@@ -31,6 +31,7 @@ test("DEP-027 stale nonce lines cannot satisfy either arm", () => {
   assert.equal(typeof evaluate, "function");
   const result = evaluate({
     canary: "inert-canary",
+    crossTenantCanaryAbsent: true,
     graded: arm(NONCES.graded, {
       eventLine: `${TAG} arm=stale-0123456789abcdef value=${MARKER}`,
       logLine: `${TAG} arm=stale-0123456789abcdef value=${MARKER}`,
@@ -45,6 +46,7 @@ test("DEP-027 stale nonce lines cannot satisfy either arm", () => {
 test("DEP-027 missing per-stream suppressed evidence fails the retained control", () => {
   const result = moduleUnderTest.evaluateD1RedactionEvidence({
     canary: "inert-canary",
+    crossTenantCanaryAbsent: true,
     graded: arm(NONCES.graded, {
       eventLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
       logLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
@@ -61,6 +63,7 @@ test("DEP-027 missing per-stream suppressed evidence fails the retained control"
 test("DEP-027 a failed control terminal cannot pass", () => {
   const result = moduleUnderTest.evaluateD1RedactionEvidence({
     canary: "inert-canary",
+    crossTenantCanaryAbsent: true,
     graded: arm(NONCES.graded, {
       eventLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
       logLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
@@ -71,12 +74,28 @@ test("DEP-027 a failed control terminal cannot pass", () => {
   assert.equal(result.row.suppressedArmEvidence.attemptStatus, "failed");
 });
 
+test("DEP-027 a foreign-tenant canary leak makes the retained row fail", () => {
+  const result = moduleUnderTest.evaluateD1RedactionEvidence({
+    canary: "inert-canary",
+    crossTenantCanaryAbsent: false,
+    graded: arm(NONCES.graded, {
+      eventLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
+      logLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
+    }),
+    suppressed: arm(NONCES.suppressed),
+  });
+  assert.equal(result.row.crossTenantCanaryAbsent, false);
+  assert.equal(result.row.redactedOnAllStreams, false);
+  assert.equal(result.row.observedClassification, "canary_leaked_on_a_stream");
+});
+
 for (const stream of ["events", "logs"]) {
   test(`DEP-027 a marker on the suppressed ${stream} stream fails independently`, () => {
     const suppressed = arm(NONCES.suppressed);
     suppressed.streams[stream] = `${TAG} arm=${NONCES.suppressed} value=${MARKER}`;
     const result = moduleUnderTest.evaluateD1RedactionEvidence({
       canary: "inert-canary",
+      crossTenantCanaryAbsent: true,
       graded: arm(NONCES.graded, {
         eventLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
         logLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,

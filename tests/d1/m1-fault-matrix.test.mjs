@@ -1299,7 +1299,7 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
   assert.equal(foreign.ok, true, `cross-tenant event stream read: ${truncate({ ok: foreign.ok, error: foreign.error ?? null })}`);
   assert.ok((foreign.bytes ?? 0) > 0, "the OTHER tenant's event stream is empty, so its cross-tenant clean arm is vacuous");
   const crossTenantClean = !foreign.text.includes(canary);
-  const judged = evaluateD1RedactionEvidence({ canary, graded, suppressed });
+  const judged = evaluateD1RedactionEvidence({ canary, crossTenantCanaryAbsent: crossTenantClean, graded, suppressed });
   const row = judged.row;
 
   record("d1.redaction.planted_canary_scrubbed", {

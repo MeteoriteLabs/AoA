@@ -67,6 +67,7 @@ import {
   REDACTION_PROBE_EVIDENCE_MARKER,
   classifyRedactionObservation,
   evaluateRedactionProbeEvidence,
+  observeNonceScopedProbeLine,
   redactionProbeMatrixRow,
 } from "../lib/m1a-redaction-probe.mjs";
 
@@ -264,7 +265,7 @@ export async function runRedactionProbeCases({
     const armNonce = `${label}${randomBytes(8).toString("hex")}`;
     const workloadArgs = plant
       ? ["-c", `printf '${H.RUN_OUTPUT_PROBE_TAG} arm=${armNonce} canary=%s\\n' "$ANTHROPIC_API_KEY"`]
-      : ["-c", `printf 'd2m-redaction arm=${armNonce}: the plant is WITHHELD on this arm\\n'`];
+      : ["-c", `printf '${H.RUN_OUTPUT_PROBE_TAG} arm=${armNonce} control=unseeded\\n'`];
     const seeded = step(
       H.seedSpineWorkerDrivenJob({
         tenant: A,
@@ -322,6 +323,8 @@ export async function runRedactionProbeCases({
         crossTenantEventCount: Number(foreign.events ?? 0),
         crossTenantBytes: Number(foreign.bytes ?? 0),
         crossTenantCanaryAbsent: !String(foreign.text ?? "").includes(canary),
+        observedOnEvents: observeNonceScopedProbeLine(events.text, armNonce),
+        observedOnLogs: observeNonceScopedProbeLine(logs.text, armNonce),
       },
     };
   };
@@ -353,8 +356,8 @@ export async function runRedactionProbeCases({
     // "exactly one", and "exactly one" is the shape that used to pass.
     suppressedMarkerOnEvents: suppressed.row.scrubberMarkerObservedOnStream?.events === true,
     suppressedMarkerOnLogs: suppressed.row.scrubberMarkerObservedOnStream?.logs === true,
-    suppressedObservedOnEvents: Number(suppressed.row.streamBytesObserved?.events ?? 0) > 0,
-    suppressedObservedOnLogs: Number(suppressed.row.streamBytesObserved?.logs ?? 0) > 0,
+    suppressedObservedOnEvents: suppressed.facts.observedOnEvents,
+    suppressedObservedOnLogs: suppressed.facts.observedOnLogs,
     suppressedUnfired: summary.suppressedUnfired,
     crossTenantEventCount: graded.facts.crossTenantEventCount,
     crossTenantCanaryAbsent: graded.facts.crossTenantCanaryAbsent,

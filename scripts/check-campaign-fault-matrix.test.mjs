@@ -305,6 +305,7 @@ function completeBundle(profile) {
         ...(c.family === "redaction"
           ? {
             redactedOnAllStreams: true,
+            crossTenantCanaryAbsent: true,
             scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
             streamBytesObserved: Object.fromEntries(c.redactionCase.streams.map((k) => [k, 1024])),
             // DEP-026 — the withheld-plant arm's own row fact, for a case declaring an IN-RUN arm.
@@ -625,6 +626,14 @@ test("DEP-027 evidence: a failed setup or marker on EITHER withheld stream reds 
       `mutation must red: ${codes(violations)}`,
     );
   }
+});
+
+test("DEP-027 evidence: a retained foreign-tenant canary leak reds standalone grading", () => {
+  const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+  const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+  row.crossTenantCanaryAbsent = false;
+  const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+  assert.ok(has(violations, "evidence:redaction_cross_tenant_leak"), `foreign leak must red: ${codes(violations)}`);
 });
 
 test("DEP-026 evidence: a redaction case that declares NO suppressed arm is REFUSED, not skipped", () => {

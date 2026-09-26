@@ -585,6 +585,9 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
       if (row.redactedOnAllStreams !== true) {
         v("evidence:redaction_not_clean", `case ${id}: redactedOnAllStreams=${JSON.stringify(row.redactedOnAllStreams ?? null)} — the planted canary was NOT scrubbed from every declared stream`);
       }
+      if (row.crossTenantCanaryAbsent !== true) {
+        v("evidence:redaction_cross_tenant_leak", `case ${id}: crossTenantCanaryAbsent=${JSON.stringify(row.crossTenantCanaryAbsent ?? null)} — the planted canary was observed outside its Company boundary, or the retained row omitted that proof`);
+      }
       // PER STREAM, NOT A SCALAR (Codex P2 on PR #593, and the finding was right). A single
       // `scrubberMarkerObserved: true` would let a row pass on having seen the marker on ONE
       // declared stream while the other never demonstrates the scrubber acting at all -- which
