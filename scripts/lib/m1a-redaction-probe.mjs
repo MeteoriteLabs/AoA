@@ -60,6 +60,13 @@ export const REDACTION_PROBE_EVIDENCE_MARKER = "[redaction-probe:evidence]";
  */
 export const REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS = "succeeded";
 
+export function observeNonceScopedProbeLine(text, nonce) {
+  const token = ` arm=${nonce} `;
+  return String(text ?? "")
+    .split(/\r?\n/)
+    .some((line) => line.includes("AOA-RUN-OUTPUT-PROBE") && line.includes(token));
+}
+
 /**
  * The classification a redaction row files when its own arm's attempt did not succeed.
  *
@@ -336,6 +343,7 @@ export function redactionProbeMatrixRow(graded, detail) {
     gradedAttemptStatus,
     suppressedAttemptStatus,
     redactedOnAllStreams: graded?.redactedOnAllStreams === true,
+    crossTenantCanaryAbsent: detail?.crossTenantCanaryAbsent === true,
     scrubberMarkerObservedOnStream: {
       events: graded?.scrubberMarkerObservedOnStream?.events === true,
       logs: graded?.scrubberMarkerObservedOnStream?.logs === true,
@@ -348,6 +356,17 @@ export function redactionProbeMatrixRow(graded, detail) {
     // which must ALSO have succeeded, or its "no marker" is a failed setup rather than a working
     // suppression, and the row would certify a control that never ran.
     positiveControlPassed: suppressedSucceeded && detail?.suppressedUnfired === true,
+    suppressedArmEvidence: {
+      attemptStatus: suppressedAttemptStatus,
+      observedOnStream: {
+        events: detail?.suppressedObservedOnEvents === true,
+        logs: detail?.suppressedObservedOnLogs === true,
+      },
+      scrubberMarkerObservedOnStream: {
+        events: detail?.suppressedMarkerOnEvents === true,
+        logs: detail?.suppressedMarkerOnLogs === true,
+      },
+    },
     detail: detail ?? {},
   };
 }

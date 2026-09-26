@@ -351,6 +351,9 @@ export function evaluateFaultMatrixDeclaration(matrix) {
           if (rc.plantedCanary !== true) {
             v("declaration:redaction_without_planted_canary", `${where}: a redaction case must declare \`plantedCanary: true\` — a scan of whatever a run happened to emit is not a redaction proof`);
           }
+          if (c.evidence === "required" && rc.unseededControl !== "leaks_inert_canary_verbatim") {
+            v("declaration:redaction_without_verbatim_unseeded_control", `${where}: a required redaction case must declare \`unseededControl: "leaks_inert_canary_verbatim"\` — clause 5 requires the credential-free twin's inert canary to reach every declared stream unchanged`);
+          }
           if (rc.scrubberMarkerControl !== true) {
             v("declaration:redaction_without_marker_control", `${where}: a redaction case must declare \`scrubberMarkerControl: true\` — without a POSITIVE observation that the scrubber acted on this run, a clean stream is not shown to be its work rather than a run that emitted nothing`);
           }
@@ -585,6 +588,9 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
       if (row.redactedOnAllStreams !== true) {
         v("evidence:redaction_not_clean", `case ${id}: redactedOnAllStreams=${JSON.stringify(row.redactedOnAllStreams ?? null)} — the planted canary was NOT scrubbed from every declared stream`);
       }
+      if (row.crossTenantCanaryAbsent !== true) {
+        v("evidence:redaction_cross_tenant_leak", `case ${id}: crossTenantCanaryAbsent=${JSON.stringify(row.crossTenantCanaryAbsent ?? null)} — the planted canary was observed outside its Company boundary, or the retained row omitted that proof`);
+      }
       // PER STREAM, NOT A SCALAR (Codex P2 on PR #593, and the finding was right). A single
       // `scrubberMarkerObserved: true` would let a row pass on having seen the marker on ONE
       // declared stream while the other never demonstrates the scrubber acting at all -- which
@@ -633,8 +639,32 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
         v("evidence:redaction_suppressed_arm_undeclared", `case ${id}: the declaration does not say where the withheld-plant control lives (redactionCase.suppressedArm.scope must be one of ${REDACTION_SUPPRESSED_ARM_SCOPES.join(", ")}) — an ungraded control arm is how a bundle comes to disagree with its own run`);
       } else if (arm.code === "exemption_unjustified") {
         v("evidence:redaction_suppressed_arm_exemption_unjustified", `case ${id}: the declaration claims \`suppressedArm.scope: "none"\` without naming its blocking finding ids in \`blockedBy\` and a \`reason\` — an exemption nobody can check is indistinguishable from the guard not looking`);
-      } else if (arm.scope === "in_run" && row.positiveControlPassed !== true) {
-        v("evidence:redaction_positive_control_missing", `case ${id}: the withheld-plant arm did not pass (positiveControlPassed=${JSON.stringify(row.positiveControlPassed ?? null)}) — its attempt did not reach a succeeded terminal, or it carried the scrubber's marker on a stream, so the seeded arm's marker is not shown to be this case's injection at work`);
+      } else if (arm.scope === "in_run") {
+        const suppressed = isPlainObject(row.suppressedArmEvidence) ? row.suppressedArmEvidence : null;
+        const suppressedObserved = isPlainObject(suppressed?.observedOnStream) ? suppressed.observedOnStream : null;
+        const suppressedMarkers = isPlainObject(suppressed?.scrubberMarkerObservedOnStream)
+          ? suppressed.scrubberMarkerObservedOnStream
+          : null;
+        const suppressedVerbatim = isPlainObject(suppressed?.verbatimCanaryObservedOnStream)
+          ? suppressed.verbatimCanaryObservedOnStream
+          : null;
+        if (suppressed?.attemptStatus !== "succeeded") {
+          v("evidence:redaction_suppressed_attempt_failed", `case ${id}: suppressedArmEvidence.attemptStatus=${JSON.stringify(suppressed?.attemptStatus ?? null)} — a withheld-plant control that did not succeed is broken setup`);
+        }
+        for (const stream of declaredStreams) {
+          if (suppressedObserved?.[stream] !== true) {
+            v("evidence:redaction_suppressed_stream_unobserved", `case ${id}: suppressedArmEvidence.observedOnStream.${stream}=${JSON.stringify(suppressedObserved?.[stream] ?? null)} — every withheld stream must carry its own nonce-scoped probe line`);
+          }
+          if (suppressedMarkers?.[stream] !== false) {
+            v("evidence:redaction_suppressed_marker_observed", `case ${id}: suppressedArmEvidence.scrubberMarkerObservedOnStream.${stream}=${JSON.stringify(suppressedMarkers?.[stream] ?? null)} — a marker on either withheld stream invalidates the control`);
+          }
+          if (rc?.unseededControl === "leaks_inert_canary_verbatim" && suppressedVerbatim?.[stream] !== true) {
+            v("evidence:redaction_suppressed_canary_not_verbatim", `case ${id}: suppressedArmEvidence.verbatimCanaryObservedOnStream.${stream}=${JSON.stringify(suppressedVerbatim?.[stream] ?? null)} — the credential-free control's inert canary must reach every declared stream verbatim`);
+          }
+        }
+        if (row.positiveControlPassed !== true) {
+          v("evidence:redaction_positive_control_missing", `case ${id}: the withheld-plant arm did not pass (positiveControlPassed=${JSON.stringify(row.positiveControlPassed ?? null)}) — its attempt did not reach a succeeded terminal, or it carried the scrubber's marker on a stream, so the seeded arm's marker is not shown to be this case's injection at work`);
+        }
       } else if (arm.scope === "none" && row.positiveControlPassed !== undefined) {
         // ★ THE DUAL (`E.1b`), and the file already sets the precedent — `evidence:pending_case_reported`
         // refuses a `pending` case that DID produce evidence, on the reasoning that inheriting the pass

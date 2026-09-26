@@ -63,6 +63,7 @@ function completeProfile(profile) {
       push("redaction.canary", "redaction", {
         redactionCase: {
           plantedCanary: true,
+          unseededControl: "leaks_inert_canary_verbatim",
           scrubberMarkerControl: true,
           streams: [...REQUIRED_REDACTION_STREAMS],
           producer: "server/src/services/x.ts synthesiseRunSecrets",
@@ -305,10 +306,21 @@ function completeBundle(profile) {
         ...(c.family === "redaction"
           ? {
             redactedOnAllStreams: true,
+            crossTenantCanaryAbsent: true,
             scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
             streamBytesObserved: Object.fromEntries(c.redactionCase.streams.map((k) => [k, 1024])),
             // DEP-026 — the withheld-plant arm's own row fact, for a case declaring an IN-RUN arm.
-            ...(c.redactionCase.suppressedArm?.scope === "in_run" ? { positiveControlPassed: true } : {}),
+            ...(c.redactionCase.suppressedArm?.scope === "in_run"
+              ? {
+                positiveControlPassed: true,
+                suppressedArmEvidence: {
+                  attemptStatus: "succeeded",
+                  observedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
+                  scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, false])),
+                  verbatimCanaryObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
+                },
+              }
+              : {}),
           }
           : {}),
       })),
@@ -452,6 +464,7 @@ test("DEP-018 declaration: DROPPING the redaction case reds (E5 clause 5's floor
 test("DEP-018 declaration: a redaction case without a planted canary, without the unseeded control, missing a stream, or with no producer, each reds", () => {
   const rc = (fn) => evaluateFaultMatrixDeclaration(mutate((m, at) => { fn(at.caseIn(GATE_PROFILES[0], "redaction.canary").redactionCase); }));
   assert.ok(has(rc((r) => { r.plantedCanary = false; }), "declaration:redaction_without_planted_canary"));
+  assert.ok(has(rc((r) => { delete r.unseededControl; }), "declaration:redaction_without_verbatim_unseeded_control"));
   assert.ok(has(rc((r) => { r.scrubberMarkerControl = false; }), "declaration:redaction_without_marker_control"));
   assert.ok(has(rc((r) => { r.producer = ""; }), "declaration:redaction_without_producer"));
   for (const stream of REQUIRED_REDACTION_STREAMS) {
@@ -580,6 +593,65 @@ test("DEP-026 evidence: a redaction case declaring an IN-RUN suppressed arm reds
   }
 });
 
+test("DEP-027 evidence: an IN-RUN arm must retain succeeded per-stream observations", () => {
+  const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+  const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+  row.suppressedArmEvidence = {
+    attemptStatus: "succeeded",
+    observedOnStream: { events: true },
+    scrubberMarkerObservedOnStream: { events: false, logs: false },
+  };
+  const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+  assert.ok(
+    has(violations, "evidence:redaction_suppressed_stream_unobserved"),
+    `a missing logs observation must red: ${codes(violations)}`,
+  );
+});
+
+test("DEP-027 evidence: a failed setup or marker on EITHER withheld stream reds artifact-only grading", () => {
+  for (const mutation of [
+    (e) => { e.attemptStatus = "failed"; },
+    (e) => { e.scrubberMarkerObservedOnStream.events = true; },
+    (e) => { e.scrubberMarkerObservedOnStream.logs = true; },
+  ]) {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+    row.suppressedArmEvidence = {
+      attemptStatus: "succeeded",
+      observedOnStream: { events: true, logs: true },
+      scrubberMarkerObservedOnStream: { events: false, logs: false },
+    };
+    mutation(row.suppressedArmEvidence);
+    const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+    assert.ok(
+      has(violations, "evidence:redaction_suppressed_attempt_failed") ||
+        has(violations, "evidence:redaction_suppressed_marker_observed"),
+      `mutation must red: ${codes(violations)}`,
+    );
+  }
+});
+
+test("DEP-027 evidence: a retained foreign-tenant canary leak reds standalone grading", () => {
+  const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+  const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+  row.crossTenantCanaryAbsent = false;
+  const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+  assert.ok(has(violations, "evidence:redaction_cross_tenant_leak"), `foreign leak must red: ${codes(violations)}`);
+});
+
+test("DEP-027 evidence: either stream missing the verbatim inert control canary reds", () => {
+  for (const stream of ["events", "logs"]) {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+    row.suppressedArmEvidence.verbatimCanaryObservedOnStream[stream] = false;
+    const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+    assert.ok(
+      has(violations, "evidence:redaction_suppressed_canary_not_verbatim"),
+      `missing verbatim ${stream} control must red: ${codes(violations)}`,
+    );
+  }
+});
+
 test("DEP-026 evidence: a redaction case that declares NO suppressed arm is REFUSED, not skipped", () => {
   const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
   const decl = matrix.profiles
@@ -698,6 +770,12 @@ test("DEP-026 declaration: a PENDING redaction case need not declare it yet, but
 
 test("DEP-026: the committed exemption's blockers are OPEN registered findings (production function + loader)", () => {
   const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
+  const redaction = matrix.profiles.flatMap((p) => p.cases).find((c) => c.family === "redaction");
+  redaction.redactionCase.suppressedArm = {
+    scope: "none",
+    blockedBy: ["E6-F032"],
+    reason: "fixture proving the exemption validator after DEP-027 retired the committed exemption",
+  };
   const sources = readFindingSources(repoRoot);
   // Non-vacuity FIRST, three times: an empty register, a heading scan that found nothing, or a matrix
   // with no exemption at all would each make this pass while checking nothing.
@@ -706,8 +784,6 @@ test("DEP-026: the committed exemption's blockers are OPEN registered findings (
     sources.declaredFindingIds.size > sources.openFindingIds.size,
     `${sources.declaredFindingIds.size} headings vs ${sources.openFindingIds.size} open keys — headings must SURVIVE closure, which is the whole reason they cannot be the openness source`,
   );
-  const exempt = matrix.profiles.flatMap((p) => p.cases.filter((c) => c.redactionCase?.suppressedArm?.scope === "none"));
-  assert.ok(exempt.length > 0, "no redaction exemption is declared, so these controls evaluated nothing");
   assert.deepEqual(evaluateRedactionExemptionBlockers(matrix, sources), [], "the committed exemption's blockers must all be open registered findings");
 });
 
@@ -716,11 +792,8 @@ test("DEP-026: a PHANTOM blocker, a RESOLVED blocker, and ABSENT sources each re
   const sources = readFindingSources(repoRoot);
   const withBlockers = (ids) => {
     const m = JSON.parse(JSON.stringify(matrix));
-    for (const p of m.profiles) {
-      for (const c of p.cases) {
-        if (c.redactionCase?.suppressedArm?.scope === "none") c.redactionCase.suppressedArm.blockedBy = ids;
-      }
-    }
+    const redaction = m.profiles.flatMap((p) => p.cases).find((c) => c.family === "redaction");
+    redaction.redactionCase.suppressedArm = { scope: "none", blockedBy: ids, reason: "validator fixture" };
     return m;
   };
   assert.ok(
@@ -748,7 +821,7 @@ test("DEP-026: a PHANTOM blocker, a RESOLVED blocker, and ABSENT sources each re
   ];
   for (const bad of unusable) {
     assert.ok(
-      has(evaluateRedactionExemptionBlockers(matrix, bad), "declaration:redaction_exemption_blockers_unverifiable"),
+      has(evaluateRedactionExemptionBlockers(withBlockers(["E6-F032"]), bad), "declaration:redaction_exemption_blockers_unverifiable"),
       `${JSON.stringify(bad ?? null)} must refuse rather than pass silently`,
     );
   }

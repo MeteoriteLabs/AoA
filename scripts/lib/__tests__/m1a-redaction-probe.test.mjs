@@ -20,6 +20,7 @@ import {
   classifyRedactionObservation,
   redactionAttemptFailureClassification,
   evaluateRedactionProbeEvidence,
+  observeNonceScopedProbeLine,
   redactionProbeMatrixRow,
 } from "../m1a-redaction-probe.mjs";
 
@@ -52,6 +53,14 @@ const evaluate = (graded, suppressed, declaredStreams) =>
   });
 
 const has = (violations, re) => violations.some((line) => re.test(line));
+
+test("a stream is observed only when its own tagged nonce line is present", () => {
+  const nonce = "suppressed0123456789";
+  assert.equal(observeNonceScopedProbeLine("ordinary lifecycle output", nonce), false);
+  assert.equal(observeNonceScopedProbeLine(`d2m-redaction arm=${nonce}: untagged`, nonce), false);
+  assert.equal(observeNonceScopedProbeLine(`AOA-RUN-OUTPUT-PROBE arm=other0123456789 control=unseeded`, nonce), false);
+  assert.equal(observeNonceScopedProbeLine(`AOA-RUN-OUTPUT-PROBE arm=${nonce} control=unseeded`, nonce), true);
+});
 
 // ── classification ───────────────────────────────────────────────────────────
 

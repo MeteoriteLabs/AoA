@@ -125,6 +125,11 @@
       "workflow": "pr.yml",
       "step": "Campaign fault matrix declaration (DEP-018)"
     },
+    "scripts/lib/__tests__/d1-redaction-evidence.test.mjs": {
+      "status": "runs",
+      "workflow": "pr.yml",
+      "step": "Campaign fault matrix declaration (DEP-018)"
+    },
     "scripts/check-m1-shipped-boot-shape.test.mjs": {
       "status": "runs",
       "workflow": "pr.yml",

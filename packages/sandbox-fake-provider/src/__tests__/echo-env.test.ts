@@ -33,11 +33,41 @@ function runScript(args: readonly string[], env: Record<string, string> = {}) {
 }
 
 describe("--aoa-fake-echo-env (DEP-023)", () => {
+  it("DEP-027 emits an intrinsic nonce on planted and truly unseeded probe lines", () => {
+    const planted = runScript(
+      ["--aoa-fake-probe-nonce=graded-0123456789abcdef", "--aoa-fake-echo-env=ANTHROPIC_API_KEY"],
+      { ANTHROPIC_API_KEY: "planted-canary-value" },
+    );
+    expect(planted.chunks[0]).toBe(
+      `${RUN_OUTPUT_PROBE_TAG} arm=graded-0123456789abcdef ANTHROPIC_API_KEY=planted-canary-value\n`,
+    );
+
+    const unseeded = runScript([
+      "--aoa-fake-probe-nonce=withheld-0123456789abcdef",
+      "--aoa-fake-control-canary=inert-0123456789abcdef",
+    ], {});
+    expect(unseeded.chunks[0]).toBe(
+      `${RUN_OUTPUT_PROBE_TAG} arm=withheld-0123456789abcdef control=inert-0123456789abcdef\n`,
+    );
+  });
+
+  it("DEP-027 refuses missing, malformed and repeated probe nonces", () => {
+    expect(() => parseScriptedCommand(["--aoa-fake-echo-env=ANTHROPIC_API_KEY"])).toThrow(ScriptedCommandError);
+    expect(() => parseScriptedCommand(["--aoa-fake-probe-nonce=spaces are unsafe"])).toThrow(ScriptedCommandError);
+    expect(() => parseScriptedCommand(["--aoa-fake-probe-nonce=short"])).toThrow(ScriptedCommandError);
+    expect(() =>
+      parseScriptedCommand([
+        "--aoa-fake-probe-nonce=graded-0123456789abcdef",
+        "--aoa-fake-probe-nonce=other-0123456789abcdef",
+      ]),
+    ).toThrow(ScriptedCommandError);
+  });
+
   it("echoes the named variable's value on a TAGGED line, FIRST, before the transcript", () => {
-    const { stdout, chunks } = runScript(["--aoa-fake-echo-env=ANTHROPIC_API_KEY"], {
+    const { stdout, chunks } = runScript(["--aoa-fake-probe-nonce=graded-0123456789abcdef", "--aoa-fake-echo-env=ANTHROPIC_API_KEY"], {
       ANTHROPIC_API_KEY: "planted-canary-value",
     });
-    expect(chunks[0]).toBe(`${RUN_OUTPUT_PROBE_TAG} ANTHROPIC_API_KEY=planted-canary-value\n`);
+    expect(chunks[0]).toBe(`${RUN_OUTPUT_PROBE_TAG} arm=graded-0123456789abcdef ANTHROPIC_API_KEY=planted-canary-value\n`);
     // ★ FIRST, not last, and this is load-bearing: `parseClaudeStreamJsonUsage` reads the FINAL
     // non-empty line and nothing else, so an echo written last would silently suppress usage.
     const lines = stdout.split("\n").filter((l) => l.length > 0);
@@ -54,8 +84,9 @@ describe("--aoa-fake-echo-env (DEP-023)", () => {
   it("FAILS CLOSED when the named variable is not in the sandbox env", () => {
     // A silently-skipped echo would make the clause-5 case pass over a stream that never carried
     // the value — the vacuous pass the case exists to prevent.
-    expect(() => runScript(["--aoa-fake-echo-env=ANTHROPIC_API_KEY"], {})).toThrow(ScriptedCommandError);
-    expect(() => runScript(["--aoa-fake-echo-env=ANTHROPIC_API_KEY"], { ANTHROPIC_API_KEY: "" })).toThrow(
+    const args = ["--aoa-fake-probe-nonce=graded-0123456789abcdef", "--aoa-fake-echo-env=ANTHROPIC_API_KEY"];
+    expect(() => runScript(args, {})).toThrow(ScriptedCommandError);
+    expect(() => runScript(args, { ANTHROPIC_API_KEY: "" })).toThrow(
       ScriptedCommandError,
     );
   });
@@ -66,7 +97,7 @@ describe("--aoa-fake-echo-env (DEP-023)", () => {
     // return a SUCCESS for a plant that never happened — a silently vacuous control.
     expect(() =>
       executeScriptedCommand(
-        { sandboxId: "sbx-1", command: "claude", args: ["--aoa-fake-echo-env=ANTHROPIC_API_KEY"], env: { ANTHROPIC_API_KEY: "v" } },
+        { sandboxId: "sbx-1", command: "claude", args: ["--aoa-fake-probe-nonce=graded-0123456789abcdef", "--aoa-fake-echo-env=ANTHROPIC_API_KEY"], env: { ANTHROPIC_API_KEY: "v" } },
         { deadlineMs: 60_000, providerOpId: "op-1" },
       ),
     ).toThrow(ScriptedCommandError);

@@ -2969,6 +2969,7 @@ try {
 export function seedSpineWorkerDrivenJob({
   tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs = [], target,
   secretName = SPINE_PROVIDER_SECRET_NAME, secretValue = "m1-spine-reference-credential",
+  seedSecret = true,
   targetId = SPINE_DEPLOYED_TARGET_ID, policyHash = SPINE_DEPLOYED_POLICY_HASH, command = "claude",
   // ★ THE RENDER SEAM (DEP-024). `dexecModule` spawns `docker`, so nothing could look at the
   // script this function BUILDS without a live stack — and a template defect in it costs a whole
@@ -2980,7 +2981,7 @@ export function seedSpineWorkerDrivenJob({
   dexec = dexecModule,
 }) {
   const params = {
-    ...tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs, secretValue,
+    ...tenant, issueId, runId, jobId, attemptId, handleId, workloadArgs, secretValue, seedSecret,
     targetId,
     policyHash,
     command,
@@ -3015,11 +3016,13 @@ try {
       )\`;
   // The Company secret, written through the server's OWN service so the stored material is
   // encrypted with the same per-run master key the server will decrypt it with.
-  const { createDb } = await import("@armyofagents/db");
-  const { secretService } = await import("${CP_DIST}/services/secrets.js");
-  const svc = secretService(createDb(process.env.DATABASE_URL));
-  if (!(await svc.getByName(P.companyId, P.secretName))) {
-    await svc.create(P.companyId, { name: P.secretName, provider: "local_encrypted", value: P.secretValue });
+  if (P.seedSecret) {
+    const { createDb } = await import("@armyofagents/db");
+    const { secretService } = await import("${CP_DIST}/services/secrets.js");
+    const svc = secretService(createDb(process.env.DATABASE_URL));
+    if (!(await svc.getByName(P.companyId, P.secretName))) {
+      await svc.create(P.companyId, { name: P.secretName, provider: "local_encrypted", value: P.secretValue });
+    }
   }
   await sql\`INSERT INTO issues (id, company_id, title, assignee_agent_id)
     VALUES (\${P.issueId}, \${P.companyId}, \${"m1-spine worker-driven " + P.jobId.slice(0, 8)}, \${P.agentId})\`;
@@ -3046,11 +3049,13 @@ try {
       'organization', \${P.generation}, \${P.profileHash}, \${P.providerDigest}, 'primary', 'target_selected',
       'active', true, \${"c".repeat(64)}, \${"d".repeat(64)}, now())\`;
   // A UUID handle, env / sandbox_local_only, on an allow-listed target NAME, NOT owner-bound.
-  await sql\`INSERT INTO job_secret_handles
-    (id, organization_id, job_id, handle, ref_kind, ref_id, owner_principal_kind, owner_principal_id,
-     materialization, materialization_target, use_policy, status, bound_target_generation)
-    VALUES (\${P.handleId}, \${P.organizationId}, \${P.jobId}, \${P.handleId}, 'provider_key', \${P.secretName},
-      NULL, NULL, 'env', 'ANTHROPIC_API_KEY', 'sandbox_local_only', 'active', \${P.generation})\`;
+  if (P.seedSecret) {
+    await sql\`INSERT INTO job_secret_handles
+      (id, organization_id, job_id, handle, ref_kind, ref_id, owner_principal_kind, owner_principal_id,
+       materialization, materialization_target, use_policy, status, bound_target_generation)
+      VALUES (\${P.handleId}, \${P.organizationId}, \${P.jobId}, \${P.handleId}, 'provider_key', \${P.secretName},
+        NULL, NULL, 'env', 'ANTHROPIC_API_KEY', 'sandbox_local_only', 'active', \${P.generation})\`;
+  }
   report({ ok: true });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });
@@ -3060,7 +3065,7 @@ try {
 `;
   // Same chokepoint scrub as `seedResolvableProviderSecretHandle`: when a caller overrides
   // `secretValue` with a per-run canary, that value must not be printable from either stream.
-  return dexec("control-plane", script, { secrets: [secretValue] });
+  return dexec("control-plane", script, { secrets: seedSecret ? [secretValue] : [] });
 }
 
 /** What the DEPLOYED worker wrote for one attempt: the accepted events WITH the worker id each

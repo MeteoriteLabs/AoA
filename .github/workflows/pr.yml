@@ -616,7 +616,7 @@ jobs:
       - name: Campaign fault matrix declaration (DEP-018)
         run: |
           node scripts/check-campaign-fault-matrix.mjs
-          node --test scripts/check-campaign-fault-matrix.test.mjs
+          node --test scripts/check-campaign-fault-matrix.test.mjs scripts/lib/__tests__/d1-redaction-evidence.test.mjs
 
       - name: Embedded-secret scan self-test (DSK-003)
         run: node --test scripts/lib/__tests__/embedded-secret-scan.test.mjs

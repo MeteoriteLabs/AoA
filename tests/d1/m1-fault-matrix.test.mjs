@@ -103,8 +103,6 @@ import {
   seedSpineWorkerDrivenJob,
   queryOrganizationEventText,
   awaitSpineWorkerDrivenTerminal,
-  REDACTION_MARKER,
-  RUN_OUTPUT_PROBE_TAG,
   queryDeployedWorker,
   SPINE_DEPLOYED_TARGET_ID,
   // DEP-021 — the two cases DEP-020 routed away, built keylessly here.
@@ -136,8 +134,8 @@ import {
 import { readFindingSources } from "../../scripts/lib/finding-sources.mjs";
 import {
   REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS,
-  redactionAttemptFailureClassification,
 } from "../../scripts/lib/m1a-redaction-probe.mjs";
+import { evaluateD1RedactionEvidence, serializeD1FaultMatrixRow } from "../../scripts/lib/d1-redaction-evidence.mjs";
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -192,10 +190,9 @@ const bundle = {
 
 /** Record ONE declared case's evidence row. `observedClassification` is what the campaign
  * compares with the declaration; `detail` is kept beside the bundle for the reader. */
-function record(caseId, { injectionFired, observedClassification, positiveControlPassed, antiVacuityObservedForeignRow, redactedOnAllStreams, scrubberMarkerObservedOnStream, streamBytesObserved, attemptStatus, detail }) {
-  const row = { case: caseId, injectionFired: injectionFired === true, observedClassification: observedClassification ?? null };
-  if (positiveControlPassed !== undefined) row.positiveControlPassed = positiveControlPassed === true;
-  if (antiVacuityObservedForeignRow !== undefined) row.antiVacuityObservedForeignRow = antiVacuityObservedForeignRow === true;
+function record(caseId, evidence) {
+  const { detail } = evidence;
+  const row = serializeD1FaultMatrixRow(caseId, evidence);
   // ★ THE REDACTION ROW FACTS (Codex P1 on PR #593, and the finding was right even though no case
   // currently files them). This helper copied a FIXED set of fields and silently dropped anything
   // else, so a redaction case that passed `redactedOnAllStreams` / the per-stream marker map /
@@ -204,9 +201,6 @@ function record(caseId, { injectionFired, observedClassification, positiveContro
   // and DID pass. That is the "a check that nothing runs" class inverted: a check that reds on
   // evidence it was handed and threw away. Threaded now, ahead of the case that needs it, because
   // the case that needs it first is the KEYED one and discovering this there costs an E2B run.
-  if (redactedOnAllStreams !== undefined) row.redactedOnAllStreams = redactedOnAllStreams === true;
-  if (scrubberMarkerObservedOnStream !== undefined) row.scrubberMarkerObservedOnStream = scrubberMarkerObservedOnStream;
-  if (streamBytesObserved !== undefined) row.streamBytesObserved = streamBytesObserved;
   // ★★★ DEP-025 / Codex round 2 on PR #608 — THREADED HERE OR IT WOULD BE DROPPED, which is the very
   // class the comment above records. `after()` writes this bundle whether or not a test threw, and
   // `evaluateFaultMatrixEvidence` grades `bundle.cases` and never `bundle.detail`. So a case that
@@ -214,7 +208,6 @@ function record(caseId, { injectionFired, observedClassification, positiveContro
   // evidence, and the artifact can be graded as a pass independently of the test that rejected the
   // setup. Putting the status in `detail` only — which is what the first draft did — does not reach
   // the grader. It is a ROW field now, and the case that files it also degrades its own pass fields.
-  if (attemptStatus !== undefined) row.attemptStatus = attemptStatus ?? null;
   bundle.cases.push(row);
   if (detail !== undefined) bundle.detail[caseId] = detail;
   return row;
@@ -1262,120 +1255,68 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
     "the deployed worker's target is expected to be dedicated to the FIRST enabled tenant; if that changed, this case's single-executing-tenant narrowing must be revisited rather than quietly kept",
   );
 
-  // SUPPRESSED: the echo flag is withheld, so nothing plants the leak. Everything else runs, the
-  // case still records, and `injectionFired` is decided by the observation below — which is how
-  // this case appears in the lane's suppressed-injection reds instead of passing vacuously.
-  const workloadArgs = SUPPRESS_INJECTION ? [] : ["--aoa-fake-echo-env=ANTHROPIC_API_KEY"];
-
   const canary = `m1fmcanary${randomBytes(20).toString("hex")}`;
-  const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
-  const seeded = step(seedSpineWorkerDrivenJob({
-    tenant: A, ...ids, target: deployed.target, workloadArgs,
-    secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`, secretValue: canary,
-  }), "canary worker-driven seed");
-  assert.equal(seeded.ok, true, `canary job seed: ${truncate(seeded)}`);
+  const runArm = ({ label, plant }) => {
+    const nonce = `${label}-${randomBytes(12).toString("hex")}`;
+    const controlCanary = plant ? undefined : `unseeded-${randomBytes(16).toString("hex")}`;
+    const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
+    const workloadArgs = [`--aoa-fake-probe-nonce=${nonce}`];
+    if (plant) workloadArgs.push("--aoa-fake-echo-env=ANTHROPIC_API_KEY");
+    else workloadArgs.push(`--aoa-fake-control-canary=${controlCanary}`);
+    const seeded = step(seedSpineWorkerDrivenJob({
+      tenant: A,
+      ...ids,
+      target: deployed.target,
+      workloadArgs,
+      seedSecret: plant,
+      secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`,
+      secretValue: canary,
+    }), `${label} worker-driven seed`);
+    assert.equal(seeded.ok, true, `${label} job seed: ${truncate(seeded)}`);
+    const observation = step(awaitSpineWorkerDrivenTerminal({ jobId: ids.jobId }), `${label} run terminal`);
+    const events = step(queryJobEventPayloadText({ jobId: ids.jobId }), `${label} event stream`);
+    const logs = composeServiceLogs("worker-b");
+    assert.equal(events.ok, true, `${label} event stream read: ${truncate({ ok: events.ok, error: events.error ?? null })}`);
+    assert.equal(logs.ok, true, `${label} worker log read: status=${logs.status}`);
+    return {
+      nonce,
+      controlCanary,
+      attemptStatus: observation.attemptStatus ?? null,
+      streams: { events: events.text, logs: logs.text },
+      observation,
+      eventCount: events.events ?? 0,
+    };
+  };
 
-  const observation = step(awaitSpineWorkerDrivenTerminal({ jobId: ids.jobId }), "canary run terminal");
-  const events = step(queryJobEventPayloadText({ jobId: ids.jobId }), "event stream");
-  const logs = composeServiceLogs("worker-b");
+  // The withheld arm is a TRUE unseeded control: no Company secret and no job_secret_handles row.
+  const suppressed = runArm({ label: "withheld", plant: false });
+  // The campaign-wide suppression still withholds the graded plant, preserving that lane control.
+  const graded = runArm({ label: "graded", plant: !SUPPRESS_INJECTION });
   const foreign = step(queryOrganizationEventText({ organizationId: B.organizationId }), "cross-tenant event stream");
-  assert.equal(events.ok, true, `event stream read: ${truncate({ ok: events.ok, error: events.error ?? null })}`);
-  assert.equal(logs.ok, true, `worker log read: status=${logs.status}`);
   assert.equal(foreign.ok, true, `cross-tenant event stream read: ${truncate({ ok: foreign.ok, error: foreign.error ?? null })}`);
-
-  // ★ NON-VACUITY FIRST, per stream: a scan over an empty stream is "clean" and proves nothing.
-  assert.ok((events.events ?? 0) > 0, `the run produced no events, so nothing below is a measurement: ${truncate(observation)}`);
-  assert.ok((logs.bytes ?? 0) > 0, "the worker container log is empty, so nothing below is a measurement");
   assert.ok((foreign.bytes ?? 0) > 0, "the OTHER tenant's event stream is empty, so its cross-tenant clean arm is vacuous");
-
-  // ★ THE MARKER IS CORRELATED TO THIS RUN'S PROBE LINE, not merely present somewhere on the stream
-  // (Codex P2 on PR #602, and the finding was right). `composeServiceLogs` returns the WHOLE worker
-  // container log — every run the stack has done — so a bare `includes(REDACTION_MARKER)` would let
-  // an unrelated earlier scrub satisfy the log arm while THIS run's probe line never arrived. The
-  // arm therefore requires ONE LINE carrying BOTH the probe tag and the marker, which only this
-  // surface produces. The event stream is already per-job, but it is checked the same way so the
-  // two arms cannot drift apart.
-  const markedProbeLine = (text) =>
-    text.split(/\r?\n/).some((line) => line.includes(RUN_OUTPUT_PROBE_TAG) && line.includes(REDACTION_MARKER));
-  const markerOnEvents = markedProbeLine(events.text);
-  const markerOnLogs = markedProbeLine(logs.text);
-  const ownEventsClean = !events.text.includes(canary);
-  const logsClean = !logs.text.includes(canary);
   const crossTenantClean = !foreign.text.includes(canary);
-  const redactedOnAllStreams = ownEventsClean && logsClean && crossTenantClean;
-
-  // ★ WHAT DECIDES "FIRED". The marker is the scrubber's OWN substitution, so its presence means
-  // the planted value reached a scrubber and was replaced — i.e. the plant happened. A clean
-  // stream cannot decide it (that is the vacuity this case exists to exclude), and the harness
-  // asserting its own intent would not be an observation at all.
-  // ★★★ DEP-025 / Codex round 2 on PR #608 — THE ROW MUST FAIL WITH ITS ATTEMPT, not only the test.
-  //
-  // THE CLASS (the same one Codex found on the shipped-boot half of this ticket in round 1): *a fact
-  // asserted AFTER the row was written, which the row does not carry, in a bundle a different consumer
-  // grades later.* `after()` writes `m1-fault-matrix-evidence.json` whether or not a test threw, and
-  // `evaluateFaultMatrixEvidence` reads `bundle.cases` and never `bundle.detail`. So a run whose
-  // provider output was observed on both streams but whose attempt later ended `failed` would have left
-  // a fully pass-shaped row behind the assertion that rejected it — the retained evidence passing
-  // independently of the test.
-  //
-  // ★ And I owed this sweep myself: I fixed the identical shape in `redactionProbeMatrixRow` one round
-  // earlier and did not look at its twin here. `E` rule 3 — a known twin left behind is worse than the
-  // original. The naming matches the shipped-boot lane's token exactly so the two cannot drift.
-  const attemptSucceeded = observation.attemptStatus === REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS;
-  const injectionFired = markerOnEvents && markerOnLogs && attemptSucceeded;
-  const observedClassification = !attemptSucceeded
-    ? redactionAttemptFailureClassification(observation.attemptStatus)
-    : injectionFired && redactedOnAllStreams
-      ? "canary_scrubbed_while_unseeded_twin_leaks"
-      : injectionFired
-        ? "canary_leaked_on_a_stream"
-        : "no_scrubber_marker_observed";
+  const judged = evaluateD1RedactionEvidence({ canary, crossTenantCanaryAbsent: crossTenantClean, graded, suppressed });
+  const row = judged.row;
 
   record("d1.redaction.planted_canary_scrubbed", {
-    injectionFired,
-    observedClassification,
-    // Carried as a ROW field, because `detail` does not reach the grader (see `record`).
-    attemptStatus: observation.attemptStatus ?? null,
-    redactedOnAllStreams,
-    scrubberMarkerObservedOnStream: { events: markerOnEvents, logs: markerOnLogs },
-    streamBytesObserved: { events: events.bytes ?? 0, logs: logs.bytes ?? 0 },
+    ...row,
     detail: {
       executingTenant: A.key,
       crossTenant: { tenant: B.key, events: foreign.events ?? 0, bytes: foreign.bytes ?? 0, canaryAbsent: crossTenantClean },
-      events: events.events ?? 0,
-      ownEventsClean,
-      logsClean,
-      attemptStatus: observation.attemptStatus ?? null,
-      suppressed: SUPPRESS_INJECTION,
+      gradedEventCount: graded.eventCount,
+      suppressedEventCount: suppressed.eventCount,
+      campaignSuppressed: SUPPRESS_INJECTION,
     },
   });
-
-  // ★★★ DEP-025 — THE CLASS TWIN, found by sweeping finding (b) rather than by review.
-  //
-  // THE CLASS: *an attempt's terminal status read into a record or a log for reporting, but never
-  // asserted, so a FAILED SETUP satisfies a control whose only non-vacuity requirement is a
-  // non-empty stream.* DEP-024 §5.5(b) filed this against the shipped-boot arm of the same case;
-  // this D1 twin had it too — `attemptStatus` went onto the row's `detail` five lines above and
-  // nothing checked it. A job that reached a durable `failed` AFTER `attempt_started` has events,
-  // has no marker, and would satisfy every remaining check here for the wrong reason.
-  //
-  // Asserted on BOTH runs (before the suppressed return), exactly as
-  // `d1.provider.worker_terminal_mapping` asserts its control arm unconditionally: the suppression
-  // changes only `workloadArgs`, never whether the seeded job runs, so a non-succeeded attempt is a
-  // broken setup in either mode rather than an expected consequence of withholding the plant.
-  // Placed AFTER `record` so the row carries the observation that refuses.
-  assert.equal(
-    observation.attemptStatus,
-    REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS,
-    `the seeded job's attempt must reach a durable succeeded terminal, else its streams are a failed setup rather than a clean run: ${truncate(observation)}`,
-  );
+  assert.equal(suppressed.attemptStatus, REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS, `withheld setup failed: ${truncate(suppressed.observation)}`);
+  assert.equal(graded.attemptStatus, REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS, `graded setup failed: ${truncate(graded.observation)}`);
+  assert.equal(row.positiveControlPassed, true, `the case-scoped withheld arm failed: ${truncate(row.suppressedArmEvidence)}`);
 
   if (SUPPRESS_INJECTION) return;
-  assert.equal(ownEventsClean, true, "the planted canary survived onto its own tenant's event stream");
   assert.equal(crossTenantClean, true, "the planted canary appeared on the OTHER tenant's event stream");
-  assert.equal(logsClean, true, "the planted canary survived onto the worker's container log");
-  assert.equal(markerOnEvents, true, "the scrubber's marker was not observed on the event stream");
-  assert.equal(markerOnLogs, true, `the scrubber's marker was not observed on the worker log (bytes=${logs.bytes})`);
+  assert.equal(row.redactedOnAllStreams, true, "the planted canary survived on a declared stream");
+  assert.equal(row.injectionFired, true, "the graded arm did not observe its own nonce-scoped marker on both streams");
 });
 
 test("fault-matrix: cancelling an UNLEASED attempt cancels it directly", { skip: SKIP }, () => {

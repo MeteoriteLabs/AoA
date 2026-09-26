@@ -2508,7 +2508,7 @@ route a triager to a ticket the ownership register deliberately rejects — an i
 
 ## E6-F033 — the D1 redaction case's `logs` arm is attributable only POSITIONALLY, and the suppressed control provably reads a stale marked line
 
-**Status:** open · **Owner:** `unowned` · **Severity:** MEDIUM
+**Status:** resolved · **Owner:** `DEP-027` · **Severity:** MEDIUM
 
 Class: HARNESS. Found 2026-09-25 by `DEP-025`'s sweep of the class behind its finding (a) — *a
 predicate over a SHARED, APPEND-ONLY surface that is scoped by WHEN it was read rather than by
@@ -2563,7 +2563,7 @@ another run's token is the only candidate. Resolve = flip this `Status` **and** 
 
 ## E6-F034 — the D1 redaction case has NO case-scoped withheld-plant control, and its `events` half is buildable and unbuilt
 
-**Status:** open · **Owner:** `unowned` · **Severity:** MEDIUM
+**Status:** resolved · **Owner:** `DEP-027` · **Severity:** MEDIUM
 
 Class: HARNESS. Found 2026-09-25 by `DEP-026` while deciding, at source, whether
 `d1.redaction.planted_canary_scrubbed` **can** report the withheld-plant arm the grader's redaction
