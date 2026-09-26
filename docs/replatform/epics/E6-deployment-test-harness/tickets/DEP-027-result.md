@@ -1,6 +1,6 @@
 # DEP-027 — D1 clause-5 nonce attribution and case-scoped withheld-plant control — result
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Epic:** E6 · **Plan task:** `M1a` critical path (E5 exit-gate clause 5) · **Milestone:** `M1a`
 **Date (UTC):** `2026-09-26`
 **Start SHA:** `d337fe3745ad650952aa45e3bda1093f7e920ab8` (`origin/docs/replatform-program`)
@@ -79,3 +79,42 @@ unseeded-control requirement above with per-stream exact-literal mutations.
 No keyed or paid run was dispatched. Before M1a candidate promotion, the merge-train must still run
 the free D1 campaign on the reviewed PR/current SHA and retain its evidence. Keyed d2m acceptance is
 a separate planning-session gate and is outside this ticket.
+
+## Independent review — attempt 1
+
+**Reviewer:** M1a campaign QA / audit-author session (Codex), distinct from the DEP-027 implementer,
+the planning session that owns campaign dispatch and milestone decisions, and the future E5 audit
+certifier.
+**Reviewed implementation:** `ea3cdca9323fb74a6dc54c41633ac071b59bdb3a` (PR #620), merged into
+the repaired candidate as `583b5fc8d596edbbb39b88b7329cb2dfb3979295`.
+**Disposition:** `approved`; top-level `Status` set to `complete`.
+
+The final source boundaries satisfy the ticket without widening its claim:
+
+- The D1 live case passes every retained row through `serializeD1FaultMatrixRow`; that serializer
+  retains `crossTenantCanaryAbsent`, and the standalone grader requires strict `true`. The regression
+  serializes a foreign-tenant leak and proves artifact-only grading raises
+  `evidence:redaction_cross_tenant_leak`.
+- The credential-free arm has no Company secret, secret handle or credential echo. The closed fake
+  provider flag surface emits its fresh inert control canary verbatim beside an arm nonce. Both
+  nonce-scoped event and log observations must contain that exact literal, report no scrubber marker,
+  and finish with `attemptStatus: "succeeded"`; either missing stream, a stale nonce, a wrong canary,
+  a failed setup or a marker on either stream fails closed in both the row and standalone verdict.
+- The planted arm remains a distinct run-local inert canary registered through the production secret
+  materialization/redaction path. Its marker and canary-absence facts are required per stream, and
+  the foreign-Company event stream is non-empty and canary-clean. No secret value or stream excerpt
+  enters the retained bundle.
+- The shipped-boot compatibility path also derives withheld-stream observation from the exact tagged
+  nonce line; ordinary lifecycle output, an untagged line and another arm's nonce do not count.
+
+Fresh review verification on the final implementation head: the focused Node mutation suites passed
+**81 / 81**. GitHub Actions run `36250741419` on
+`ea3cdca9323fb74a6dc54c41633ac071b59bdb3a` completed with every required check green, including all
+four verify shards, policy, lint, E2E, migrations, distributed-contract, browser, brand-check and
+`ci-required`. Campaign declaration, finding ownership, citation integrity, ticket graph and diff
+guards also passed.
+
+This approval closes the DEP-027 implementation ticket only. It does **not** adopt or certify a D1
+campaign, authorize keyed spend, pass the E5 audit, or close M1a. Exact-candidate campaign records,
+an independently authored successor E5 audit, certification by a different eligible QA session, and
+a later gate-owner handoff remain required.
