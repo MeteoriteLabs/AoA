@@ -340,3 +340,21 @@ cases are still `pending`. **`M1a` exit criterion 7 remains unmet on candidate `
 That is stated plainly because the decision owner here is also the session whose campaign the audit
 judged, and a clarification issued in that position is worth only as much as its independence from
 the outcome. This one changes no verdict. It applies from `a3` onward.
+
+## E5-D09 - audit attempt numbers track corrections; floors track the named milestone
+
+**Status:** `accepted` - **Decided:** 2026-09-26 by the M1 planning session under founder delegation F2.
+
+The frozen matrix assigns M1a to a2 and M1b to a3 onward. EVID-02 requires corrections to use the
+next attempt number, so a failed M1a audit cannot be corrected without this allocation selecting
+M1b prematurely. PR #616's review correctly found that a3 had no ruling authorizing its choice.
+
+From the next audit onward, the attempt ordinal identifies the immutable sequence only. The audit
+must explicitly name M1a or M1b and apply that milestone's unchanged floors and campaign set. M1a
+requires spine and mechanism; M1b requires those plus coding, all on its candidate. Supersedes must
+link the highest prior attempt regardless of milestone. This recorded amendment changes the
+allocation references in the frozen topology table and R4 without editing the frozen file.
+
+This ruling grants no retroactive pass to a3. Candidate identity, the clause-5 unseeded control,
+and separate author/certifier ownership remain binding. A successor audit must independently meet
+them before a milestone handoff can pass.
