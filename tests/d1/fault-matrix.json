@@ -444,6 +444,7 @@
           "family": "redaction",
           "redactionCase": {
             "plantedCanary": true,
+            "unseededControl": "leaks_inert_canary_verbatim",
             "streams": [
               "events",
               "logs"

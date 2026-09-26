@@ -135,7 +135,7 @@ import { readFindingSources } from "../../scripts/lib/finding-sources.mjs";
 import {
   REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS,
 } from "../../scripts/lib/m1a-redaction-probe.mjs";
-import { evaluateD1RedactionEvidence } from "../../scripts/lib/d1-redaction-evidence.mjs";
+import { evaluateD1RedactionEvidence, serializeD1FaultMatrixRow } from "../../scripts/lib/d1-redaction-evidence.mjs";
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -190,10 +190,9 @@ const bundle = {
 
 /** Record ONE declared case's evidence row. `observedClassification` is what the campaign
  * compares with the declaration; `detail` is kept beside the bundle for the reader. */
-function record(caseId, { injectionFired, observedClassification, positiveControlPassed, antiVacuityObservedForeignRow, redactedOnAllStreams, scrubberMarkerObservedOnStream, streamBytesObserved, suppressedArmEvidence, attemptStatus, detail }) {
-  const row = { case: caseId, injectionFired: injectionFired === true, observedClassification: observedClassification ?? null };
-  if (positiveControlPassed !== undefined) row.positiveControlPassed = positiveControlPassed === true;
-  if (antiVacuityObservedForeignRow !== undefined) row.antiVacuityObservedForeignRow = antiVacuityObservedForeignRow === true;
+function record(caseId, evidence) {
+  const { detail } = evidence;
+  const row = serializeD1FaultMatrixRow(caseId, evidence);
   // ★ THE REDACTION ROW FACTS (Codex P1 on PR #593, and the finding was right even though no case
   // currently files them). This helper copied a FIXED set of fields and silently dropped anything
   // else, so a redaction case that passed `redactedOnAllStreams` / the per-stream marker map /
@@ -202,10 +201,6 @@ function record(caseId, { injectionFired, observedClassification, positiveContro
   // and DID pass. That is the "a check that nothing runs" class inverted: a check that reds on
   // evidence it was handed and threw away. Threaded now, ahead of the case that needs it, because
   // the case that needs it first is the KEYED one and discovering this there costs an E2B run.
-  if (redactedOnAllStreams !== undefined) row.redactedOnAllStreams = redactedOnAllStreams === true;
-  if (scrubberMarkerObservedOnStream !== undefined) row.scrubberMarkerObservedOnStream = scrubberMarkerObservedOnStream;
-  if (streamBytesObserved !== undefined) row.streamBytesObserved = streamBytesObserved;
-  if (suppressedArmEvidence !== undefined) row.suppressedArmEvidence = suppressedArmEvidence;
   // ★★★ DEP-025 / Codex round 2 on PR #608 — THREADED HERE OR IT WOULD BE DROPPED, which is the very
   // class the comment above records. `after()` writes this bundle whether or not a test threw, and
   // `evaluateFaultMatrixEvidence` grades `bundle.cases` and never `bundle.detail`. So a case that
@@ -213,7 +208,6 @@ function record(caseId, { injectionFired, observedClassification, positiveContro
   // evidence, and the artifact can be graded as a pass independently of the test that rejected the
   // setup. Putting the status in `detail` only — which is what the first draft did — does not reach
   // the grader. It is a ROW field now, and the case that files it also degrades its own pass fields.
-  if (attemptStatus !== undefined) row.attemptStatus = attemptStatus ?? null;
   bundle.cases.push(row);
   if (detail !== undefined) bundle.detail[caseId] = detail;
   return row;
@@ -1264,9 +1258,11 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
   const canary = `m1fmcanary${randomBytes(20).toString("hex")}`;
   const runArm = ({ label, plant }) => {
     const nonce = `${label}-${randomBytes(12).toString("hex")}`;
+    const controlCanary = plant ? undefined : `unseeded-${randomBytes(16).toString("hex")}`;
     const ids = { jobId: randomUUID(), attemptId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), handleId: randomUUID() };
     const workloadArgs = [`--aoa-fake-probe-nonce=${nonce}`];
     if (plant) workloadArgs.push("--aoa-fake-echo-env=ANTHROPIC_API_KEY");
+    else workloadArgs.push(`--aoa-fake-control-canary=${controlCanary}`);
     const seeded = step(seedSpineWorkerDrivenJob({
       tenant: A,
       ...ids,
@@ -1284,6 +1280,7 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
     assert.equal(logs.ok, true, `${label} worker log read: status=${logs.status}`);
     return {
       nonce,
+      controlCanary,
       attemptStatus: observation.attemptStatus ?? null,
       streams: { events: events.text, logs: logs.text },
       observation,

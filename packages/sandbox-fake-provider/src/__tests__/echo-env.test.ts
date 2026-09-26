@@ -42,9 +42,12 @@ describe("--aoa-fake-echo-env (DEP-023)", () => {
       `${RUN_OUTPUT_PROBE_TAG} arm=graded-0123456789abcdef ANTHROPIC_API_KEY=planted-canary-value\n`,
     );
 
-    const unseeded = runScript(["--aoa-fake-probe-nonce=withheld-0123456789abcdef"], {});
+    const unseeded = runScript([
+      "--aoa-fake-probe-nonce=withheld-0123456789abcdef",
+      "--aoa-fake-control-canary=inert-0123456789abcdef",
+    ], {});
     expect(unseeded.chunks[0]).toBe(
-      `${RUN_OUTPUT_PROBE_TAG} arm=withheld-0123456789abcdef control=unseeded\n`,
+      `${RUN_OUTPUT_PROBE_TAG} arm=withheld-0123456789abcdef control=inert-0123456789abcdef\n`,
     );
   });
 

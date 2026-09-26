@@ -24,8 +24,9 @@ marker on either withheld stream is a violation. GREEN requires each mutation to
 
 ## Credential safety
 
-The withheld job is genuinely unseeded: it carries no secret handle and emits only an inert nonce
-control line. The planted arm continues to use a freshly generated inert canary. No real provider
+The withheld job is genuinely unseeded: it carries no secret handle and emits a nonce-scoped,
+fresh inert control canary verbatim. The planted arm continues to use a separate freshly generated
+inert canary. No real provider
 credential is echoed, retained, or dispatched to a paid provider.
 
 ## Closure

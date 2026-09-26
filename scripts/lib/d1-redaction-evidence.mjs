@@ -16,6 +16,7 @@ function observeArm(arm) {
   const scrubberMarkerObservedOnStream = {};
   const streamBytesObserved = {};
   const canaryAbsentOnStream = {};
+  const verbatimCanaryObservedOnStream = {};
   for (const stream of D1_REDACTION_STREAMS) {
     const lines = scopedLines(arm?.streams?.[stream], arm?.nonce);
     const scoped = lines.join("\n");
@@ -23,6 +24,8 @@ function observeArm(arm) {
     scrubberMarkerObservedOnStream[stream] = lines.some((line) => line.includes(REDACTION_MARKER));
     streamBytesObserved[stream] = Buffer.byteLength(scoped, "utf8");
     canaryAbsentOnStream[stream] = !String(arm?.streams?.[stream] ?? "").includes(arm?.canary ?? "\0");
+    verbatimCanaryObservedOnStream[stream] = typeof arm?.controlCanary === "string"
+      && lines.some((line) => line.includes(`control=${arm.controlCanary}`));
   }
   return {
     attemptStatus: arm?.attemptStatus ?? null,
@@ -30,6 +33,7 @@ function observeArm(arm) {
     scrubberMarkerObservedOnStream,
     streamBytesObserved,
     canaryAbsentOnStream,
+    verbatimCanaryObservedOnStream,
   };
 }
 
@@ -50,8 +54,11 @@ export function evaluateD1RedactionEvidence({ canary, crossTenantCanaryAbsent, g
   const suppressedClean = D1_REDACTION_STREAMS.every(
     (stream) => suppressedEvidence.scrubberMarkerObservedOnStream[stream] === false,
   );
+  const suppressedVerbatim = D1_REDACTION_STREAMS.every(
+    (stream) => suppressedEvidence.verbatimCanaryObservedOnStream[stream] === true,
+  );
   const injectionFired = gradedSucceeded && gradedObserved && gradedMarked;
-  const positiveControlPassed = suppressedSucceeded && suppressedObserved && suppressedClean;
+  const positiveControlPassed = suppressedSucceeded && suppressedObserved && suppressedClean && suppressedVerbatim;
 
   return {
     row: {
@@ -74,4 +81,16 @@ export function evaluateD1RedactionEvidence({ canary, crossTenantCanaryAbsent, g
     gradedEvidence,
     suppressedEvidence,
   };
+}
+
+export function serializeD1FaultMatrixRow(caseId, evidence) {
+  const row = { case: caseId, injectionFired: evidence?.injectionFired === true, observedClassification: evidence?.observedClassification ?? null };
+  for (const key of [
+    "positiveControlPassed", "antiVacuityObservedForeignRow", "redactedOnAllStreams",
+    "scrubberMarkerObservedOnStream", "streamBytesObserved", "suppressedArmEvidence",
+    "attemptStatus", "crossTenantCanaryAbsent",
+  ]) {
+    if (evidence?.[key] !== undefined) row[key] = evidence[key];
+  }
+  return row;
 }

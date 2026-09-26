@@ -92,6 +92,8 @@ export interface ScriptedCommandPlan {
   readonly echoEnvName: string | undefined;
   /** DEP-027 — attribution carried in the probe line itself. Required for every probe line. */
   readonly probeNonce: string | undefined;
+  /** Inert literal used by the credential-free clause-5 control. */
+  readonly controlCanary: string | undefined;
 }
 
 /**
@@ -110,6 +112,7 @@ export const DEFAULT_SCRIPTED_COMMAND_PLAN: ScriptedCommandPlan = Object.freeze(
   delayMs: 0,
   echoEnvName: undefined,
   probeNonce: undefined,
+  controlCanary: undefined,
 });
 
 /**
@@ -148,6 +151,7 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
   let delayMs: number | undefined;
   let echoEnvName: string | undefined;
   let probeNonce: string | undefined;
+  let controlCanary: string | undefined;
 
   for (const arg of args) {
     if (!arg.startsWith(SCRIPT_FLAG_PREFIX)) continue;
@@ -219,6 +223,15 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
         probeNonce = value;
         break;
       }
+      case `${SCRIPT_FLAG_PREFIX}control-canary`: {
+        if (controlCanary !== undefined) throw new ScriptedCommandError(`${flag} appears more than once`);
+        const value = parseFlagValue(flag, rawValue);
+        if (!/^[A-Za-z0-9_-]{16,96}$/.test(value)) {
+          throw new ScriptedCommandError(`${flag} must be a 16..96 character inert token using only letters, digits, underscore or hyphen`);
+        }
+        controlCanary = value;
+        break;
+      }
       default:
         throw new ScriptedCommandError(`unrecognised scripting flag ${JSON.stringify(flag)}`);
     }
@@ -226,6 +239,12 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
 
   if (echoEnvName !== undefined && probeNonce === undefined) {
     throw new ScriptedCommandError(`${SCRIPT_FLAG_PREFIX}echo-env requires ${SCRIPT_FLAG_PREFIX}probe-nonce`);
+  }
+  if (controlCanary !== undefined && probeNonce === undefined) {
+    throw new ScriptedCommandError(`${SCRIPT_FLAG_PREFIX}control-canary requires ${SCRIPT_FLAG_PREFIX}probe-nonce`);
+  }
+  if (controlCanary !== undefined && echoEnvName !== undefined) {
+    throw new ScriptedCommandError(`${SCRIPT_FLAG_PREFIX}control-canary cannot be combined with ${SCRIPT_FLAG_PREFIX}echo-env`);
   }
 
   return {
@@ -235,6 +254,7 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
     delayMs: delayMs ?? DEFAULT_SCRIPTED_COMMAND_PLAN.delayMs,
     echoEnvName,
     probeNonce,
+    controlCanary,
   };
 }
 
@@ -466,7 +486,7 @@ function finishScriptedCommand(
     onStdout(`${RUN_OUTPUT_PROBE_TAG} arm=${plan.probeNonce} ${plan.echoEnvName}=${value}
 `);
   } else if (plan.probeNonce !== undefined) {
-    onStdout?.(`${RUN_OUTPUT_PROBE_TAG} arm=${plan.probeNonce} control=unseeded\n`);
+    onStdout?.(`${RUN_OUTPUT_PROBE_TAG} arm=${plan.probeNonce} control=${plan.controlCanary ?? "unseeded"}\n`);
   }
   if (onStdout !== undefined) {
     for (const chunk of buildScriptedStdoutChunks(plan, options.usage)) onStdout(chunk);

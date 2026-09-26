@@ -63,6 +63,7 @@ function completeProfile(profile) {
       push("redaction.canary", "redaction", {
         redactionCase: {
           plantedCanary: true,
+          unseededControl: "leaks_inert_canary_verbatim",
           scrubberMarkerControl: true,
           streams: [...REQUIRED_REDACTION_STREAMS],
           producer: "server/src/services/x.ts synthesiseRunSecrets",
@@ -316,6 +317,7 @@ function completeBundle(profile) {
                   attemptStatus: "succeeded",
                   observedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
                   scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, false])),
+                  verbatimCanaryObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
                 },
               }
               : {}),
@@ -462,6 +464,7 @@ test("DEP-018 declaration: DROPPING the redaction case reds (E5 clause 5's floor
 test("DEP-018 declaration: a redaction case without a planted canary, without the unseeded control, missing a stream, or with no producer, each reds", () => {
   const rc = (fn) => evaluateFaultMatrixDeclaration(mutate((m, at) => { fn(at.caseIn(GATE_PROFILES[0], "redaction.canary").redactionCase); }));
   assert.ok(has(rc((r) => { r.plantedCanary = false; }), "declaration:redaction_without_planted_canary"));
+  assert.ok(has(rc((r) => { delete r.unseededControl; }), "declaration:redaction_without_verbatim_unseeded_control"));
   assert.ok(has(rc((r) => { r.scrubberMarkerControl = false; }), "declaration:redaction_without_marker_control"));
   assert.ok(has(rc((r) => { r.producer = ""; }), "declaration:redaction_without_producer"));
   for (const stream of REQUIRED_REDACTION_STREAMS) {
@@ -634,6 +637,19 @@ test("DEP-027 evidence: a retained foreign-tenant canary leak reds standalone gr
   row.crossTenantCanaryAbsent = false;
   const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
   assert.ok(has(violations, "evidence:redaction_cross_tenant_leak"), `foreign leak must red: ${codes(violations)}`);
+});
+
+test("DEP-027 evidence: either stream missing the verbatim inert control canary reds", () => {
+  for (const stream of ["events", "logs"]) {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+    row.suppressedArmEvidence.verbatimCanaryObservedOnStream[stream] = false;
+    const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+    assert.ok(
+      has(violations, "evidence:redaction_suppressed_canary_not_verbatim"),
+      `missing verbatim ${stream} control must red: ${codes(violations)}`,
+    );
+  }
 });
 
 test("DEP-026 evidence: a redaction case that declares NO suppressed arm is REFUSED, not skipped", () => {

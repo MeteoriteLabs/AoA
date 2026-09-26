@@ -11,9 +11,14 @@
 ## Result
 
 The D1 redaction case now runs two case-local arms in one invocation. The withheld arm has no
-Company secret and no `job_secret_handles` row; it emits only an inert, per-arm nonce. The graded
+Company secret and no `job_secret_handles` row; it emits an inert control canary beside a per-arm nonce. The graded
 arm uses a different nonce and the existing freshly generated inert canary. Both event and worker-log
 evidence are scoped to the exact nonce before grading, and both attempts must reach `succeeded`.
+
+The withheld arm also emits its own fresh inert control canary verbatim. That literal is not a
+credential and is not registered with the redactor; the retained evidence must prove its exact
+presence on both declared streams. This preserves clause 5's frozen unseeded-control polarity: the
+planted canary is scrubbed while the credential-free twin demonstrably leaks its inert value.
 
 The retained row now includes per-stream withheld-arm evidence. The standalone fault-matrix grader
 requires every declared stream to have been observed and to be marker-free, so a scalar positive
@@ -54,6 +59,12 @@ Second, the shipped-boot compatibility row initially inferred withheld-stream ob
 lifecycle byte counts. Its withheld command now emits a tagged nonce-bearing inert control line, and
 each stream is considered observed only when that exact tagged nonce is present. Ordinary lifecycle
 output, the former untagged line, and another arm's nonce all fail the pure control.
+
+A subsequent independent review found that the D1 `record` helper's fixed destructuring still omitted
+`crossTenantCanaryAbsent`, despite the pure judge producing it. The live recorder now delegates to the
+same exported serializer exercised by the regression, which serializes a foreign-stream leak and then
+proves the standalone grader refuses that serialized row. The same review enforced the frozen
+unseeded-control requirement above with per-stream exact-literal mutations.
 
 ## Repository verification
 

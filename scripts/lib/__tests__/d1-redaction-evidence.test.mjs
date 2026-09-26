@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { evaluateFaultMatrixEvidence } from "../campaign-fault-matrix.mjs";
 
 const moduleUnderTest = await import("../d1-redaction-evidence.mjs").catch(() => ({}));
 
@@ -11,9 +13,11 @@ const TAG = "AOA-RUN-OUTPUT-PROBE";
 const MARKER = "«redacted»";
 
 function arm(nonce, { attemptStatus = "succeeded", eventLine, logLine } = {}) {
-  const defaultLine = `${TAG} arm=${nonce} control=unseeded`;
+  const controlCanary = `control-${nonce}`;
+  const defaultLine = `${TAG} arm=${nonce} control=${controlCanary}`;
   return {
     nonce,
+    controlCanary,
     attemptStatus,
     streams: {
       events: eventLine ?? defaultLine,
@@ -87,6 +91,27 @@ test("DEP-027 a foreign-tenant canary leak makes the retained row fail", () => {
   assert.equal(result.row.crossTenantCanaryAbsent, false);
   assert.equal(result.row.redactedOnAllStreams, false);
   assert.equal(result.row.observedClassification, "canary_leaked_on_a_stream");
+  const serialized = moduleUnderTest.serializeD1FaultMatrixRow("d1.redaction.planted_canary_scrubbed", result.row);
+  assert.equal(serialized.crossTenantCanaryAbsent, false, "the actual bundle serializer must retain the refusal fact");
+  const matrix = JSON.parse(readFileSync(new URL("../../../tests/d1/fault-matrix.json", import.meta.url), "utf8"));
+  const verdict = evaluateFaultMatrixEvidence(matrix, { profile: "M1-D1-SPINE", cases: [serialized] });
+  assert.ok(verdict.violations.some((v) => v.code === "evidence:redaction_cross_tenant_leak"));
+});
+
+test("DEP-027 the credential-free control must carry its inert canary verbatim on both streams", () => {
+  const suppressed = arm(NONCES.suppressed);
+  suppressed.streams.logs = `${TAG} arm=${NONCES.suppressed} control=wrong-inert-canary`;
+  const result = moduleUnderTest.evaluateD1RedactionEvidence({
+    canary: "inert-canary",
+    crossTenantCanaryAbsent: true,
+    graded: arm(NONCES.graded, {
+      eventLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
+      logLine: `${TAG} arm=${NONCES.graded} value=${MARKER}`,
+    }),
+    suppressed,
+  });
+  assert.equal(result.row.positiveControlPassed, false);
+  assert.deepEqual(result.row.suppressedArmEvidence.verbatimCanaryObservedOnStream, { events: true, logs: false });
 });
 
 for (const stream of ["events", "logs"]) {
