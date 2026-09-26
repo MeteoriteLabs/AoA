@@ -1,6 +1,6 @@
 import { and, eq, gte, lt, not, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, approvals, budgetIncidents, budgetPolicies, costEvents } from "@armyofagents/db";
+import { agents, approvals, budgetIncidents, budgetPolicies, costEvents, projects } from "@armyofagents/db";
 import { logActivity } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";
 import { emitBudgetExhausted, type BudgetEnforcementScope } from "./budget-hooks.js";
@@ -34,6 +34,11 @@ async function getObservedCents(
 
   if (scopeType === "agent") {
     conditions.push(eq(costEvents.agentId, scopeId));
+  } else if (scopeType === "department") {
+    // JOB-012 — a department policy observes the spend of every cost_events row
+    // attributed to its project (the authoritative-cost bridge stamps
+    // cost_events.project_id, so distributed charges are observable here too).
+    conditions.push(eq(costEvents.projectId, scopeId));
   }
 
   const [{ total }] = await db
@@ -53,6 +58,9 @@ async function createIncidentIfNeeded(
   observedCents: number,
   windowStart: Date,
   windowEnd: Date,
+  /** JOB-016 — when given, the `budget.incident_created` live event is queued here instead of
+   * published, so an uncommitted caller can publish it only after its transaction commits. */
+  deferLiveEvents?: Parameters<typeof publishLiveEvent>[0][],
 ): Promise<typeof budgetIncidents.$inferSelect | null> {
   // Dedup: check for existing incident with same policyId + windowStart + thresholdType
   // where status <> 'dismissed' (the unique index enforces this)
@@ -90,7 +98,20 @@ async function createIncidentIfNeeded(
       amountObservedCents: observedCents,
       status: "open",
     })
+    // JOB-012 — exactly-once under a concurrent-exhaustion race: two tenant
+    // transactions can both pass the `existing` dedup SELECT above (neither has
+    // committed yet) and both reach this INSERT. The open-partial unique index
+    // (policy_id, window_start, threshold_type WHERE status <> 'dismissed') admits
+    // only one; ON CONFLICT DO NOTHING makes the loser a no-op (empty result)
+    // instead of aborting its whole tenant transaction (which would roll back the
+    // authoritative cost charge that transaction just wrote). The loser returns null
+    // below → no duplicate emit / cancel, exactly one incident.
+    .onConflictDoNothing()
     .returning();
+
+  // Lost the open-incident race — another transaction created it. Treat as
+  // "already existed" (not newly created): no emit, no second cancel.
+  if (!incident) return null;
 
   // For hard stops, create an approval and pause the agent
   if (thresholdType === "hard_stop" && policy.scopeType === "agent") {
@@ -129,7 +150,7 @@ async function createIncidentIfNeeded(
     );
   }
 
-  publishLiveEvent({
+  const incidentEvent: Parameters<typeof publishLiveEvent>[0] = {
     companyId: policy.companyId,
     type: "budget.incident_created",
     payload: {
@@ -138,7 +159,9 @@ async function createIncidentIfNeeded(
       thresholdType,
       observedCents,
     },
-  });
+  };
+  if (deferLiveEvents) deferLiveEvents.push(incidentEvent);
+  else publishLiveEvent(incidentEvent);
 
   return incident;
 }
@@ -247,6 +270,13 @@ export function budgetService(db: Db) {
               .where(eq(agents.id, policy.scopeId))
               .then((rows) => rows[0] ?? null);
             if (agent) scopeName = agent.name;
+          } else if (policy.scopeType === "department") {
+            const project = await db
+              .select({ name: projects.name })
+              .from(projects)
+              .where(eq(projects.id, policy.scopeId))
+              .then((rows) => rows[0] ?? null);
+            if (project) scopeName = project.name;
           } else {
             scopeName = "Company";
           }
@@ -312,30 +342,62 @@ export function budgetService(db: Db) {
     },
 
     // ----- getInvocationBlock -----
+    //
+    // JOB-012: `agentId` is nullable (an admission check without a resolved agent
+    // passes null → the agent branch is skipped) and `opts.projectId` adds the
+    // department branch. A reached hard-stop at ANY of the checked scopes returns a
+    // human reason string (the admission gate denies), otherwise null.
     async getInvocationBlock(
-      agentId: string,
+      agentId: string | null,
       companyId: string,
+      opts?: { projectId?: string | null },
     ): Promise<string | null> {
       const { start, end } = calendarMonthWindow();
 
       // Check agent-scoped policies
-      const agentPolicies = await db
-        .select()
-        .from(budgetPolicies)
-        .where(
-          and(
-            eq(budgetPolicies.companyId, companyId),
-            eq(budgetPolicies.scopeType, "agent"),
-            eq(budgetPolicies.scopeId, agentId),
-            eq(budgetPolicies.isActive, true),
-            eq(budgetPolicies.hardStopEnabled, true),
-          ),
-        );
+      if (agentId !== null) {
+        const agentPolicies = await db
+          .select()
+          .from(budgetPolicies)
+          .where(
+            and(
+              eq(budgetPolicies.companyId, companyId),
+              eq(budgetPolicies.scopeType, "agent"),
+              eq(budgetPolicies.scopeId, agentId),
+              eq(budgetPolicies.isActive, true),
+              eq(budgetPolicies.hardStopEnabled, true),
+            ),
+          );
 
-      for (const policy of agentPolicies) {
-        const observed = await getObservedCents(db, "agent", agentId, companyId, start, end);
-        if (observed >= policy.amountCents) {
-          return `Agent budget exceeded: ${observed} of ${policy.amountCents} cents used this month`;
+        for (const policy of agentPolicies) {
+          const observed = await getObservedCents(db, "agent", agentId, companyId, start, end);
+          if (observed >= policy.amountCents) {
+            return `Agent budget exceeded: ${observed} of ${policy.amountCents} cents used this month`;
+          }
+        }
+      }
+
+      // Check department-scoped policies (JOB-012)
+      const projectId = opts?.projectId ?? null;
+      if (projectId !== null) {
+        const departmentPolicies = await db
+          .select()
+          .from(budgetPolicies)
+          .where(
+            and(
+              eq(budgetPolicies.companyId, companyId),
+              eq(budgetPolicies.scopeType, "department"),
+              eq(budgetPolicies.scopeId, projectId),
+              eq(budgetPolicies.isActive, true),
+              eq(budgetPolicies.hardStopEnabled, true),
+            ),
+          );
+
+        for (const policy of departmentPolicies) {
+          const observed = await getObservedCents(db, "department", projectId, companyId, start, end);
+          if (observed >= policy.amountCents) {
+            return `Department budget exceeded: ${observed} of ${policy.amountCents} cents used this month`;
+          }
         }
       }
 
@@ -364,10 +426,41 @@ export function budgetService(db: Db) {
     },
 
     // ----- evaluateCostEvent -----
-    async evaluateCostEvent(agentId: string, companyId: string) {
+    //
+    // JOB-012: callable SYNCHRONOUSLY inside the authoritative-cost bridge's tenant
+    // transaction (the legacy fire-and-forget caller in costs.ts is unchanged and
+    // ignores the return). `agentId` is now nullable (agent-less distributed charges
+    // pass null → the agent-policy branch is skipped); `opts.projectId` scopes the
+    // department branch. Returns whether a NEW hard-stop incident was created so the
+    // bridge can drive `requestCancellation` exactly once per breach.
+    async evaluateCostEvent(
+      agentId: string | null,
+      companyId: string,
+      opts?: {
+        projectId?: string | null;
+        /**
+         * JOB-016 — when given, a newly-exhausted scope is PUSHED here instead of emitted. The
+         * in-process `budget.exhausted` listener cancels live heartbeat work on the global
+         * handle, so a caller whose charge is still inside an uncommitted transaction (or a
+         * savepoint that may yet roll back) collects the scopes and emits them AFTER commit.
+         * Absent (every legacy caller): emitted immediately, exactly as before.
+         */
+        deferExhaustedEmit?: BudgetEnforcementScope[];
+        /** JOB-016 — the incident live events, deferred the same way (Codex P2 on #547). */
+        deferLiveEvents?: Parameters<typeof publishLiveEvent>[0][];
+      },
+    ): Promise<{
+      hardStopIncidentCreated: boolean;
+      hardStopBreached: boolean;
+      /** E3-D-ACC Amendment 2 (JOB-016) — every scope whose hard stop this charge is at/over,
+       * so the distributed charge can mirror legacy's per-scope enforcement. Additive. */
+      breachedScopes: { scopeType: "agent" | "company" | "department"; scopeId: string }[];
+    }> {
       const { start, end } = calendarMonthWindow();
+      const projectId = opts?.projectId ?? null;
 
-      // Gather all active policies that apply (agent-scoped + company-scoped)
+      // Gather all active policies that apply (agent-scoped + company-scoped +
+      // department-scoped for the charge's project).
       const policies = await db
         .select()
         .from(budgetPolicies)
@@ -380,9 +473,14 @@ export function budgetService(db: Db) {
 
       const relevantPolicies = policies.filter(
         (p) =>
-          (p.scopeType === "agent" && p.scopeId === agentId) ||
-          (p.scopeType === "company" && p.scopeId === companyId),
+          (p.scopeType === "agent" && agentId !== null && p.scopeId === agentId) ||
+          (p.scopeType === "company" && p.scopeId === companyId) ||
+          (p.scopeType === "department" && projectId !== null && p.scopeId === projectId),
       );
+
+      let hardStopIncidentCreated = false;
+      let hardStopBreached = false;
+      const breachedScopes: { scopeType: "agent" | "company" | "department"; scopeId: string }[] = [];
 
       for (const policy of relevantPolicies) {
         const observed = await getObservedCents(
@@ -396,23 +494,44 @@ export function budgetService(db: Db) {
 
         // Check hard stop first
         if (policy.hardStopEnabled && observed >= policy.amountCents) {
-          const incident = await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end);
-          // Emit cancellation signal only on a newly-created incident so the
-          // signal fires once per breach, not on every subsequent cost event.
+          // This cost event's own spend is at/over an applicable hard-stop cap → the
+          // charging attempt MUST be cancelled, INDEPENDENT of whether it wins the
+          // one-incident-per-window insert. A concurrent sibling that crosses an
+          // already-breached window gets a null incident (dedup) but must still be
+          // cancelled, else it keeps spending past the hard stop. `requestCancellation`
+          // is idempotent, so cancelling each over-budget attempt is safe.
+          hardStopBreached = true;
+          if (policy.scopeType === "agent" || policy.scopeType === "company" || policy.scopeType === "department") {
+            breachedScopes.push({ scopeType: policy.scopeType, scopeId: policy.scopeId });
+          }
+          const incident = await createIncidentIfNeeded(db, policy, "hard_stop", observed, start, end, opts?.deferLiveEvents);
+          // Emit the LEGACY in-process cancellation signal only on a newly-created
+          // incident so that signal fires once per breach, not on every subsequent
+          // cost event. (The distributed cancel is driven by hardStopBreached above.)
           if (incident) {
-            const scope: BudgetEnforcementScope = {
-              companyId: policy.companyId,
-              scopeType: policy.scopeType as "company" | "agent",
-              scopeId: policy.scopeId,
-            };
-            emitBudgetExhausted(scope);
+            hardStopIncidentCreated = true;
+            // The legacy in-process cancel signal only carries company/agent scope
+            // (BudgetEnforcementScope has no department variant). Department breaches
+            // are still enforced via the bridge's requestCancellation, which is
+            // scope-agnostic — so we skip the emit for department scope only.
+            if (policy.scopeType === "company" || policy.scopeType === "agent") {
+              const scope: BudgetEnforcementScope = {
+                companyId: policy.companyId,
+                scopeType: policy.scopeType,
+                scopeId: policy.scopeId,
+              };
+              if (opts?.deferExhaustedEmit) opts.deferExhaustedEmit.push(scope);
+              else emitBudgetExhausted(scope);
+            }
           }
         }
         // Check warning threshold
         else if (observed >= (policy.amountCents * policy.warnPercent) / 100) {
-          await createIncidentIfNeeded(db, policy, "warning", observed, start, end);
+          await createIncidentIfNeeded(db, policy, "warning", observed, start, end, opts?.deferLiveEvents);
         }
       }
+
+      return { hardStopIncidentCreated, hardStopBreached, breachedScopes };
     },
 
     // ----- resolveIncident -----

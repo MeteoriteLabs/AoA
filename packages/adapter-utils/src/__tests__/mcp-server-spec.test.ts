@@ -9,6 +9,7 @@ import {
   RESERVED_MCP_SERVER_NAMES,
   stdioSpecCarriesSecretPlaceholder,
   stripReservedMcpServerNames,
+  brokeredAoaMcpConfig,
   type McpServerSpec,
 } from "../mcp-server-spec.js";
 
@@ -336,5 +337,23 @@ describe("aoaSecretPlaceholderVars", () => {
     const v = "Bearer ${AOA_MCP_X_TOKEN}";
     expect(aoaSecretPlaceholderVars(v)).toEqual(["AOA_MCP_X_TOKEN"]);
     expect(aoaSecretPlaceholderVars(v)).toEqual(["AOA_MCP_X_TOKEN"]);
+  });
+});
+
+describe("brokeredAoaMcpConfig — CLI-008 Unit C distributed --mcp-config document", () => {
+  it("wraps the brokered aoa HTTP entry in claude's { mcpServers: { aoa } } envelope", () => {
+    const json = brokeredAoaMcpConfig({ apiBaseUrl: "https://api.example", companyId: "co-1" });
+    expect(JSON.parse(json)).toEqual({
+      mcpServers: {
+        aoa: {
+          type: "http",
+          url: "https://api.example/companies/co-1/mcp",
+          headers: { Authorization: "Bearer ${AOA_API_KEY}" },
+        },
+      },
+    });
+  });
+  it("carries the LITERAL ${AOA_API_KEY} placeholder — never a token — so claude expands it from env", () => {
+    expect(brokeredAoaMcpConfig({ apiBaseUrl: "https://x", companyId: "c" })).toContain("Bearer ${AOA_API_KEY}");
   });
 });

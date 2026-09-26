@@ -9,12 +9,53 @@ on:
 permissions:
   contents: read
 
+# ★★★ THE REQUIRED LANE SETS THIS AND THIS LANE DID NOT, WHICH IS THE WHOLE DIFFERENCE.
+# Measured on run 35530583783: `server typecheck` died on macOS with
+# `FATAL ERROR: Ineffective mark-compacts near heap limit - JavaScript heap out of memory`,
+# a V8 crash rather than a type error. `pr.yml:11` carries a workflow-level
+# `NODE_OPTIONS: --max-old-space-size=8192`; this file carried none, so the same tsc run that
+# passes on the required lane exhausted the default heap here. Copied verbatim, not re-derived.
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+
 concurrency:
   group: cross-platform-weekly-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   # Advisory portability coverage. Linux remains the required PR platform.
+  #
+  # ★★★ SPLIT FROM ONE JOB INTO TWO, 2026-09-21 (M0 unit 2). The single job ran typecheck, the
+  # WHOLE test suite and build under one 25-minute cap. macOS needs 1049s for `pnpm test:run`
+  # alone (measured, run 35493290194) and Windows is consistently slower, so the Windows job was
+  # killed by the cap on EVERY scheduled run. A timed-out job concludes `cancelled`, which rolls
+  # the run to `cancelled` — which is why this lane produced NO cross-platform verdict at all for
+  # the six weeks from 2026-08-16, and why the DEP-013 consumer reports it `not_success`.
+  #
+  # ★ THE CAP WAS NOT RAISED, DELIBERATELY. `pr.yml:1040-1041` states the rule for this repo:
+  # "A PER-SHARD cap. Do NOT raise: a shard that still can't finish under it is a signal to shard
+  # finer or to investigate a slow test, never to raise the cap (GO-BOOK §2.0)." So the tests are
+  # sharded on the same axis the required Linux lane already uses, and typecheck/build stay in
+  # their own job so they are not repeated once per shard.
+  #
+  # ★★★ WHICH JOBS CARRY THE VERDICT — E6-F023, gate-owner ruling 2026-09-21, option 3.
+  # The DEP-013 consumer reads this lane's RUN conclusion, and a job carrying
+  # `continue-on-error: true` cannot change it. Until this change every job carried the flag, so
+  # run 35530935808 concluded `success` with 8 of its 12 jobs failing: a false green.
+  #
+  #   verify-cross-platform  VERDICT-BEARING  typecheck + build must pass on macOS and Windows.
+  #   e2e-cross-platform     VERDICT-BEARING  macOS runs the browser suite. Windows runs setup,
+  #                                           build and the Playwright install ONLY (Issue #114:
+  #                                           embedded-postgres cannot start under runneradmin),
+  #                                           so a green Windows e2e job asserts build parity and
+  #                                           nothing about browser behaviour.
+  #   test-cross-platform    ADVISORY         keeps `continue-on-error: true`. Cross-platform test
+  #                                           health is tracked separately (E5-F005, E3-F039) and
+  #                                           must not turn the lane red; a failing shard is
+  #                                           visible per job, never in the run verdict.
+  #
+  # So a green RUN now means: both platforms typecheck and build, macOS passes the browser suite,
+  # and Windows installs Playwright. It does NOT mean the unit-test shards passed.
   verify-cross-platform:
     strategy:
       fail-fast: false
@@ -22,6 +63,69 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    # VERDICT-BEARING: no `continue-on-error` (E6-F023 option 3). A failure here fails the run.
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ★★★ REQUIRED BY TYPECHECK AND BY TESTS, not a convenience. Several workspace
+      # packages are dist-only leaves that siblings import BY NAME, resolving through package
+      # exports to ./dist -- so `tsc --noEmit` needs their .d.ts and vitest needs their .js,
+      # and both run BEFORE `pnpm build`. Copied from the required Linux lane
+      # (`pr.yml`, "Build dist-only leaves (required by typecheck + tests)"), which is the
+      # proven recipe; do not let the two drift.
+      #
+      # ★ MEASURED, on run 35529720894: without this step BOTH new jobs went red --
+      # typecheck with `error TS2307: Cannot find module '@armyofagents/worker-protocol'`
+      # (sandbox-fake-provider/src/control-server.ts:24) and every test shard with
+      # collection failures in the packages that import those leaves. The single job this
+      # lane used to be won that race by side effect; a split job has its own fresh
+      # checkout and wins nothing.
+      - name: Build dist-only leaves (required by typecheck + tests)
+        run: |
+          pnpm --filter @armyofagents/worker-protocol build
+          pnpm --filter @armyofagents/sandbox-fake-provider build
+          pnpm --filter @armyofagents/worker-daemon build
+          pnpm --filter @armyofagents/sandbox-provider-contract build
+          pnpm --filter @armyofagents/sandbox-e2b-provider build
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Build
+        run: pnpm build
+
+  # The test suite, sharded so Windows can finish. ADVISORY — unlike its verdict-bearing
+  # siblings verify-cross-platform and e2e-cross-platform (see the header above).
+  test-cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        shard: [1, 2, 3, 4]
+    runs-on: ${{ matrix.os }}
+    # A PER-SHARD cap, carrying the same rule as `pr.yml`'s: do NOT raise it. Derived, not
+    # guessed — macOS's measured whole-suite work is 1049s, so a quarter of it is ~262s and this
+    # leaves roughly 4x headroom for the slower Windows runner plus its install.
+    timeout-minutes: 25
+    # ADVISORY, deliberately (E6-F023 option 3): a failing shard is visible on its own job and
+    # does NOT change the run conclusion. Removing this flag would turn the lane red on known
+    # cross-platform test-health items (E5-F005, E3-F039) that are tracked separately.
     continue-on-error: true
 
     steps:
@@ -42,14 +146,51 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm -r typecheck
+      # ★★★ REQUIRED BY TYPECHECK AND BY TESTS, not a convenience. Several workspace
+      # packages are dist-only leaves that siblings import BY NAME, resolving through package
+      # exports to ./dist -- so `tsc --noEmit` needs their .d.ts and vitest needs their .js,
+      # and both run BEFORE `pnpm build`. Copied from the required Linux lane
+      # (`pr.yml`, "Build dist-only leaves (required by typecheck + tests)"), which is the
+      # proven recipe; do not let the two drift.
+      #
+      # ★ MEASURED, on run 35529720894: without this step BOTH new jobs went red --
+      # typecheck with `error TS2307: Cannot find module '@armyofagents/worker-protocol'`
+      # (sandbox-fake-provider/src/control-server.ts:24) and every test shard with
+      # collection failures in the packages that import those leaves. The single job this
+      # lane used to be won that race by side effect; a split job has its own fresh
+      # checkout and wins nothing.
+      - name: Build dist-only leaves (required by typecheck + tests)
+        run: |
+          pnpm --filter @armyofagents/worker-protocol build
+          pnpm --filter @armyofagents/sandbox-fake-provider build
+          pnpm --filter @armyofagents/worker-daemon build
+          pnpm --filter @armyofagents/sandbox-provider-contract build
+          pnpm --filter @armyofagents/sandbox-e2b-provider build
+          # ★★★ AND THE PLUGIN SDK, which the sibling job gets for free and this one does not.
+          # `plugin-sdk/dist` is built as a SIDE EFFECT of `pnpm -r typecheck` -- the plugin
+          # examples' typecheck scripts each run `scripts/build-plugin-sdk-locked.mjs`. The
+          # verify job runs typecheck; this job deliberately does not, so it must build it
+          # explicitly or every server test touching plugin-worker-manager fails COLLECTION with
+          # `ERR_MODULE_NOT_FOUND: .../@armyofagents/plugin-sdk/dist/index.js`. Measured on run
+          # 35530935808: 6-9 failed FILES per shard with only 0-19 failed TESTS, i.e. almost all
+          # of them were collection errors rather than assertions.
+          #
+          # ★ Uses the repo's own locked builder rather than `pnpm --filter ... build`, so
+          # parallel shards on one runner cannot race each other through its lock dir.
+          node scripts/build-plugin-sdk-locked.mjs
 
-      - name: Run tests
-        run: pnpm test:run
-
-      - name: Build
-        run: pnpm build
+      - name: Run tests (shard ${{ matrix.shard }}/4)
+        # ★★★ `pnpm exec vitest run --shard=…`, NEVER `pnpm test:run -- --shard=…`.
+        # `pr.yml:1102-1114` records the trap with its proof: pnpm 9.15.4 forwards the `--`
+        # literally, so `pnpm test:run -- --shard=1/4` becomes `vitest run -- --shard=1/4`, the
+        # flag is SILENTLY IGNORED and every shard runs the whole suite (run 33012727670: four
+        # shards, ~52 min each, no split). A lane that shards four ways and still times out would
+        # look like a slow runner rather than a swallowed flag.
+        #
+        # The denominator MUST equal the `shard` matrix length above (4): vitest partitions the
+        # file set, so the four shards' union is exactly the full suite — nothing dropped, nothing
+        # run twice.
+        run: pnpm exec vitest run --shard=${{ matrix.shard }}/4
 
   # macOS runs the browser suite. Windows performs setup/build parity only
   # until its hosted runner can use an external/containerized PostgreSQL.
@@ -60,7 +201,7 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
-    continue-on-error: true
+    # VERDICT-BEARING: no `continue-on-error` (E6-F023 option 3). A failure here fails the run.
 
     steps:
       - name: Checkout repository
@@ -87,10 +228,19 @@ jobs:
         shell: bash
         run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
 
+      # ★★★ NO `continue-on-error` ON THIS STEP, and that is the E6-F023 install bypass closed.
+      # It used to carry the flag, and every later step is gated on
+      # `steps.install-playwright.outcome == 'success'` — so a failed install SKIPPED the config
+      # and e2e steps and the job concluded GREEN having run no browser test at all. Removing only
+      # the job-level flag would have left that path open. Now a failed or timed-out install fails
+      # this step, which fails the job, which fails the run.
+      #
+      # ★ Consequence, accepted: a Playwright CDN stall now turns this job red. These lanes do not
+      # use the required Linux lane's Chrome-for-Testing fallback (see CLAUDE.md, "CDN fallback"),
+      # so a stall means the browser suite genuinely did not run — which a red job says honestly.
       - name: Install Playwright
         id: install-playwright
         timeout-minutes: 10
-        continue-on-error: true
         run: npx playwright install --only-shell chromium
 
       - name: Generate AoA config

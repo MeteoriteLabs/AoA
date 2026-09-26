@@ -1,0 +1,1813 @@
+# Cloud Control Plane and Worker Re-platform Program Design
+
+**Date:** 2026-08-08
+
+## Goal
+
+Turn AoA into a hosted control plane that can safely coordinate coding/CLI jobs, browser-automation sessions, long-running service agents, desktop workers, and managed cloud workers without making the existing monolith or any worker-local database a peer source of truth.
+
+The supported hybrid fleet includes laptops running the installed desktop host, Organization-managed/dedicated workers, and isolated managed-cloud sandboxes. They synchronize only through the cloud backplane's versioned envelopes, durable events, object manifests, patches, checkpoints, and artifacts. A laptop is an execution target, not a second control plane.
+
+This document is the portfolio design and groomed program backlog. Each epic is intentionally small enough to receive its own code-level implementation plan before agents implement it.
+
+## Scope decisions
+
+- Design one worker protocol for three workload classes from the start:
+  - `batch`: bounded coding and CLI work;
+  - `browser_session`: bounded browser automation with screenshots, traces, approvals, and session artifacts;
+  - `service`: a desired-state, supervised process that can run for days and be restarted or moved.
+- Ship in that order: batch first, browser second, service third.
+- The first distributed test deployment is one control-plane replica plus at least two separately deployed workers (different registered target profiles), external PostgreSQL, and S3-compatible object storage. Production-like staging adds a second control-plane replica and shared admission/realtime stores.
+- All worker connections are outbound. A worker never needs an inbound firewall opening and never receives database credentials.
+- PostgreSQL owns business, policy, scheduler, lease, and audit state. Git owns source history. Object storage owns immutable workspace snapshots, logs, traces, and artifacts. Worker disks are caches plus encrypted unacknowledged event buffers.
+- Do not synchronize AoA databases between cloud and desktop systems. Synchronize job envelopes, events, workspace snapshots, patches, and artifacts.
+- Long-running services initially support outbound network access under policy and connector/queue consumption. Tenant-defined public ingress is a separate future design because it requires routing, certificates, abuse controls, and another isolation boundary.
+- Cloud plugin execution stays blocked until a separately isolated plugin-worker design exists. An agent sandbox does not implicitly make plugins safe.
+- Existing `local_trusted` behavior remains available during the migration. New distributed behavior stays behind explicit feature and tenant rollout flags.
+
+## Current-main integration baseline
+
+This design is rebased on `main` at commit `003492988269a91eadfadb352bff7f413fa61adb`, after PR #316 (multi-tenant cloud control plane), PR #317 (MCP OAuth connector broker), PR #318 (enterprise memory), PR #320 (cloud execution isolation on E2B), and the subsequent explicit migration-0188 snapshot/marker workflow for a populated `cloud_auth` flip. Those capabilities are inputs to the re-platform, not parallel systems to replace. [`current-main-crosswalk.md`](current-main-crosswalk.md) freezes the concrete PR #320 execution sinks plus the current deployment-migration seam and assigns each one a bridge, cutover, disablement, drain, rollback, and evidence owner.
+
+- Decision #117's execution-target registry and hardened gVisor seam remain the legacy routing and isolation boundary until the new worker path takes ownership through an explicit cutover. Its process-wide `AOA_ALLOW_UNSANDBOXED_MULTITENANT` escape hatch is legacy-only and must be rejected by `cloud_auth` after FND-005; it is not a fallback for the distributed path.
+- PostgreSQL remains authoritative for memory items, visibility, retrieval audit, and actor scope. Distributed workers receive authorized, immutable context inputs or call a tenant-scoped control-plane API; they never receive direct memory-table or database access. Decisions #118 and #119 remain controlling for memory visibility.
+- The existing company-scoped MCP OAuth broker remains authoritative for connector discovery, refresh leases, token rotation, and revocation. Distributed execution adds lease-scoped opaque handles and sandbox-local materialization; it does not create a second OAuth token store or serialize refresh/access tokens into job envelopes.
+- Decision #104 remains CLI-only: no selectable/direct API extraction engine returns. Self-hosted extraction keeps the installed CLI login; `cloud_auth` resolves the Company's model-provider credential only for sandbox-local CLI execution inside E2B under the 2026-08-08 amendment. CM-013 and DAT-004/DAT-005 own the distinct model-credential materialization boundary; it is neither MCP OAuth authority nor the E2B provider-control credential.
+- Decision #120's Commander warm-E2B lifecycle remains authoritative until MIG-005 cuts it over; neither the warm lease nor in-flight Commander work may be silently abandoned or dual-run.
+- Decision #103's amended `cloud_auth` rule remains controlling: the hosted control plane must not execute host-resident plugin workers. FND-006 and FND-008 close every currently reachable plugin execution sink; a future isolated plugin-worker design requires its own locked decision and isolation evidence.
+- The populated single-tenant→`cloud_auth` migration-0188 gate remains an explicit one-way-door preflight: a verified restorable snapshot precedes the durable marker, and missing opt-in or any snapshot/marker verification failure stops the deployment. DEP-003/MIG-002 may move that seam only with equivalent audit/idempotency/fail-closed behavior and isolated pre-cutover restore validation. REL-003 owns the later full post-cutover disaster-recovery rehearsal as release evidence; it does not block CM-015 or MIG-002 closure. The gate must never become an automatic schema-startup bypass.
+- The existing heartbeat, Commander, crew, one-shot CLI, workspace, provider-resolution, environment-lease, and connector paths remain migration sources. A ticket that bridges one of them must first satisfy the frozen current-main crosswalk and must name its shadow, cutover, drain, rollback, and hard-negative evidence.
+
+## Non-goals
+
+- A blank-slate rewrite of the AoA UI, task model, memory model, Commander, or marketplace.
+- A microservice per domain in the first release.
+- Active-active multi-region control-plane writes.
+- Public ingress for tenant service processes.
+- Bidirectional database replication between legacy and new modules.
+- Enabling the process-wide unsandboxed multi-tenant execution override.
+- Treating gVisor, E2B, Daytona, Docker, or nono as the scheduler or worker protocol.
+- Building or operating a self-hosted Firecracker worker-node fleet in this program; only the provider-neutral extension seam is in scope.
+
+## Delivery approach
+
+### Rejected: continue patching execution into the server process
+
+This is initially fast, but leaves tenancy, workspace access, child-process execution, cancellation, and secret handling inside the same failure and trust boundary. It also makes desktop and managed cloud execution different products.
+
+### Rejected: full rewrite and big-bang cutover
+
+This provides a clean codebase but discards working product behavior and forces the team to rediscover years of edge cases before producing value. A large agent swarm would increase merge volume without reducing integration risk.
+
+### Selected: contract-first strangler with a modular control plane
+
+Create a versioned protocol package, a separately deployable worker, and focused control-plane modules inside the current monorepo. Preserve existing product APIs and UI wherever possible. Route one golden journey through the new path, then move workloads and tenants incrementally. Keep the control plane as a modular monolith until load or ownership proves a service boundary is necessary.
+
+## Target topology
+
+```mermaid
+flowchart LR
+  UI["Web UI / desktop UI"] --> CP["AoA control plane"]
+  CP --> PG[("PostgreSQL")]
+  CP --> OBJ["S3-compatible object storage"]
+  CP --> WAKE["Durable job/event outbox"]
+
+  DESKTOP["Owner desktop worker"] -->|"outbound HTTPS"| CP
+  DEDICATED["Organization/dedicated worker"] -->|"outbound HTTPS"| CP
+  CLOUD["Managed-cloud worker"] -->|"outbound HTTPS"| CP
+  DESKTOP --> LOCAL["local/nono/Docker sandbox"]
+  DEDICATED --> DPROVIDER["registered provider"]
+  CLOUD --> E2B["E2B microVM"]
+  DPROVIDER -.->|"future provider seam"| GV["gVisor/Firecracker fleet"]
+
+  E2B --> BATCH["batch adapter"]
+  E2B --> BROWSER["browser session"]
+  E2B --> SERVICE["service instance"]
+```
+
+The control plane may begin as one replica. Correctness must nevertheless live in PostgreSQL transactions and lease fences, not process memory, so a second replica can be added without redesigning jobs.
+
+## Core lifecycle model
+
+### Job, attempt, and lease
+
+A `job` is immutable intent plus aggregate scheduler state. A retry never reopens a terminal attempt; it creates the next increasing `attempt`. An attempt may own at most one active lease, and a replacement lease always receives a new unpredictable fence. Delivery is at least once; externally visible effects must be idempotent.
+
+Required identity chain:
+
+```text
+organization -> company -> execution source -> job -> attempt -> lease -> sandbox/service instance
+```
+
+`execution source` is a discriminated provenance union, not a claim that every workload has an issue run. It represents a task run, Commander turn, crew run, one-shot extraction/compaction/readiness operation, browser session origin, or service reconciliation. Only a task-run source requires `runId` and `issueId`. Every source records a typed principal (`user`, `agent`, `service`, or `system`) whose branded identifier is opaque non-empty text rather than UUID-only. Every mutation from a worker carries `jobId`, `attempt`, `leaseId`, and the fence. The control plane rejects stale fences even if a late worker successfully finishes computation.
+
+The three state machines are distinct:
+
+- `JobStatus = queued | running | cancel_requested | succeeded | failed | cancelled | dead_letter`. While retry policy remains, the job stays `running`; `dead_letter` is reached when retry/reconciliation policy is exhausted, while `failed` is a non-retryable aggregate failure. Terminal job states are immutable.
+- `AttemptStatus = pending | offered | leased | running | cancel_requested | succeeded | failed | cancelled | expired`. Retry creates a new `pending` attempt. Attempt terminals are immutable.
+- `LeaseStatus = offered | active | released | expired | revoked`. Lease terminals are immutable. A renewal extends only the matching active lease and echoes the complete job/attempt/lease/fence identity.
+
+Browser-session state and service desired/instance state remain separate from these delivery states. A generic attempt terminal event cannot encode service-instance `healthy`, `stopped`, or `lost`; those use service-instance events and their own transition table.
+
+### Workload-specific lifecycle
+
+| Workload | Lifetime | Completion | Recovery |
+|---|---:|---|---|
+| `batch` | minutes to hours | terminal result, patch, or artifact | retry a new attempt from a declared base snapshot |
+| `browser_session` | minutes to hours | terminal result plus screenshots/trace/video | retry from a clean session or an explicitly approved checkpoint |
+| `service` | hours to days | desired state becomes stopped/deleted | reconciler replaces failed instances and advances generations |
+
+A service is not modeled as an infinitely renewed batch job. It has a durable desired-state row, generation, instance records, health state, restart policy, and budget/TTL policy. Each running instance still uses the common lease and event protocol.
+
+E2B continuous-runtime limits are an accepted product constraint, not a change to the lifecycle. A service may span multiple fenced instances through approved checkpoints or replayable input. See [`accepted-caveats.md`](accepted-caveats.md).
+
+## Source-of-truth and synchronization rules
+
+- Business and scheduler writes are accepted only by the control plane.
+- Workers append events; they do not directly update run, issue, cost, or membership rows.
+- Worker events are idempotent and uniquely ordered by `(job_id, attempt, seq)`.
+- The worker retains an encrypted SQLite outbox until cumulative acknowledgement.
+- Large files go directly to object storage with short-lived, prefix-scoped upload grants.
+- Artifact commit is a fenced control-plane operation that validates hashes, sizes, ownership, and active lease. Stale output uses the separate device-authenticated quarantine operation and can never update the old attempt or become an approved checkpoint automatically.
+- Coding outputs are patches or Git commits tied to a declared base hash. Conflicting results are quarantined for review rather than blindly copied over a workspace.
+- Browser cookies, storage state, screenshots, videos, and traces are job-scoped artifacts with explicit retention.
+- Service state survives only through declared checkpoints, durable external stores, or replayable inputs; local worker disk is never authoritative.
+
+## Security invariants
+
+- A non-owner database role enforces RLS on every tenant-owned table used by the new path.
+- The transaction establishes one mandatory Organization context before a tenant repository can execute.
+- Duplicated Organization/Company identifiers use composite foreign keys or validated database constraints.
+- Worker credentials are short lived, audience bound, target bound, and revocable. The current static worker token may only bootstrap enrollment.
+- Registered targets have explicit `platform`, `organization`, or `owner` scope. Platform targets are operator-enrolled global catalog entries with no tenant ownership and no tenant-facing listing; Organization and owner targets use Organization-scoped logical profiles. Job/RLS scope is established before any job detail is released to a platform worker.
+- Secret handles, not plaintext secrets, appear in job envelopes.
+- Platform-managed secret values are never serialized into protocol objects. Free-form workload strings are not claimed to make arbitrary user-provided secrets structurally impossible; producers scan all strings against registered secret canaries before persistence/dispatch, and typed secret materialization remains separate.
+- Secret material is released only after live lease, tenant, actor/owner, target identity/generation, trust, and policy validation, and every release is audited.
+- Every governed or metered external effect uses a fence-aware egress proxy or remote service that reauthorizes Organization, job, attempt, lease, fence, target generation, destination, and credential scope for each request. The beta does not materialize platform-managed provider credentials for direct sandbox egress.
+- Lease loss revokes effect authority but never prevents safety cleanup. Provider cancel/kill/destroy and ownership-scoped list/inspect/reconcile use a separate, resource-bound, deadline-bounded monotonic cleanup authority that can only reduce or terminate work and cannot create, execute, resume, checkpoint, reveal another resource, or open egress.
+- A device-local personal credential may be used only for sandbox-local work or through that same reauthorization path. Direct network use is disabled for the beta because a partitioned/replaced lease cannot revoke it synchronously; any later enablement requires a separate decision, bounded expiry, destination enforcement, and partition/replacement evidence.
+- Sandbox egress is default deny. Metadata endpoints, RFC1918 destinations, worker-host control ports, and the AoA data plane are denied unless explicitly required.
+  - **★ NOTE, 2026-09-07 — THE BULLET ABOVE IS A REQUIREMENT, NOT A STATEMENT OF FACT, AND IT IS NOT DELIVERED. Its wording is deliberately left unchanged so the findings that cite it still cite the sentence they are correcting.** Sandbox egress is filtered at NO layer, and every enumerated candidate is now refuted — each on evidence whose CLASS is named, because two of the five are not measurements: provider `metadata` (measured inert, run `33857218680`), the provider `network`/`denyOut` surface (measured inert, run `34085130892` — accepted, validated, stored, echoed back verbatim, and unenforced), in-guest (not a boundary: the guest login shell is agent-writable by construction — structural; and Node's global `fetch` consults no proxy environment variable, reproduced on Node v24.14.0 but **not** on the `node:22` guest, so that half is mixed rather than measured — see `E8-F003` §8's note), control-plane deny (structural: `classifyEgressDestination`'s only route into production is a module nothing imports), and fail-closed-on-no-policy (derived: its only discriminator is a `getInfo()` read-back that PASSES on an unpoliced sandbox).
+  - **Read `E8-F003` §8 (the census, each row labelled measurement / structural / derived) and `E8-F008` BEFORE proposing a fifth enforcement layer.** The corresponding threat-control crossing `DE-08` (severity `Critical`) reads `deliveryStatus: not-delivered`. **What to do about a Critical control that cannot be enforced at any available layer is a founder decision — RULED 2026-09-11** (`docs/replatform/DECISION-REQUEST-de08-sandbox-egress.md`, options 1+3+4): confidentiality is carried by the credential taxonomy (not egress denial), the enforcement gap is accepted as a disclosed release exclusion at the managed-shared tier, and egress denial remains REQUIRED at the self-hosted/tenant-hosted boundary. `deliveryStatus` stays `not-delivered` (the control is not delivered; the disposition is accepted-residual), and the taxonomy-airtightness verification the ruling now leans on is tracked as `E8-F012`.
+- The host worker supervises sandboxes but never executes tenant commands in its own process.
+- Each shared-cloud job gets a distinct sandbox, writable workspace, home directory, and process namespace.
+- Worker revocation stops new leases, prevents session renewal, cancels active leases, and triggers sandbox termination.
+- Target class, Organization/owner binding, trust ceiling, credential ceiling, provider allowlist, locality ceiling, revocation generation, and allowed fallback are server-assigned. Worker-reported capabilities, health, version, and capacity can only narrow eligibility.
+
+## Deployment progression
+
+### D0: Hermetic component tests
+
+Protocol, state-machine, repository, and worker-supervisor tests run without external providers. Every ticket runs its focused tests plus affected-package typecheck/build once. The immutable epic/merge-train/release rollup runs repository checks and each designated critical suite three consecutive times. The exact two-cadence contract is normative in [`test-gates.md`](test-gates.md).
+
+### D1: Distributed local topology
+
+Docker Compose runs:
+
+- `postgres`
+- `minio`
+- `control-plane`
+- `worker` (at least two instances with distinct registered target profiles)
+- `fake-sandbox-provider`
+- `toxiproxy`
+- `test-runner`
+
+The control-plane container has no Docker socket. The worker has no database credentials. They share no writable filesystem volume. Every job crosses the network protocol and object store.
+
+### D2: Real E2B nightly lane
+
+Run a small coding job, cancellation job, artifact round trip, and cleanup reconciliation against E2B. Failures block promotion but do not make ordinary pull requests depend on a vendor.
+
+### D3: Browser nightly lane
+
+Run Playwright inside the remote sandbox against a deterministic test site. Assert browser outputs, egress policy, secret/cookie cleanup, cancellation, and trace retrieval.
+
+### D4: Service canary lane
+
+Run a supervised service continuity/reconciliation lane for at least 72 wall-clock hours. It may cross provider pause/resume or sandbox replacement rather than claiming one uninterrupted E2B process. Restart both control-plane and worker processes, partition the worker, drain it, advance a generation, restore a checkpoint, and verify bounded duplicate work plus stable desired state.
+
+### D5: Staging
+
+Use external PostgreSQL/object storage, at least two control-plane replicas, at least four workers across two failure domains, a shared realtime broker and shared admission/rate-limit store, a managed secret store, central logs/metrics, canary rollout, database backup/restore, and worker revocation exercises.
+
+### D6: Production beta
+
+Enable coding, browser, and service for selected Organizations. Maintain per-workload incident disablement, instant scheduling disablement, provider kill switches, per-Organization concurrency and spend caps, and a documented rollback to the legacy execution path where semantics allow it. A disabled mandatory workload stops or resets the campaign; it does not create a coding-only pass.
+
+Every REQUIRED condition plus the exact HARD and INITIAL promotion thresholds for D0 through D6 are normative in [`test-gates.md`](test-gates.md). An external provider/environment that prevents a required lane or schedule from starting is `blocked_external`, not a pass; after a campaign starts, scheduled external failures remain in the sample set and a missed threshold is `fail`. Security/correctness invariants are never waived by an accepted provider caveat.
+
+## Program completion definition
+
+REL-005 produces a **selected-Organization private beta**, not public GA. Coding, browser, and service are mandatory product workloads for that beta: E7, E8, E9 and D2, D3, D4 must all be complete before REL-005, and the D6 manifest must include all three workloads. Their separate feature flags control per-Organization exposure and rollback only; they do not create a coding-only completion path. The foundation is complete when one cloud backplane can authoritatively place and reconcile work across enabled managed-cloud, dedicated, and installed-desktop targets; all target/credential/locality/fallback choices are auditable; offline and cross-target output is fenced/quarantined; two control-plane replicas preserve correctness; and the required workload plus advertised desktop/mobility matrix passes the same-candidate D0–D6 gates.
+
+Desktop remains off if its separate beta gate has not passed. Public service ingress, cloud plugin execution, active-active multi-region writes, and a self-hosted Firecracker platform remain excluded. Adding a new provider later must require a provider adapter and conformance evidence, not a redesign of control-plane authority, the job/lease protocol, tenant isolation, or workspace promotion.
+
+## Test and merge policy
+
+“Merge now and test later” is prohibited for tenant, lease, secret, migration, and protocol work. It creates failures that are expensive to attribute across parallel agents.
+
+Every ticket must provide:
+
+1. A failing focused test or contract fixture that demonstrates the missing behavior.
+2. The minimal implementation.
+3. Passing focused tests, typecheck/build for affected packages, and generated-contract checks.
+4. A small documentation or runbook update when an operator-visible contract changes.
+5. One reviewable commit or a short, clean commit sequence.
+
+Expensive validation is delayed only to a merge train or nightly lane:
+
+| Lane | Frequency | Required coverage |
+|---|---|---|
+| Focused | every ticket | changed unit/contract/integration tests, affected-package typecheck/build, changed boundary/manifest checks once |
+| D0 rollup | every epic/merge train/release candidate | repository typecheck/tests, same-revision recursive build, authoritative root build, and designated critical suites three consecutive times |
+| Merge train | every 5–10 merged tickets | D1 distributed happy path and failure injection |
+| Nightly | nightly | D1 full suite plus real E2B; browser/service lanes from their first implementation slice onward |
+| Weekly | weekly | chaos, cross-tenant adversarial suite, load, backup/restore, leaked-sandbox reconciliation |
+| Release | each candidate | all gates, image/SBOM/signature checks, migration rehearsal, rollback rehearsal |
+
+### Integration branch and PR strategy (LOCKED)
+
+The entire program is integrated on **one long-lived branch, `docs/replatform-program`**, as **a single continuous pull request** (currently **PR #323**, kept labeled *WIP — do not merge*). This is a locked operating decision; do not re-litigate it or ask whether to split it:
+
+- **No per-epic PRs and no per-epic merges to `main`.** Every epic's tickets land directly on `docs/replatform-program`. The branch is a strict linear accumulation of E0→E11 work.
+- **CI runs on the single PR.** The `pr.yml` gate suite (`verify`, `e2e`, `e2e-pgvector`, `migrations`, `policy`, `brand-check`, `distributed-contract`, `worker-protocol-contract-bytes`, aggregated by the required **`ci-required`** check) re-runs on every push to the PR. This PR *is* the enforcement surface for the "Focused", "D0 rollup", and "Merge train" lanes above — those lanes run against the branch tip, not against separate epic PRs. Each push cancels the prior run's in-flight `verify` (GitHub concurrency); `verify` is the ~25–40 min long pole.
+- **CI-green on the branch tip is the integration invariant** that preserves cross-agent attribution (the reason "merge now, test later" is banned) — because there is no second branch to reconcile, a red tip is always attributable to the last push.
+- **Manifest/grant blast-radius is expected and reconciled in-branch.** The E2/E3 security certificates are duplicated across several independent oracles (the production grant constants in `job-control-legacy-grants.ts`, the startup gate in `distributed-execution-databases.ts`, the sibling contract test `job-control-legacy-grants.contract.test.ts` with its own hand-transcribed ACL matrix + nullness fixtures, and the raw-SQL audit allowlist in `job-leasing-contract.test.ts`). Any change to a table grant, RLS policy, serving-relation inventory, or authority manifest must be mirrored across **all** of these in the same branch, and typically surfaces over **2–3 CI rounds** of blast radius (sibling certs + platform-specific tests). Budget for that; do not treat a sibling-cert failure as a regression in the change itself.
+- **Merge to `main` happens only at the program integration checkpoint** (governed by the Release/gate policy), never per epic. Until then #323 stays open and WIP.
+
+Practical note for future agents: check the vitest `Errors N` line and the *Unhandled Errors* section of the `verify` log, not just the `Tests N passed` count — a 20k-test suite plus per-test embedded-PostgreSQL surfaces tooling-scale flakes (driver teardown races, birpc RPC timeouts) that read as red despite a 100%-green suite. Those are patched via `pnpm.patchedDependencies` (see `patches/postgres@3.4.8.patch`, `patches/vitest@3.2.6.patch`).
+
+## Agent operating model
+
+- One ticket, one branch/worktree, one implementation agent.
+- A protocol/schema custodian owns changes to shared protocol types and database migrations. Other agents consume released contracts rather than editing them concurrently.
+- No ticket may own both a protocol redesign and a provider implementation.
+- Avoid parallel tickets that touch the same migration, state machine, or route module.
+- Keep new modules focused; do not add worker logic to `heartbeat.ts` or more process timers to `server/src/index.ts`.
+- Use feature flags to merge dormant paths safely, but dormant code still requires tests.
+- The merge queue rebases, runs the focused lane, and merges sequentially.
+- At each delivery gate, assign one fresh integration agent to run the gate, inspect evidence, and open narrow repair tickets. Do not let implementation agents self-certify the whole gate.
+- Freeze contract changes during provider, browser, and service delivery trains except for versioned additive fields.
+
+## Dependency graph
+
+```mermaid
+flowchart TD
+  E0["E0 Foundation: FND-001..008"] --> E1["E1 Protocol"]
+  E0 --> E2["E2 Tenant kernel incl. TEN-006"]
+  E1 --> CORE["E3/E4 core: JOB-001/002/009/003 and WRK-001..004"]
+  E2 --> CORE
+  CORE --> D1["E6-D1-FOUNDATION: DEP-000..004"]
+  CORE --> P0["JOB-010 admission parity"]
+  D1 --> E3["E3 D1-bound remainder: JOB-004..008/011..014"]
+  P0 --> E3
+  D1 --> E4["E4 remainder"]
+  E3 --> E5["E5 incl. DAT-006, DAT-007"]
+  E4 --> E5
+  E3 --> E6R["E6 remainder incl. DEP-008/009"]
+  E4 --> E6R
+  E5 --> E6R
+  E3 --> E7BASE["E7 CLI-001..005"]
+  E4 --> E7BASE
+  E5 --> E7BASE
+  E6R --> E7BASE
+  E3 --> RT["E10-REALTIME-FOUNDATION: MIG-003"]
+  E6R --> RT
+  E7BASE --> RECON["E10 MIG-008 legacy-resource reconciliation"]
+  E6R --> RECON
+  RECON --> E7["E7 CLI-006 gate"]
+  RT --> E7
+  E7 --> E8["E8 Browser"]
+  E7 --> E9["E9 Service"]
+  E3 --> DESK["E10 DSK-001..004"]
+  E4 --> DESK
+  E5 --> DESK
+  E7 --> CUT["E10 MIG-001/005/006/007 then MIG-002"]
+  CUT --> E11
+  E7 --> MOB["E10 MIG-004 mobility"]
+  DESK -. "desktop handoff directions only" .-> MOB
+  CUT --> MOB
+  RT --> MOB
+  E8 --> E11["E11 Release"]
+  E9 --> E11
+  DESK -. "only when desktop is advertised" .-> E11
+  MOB -. "only when mobility is advertised" .-> E11
+  E6R --> E11
+```
+
+E8/D3 and E9/D4 are unconditional release joins: browser and service are mandatory alongside coding. The dashed edges are the only conditional release joins; a non-desktop, non-mobile beta keeps desktop/mobility flags hard off and supplies negative evidence, while advertising either capability makes its complete closure blocking.
+
+## Definition of Ready for every implementation ticket
+
+A ticket is assignable only when it includes:
+
+- one outcome and explicit non-goals;
+- exact dependencies by ticket ID;
+- owned module/file area;
+- input and output interfaces;
+- acceptance examples, including failure behavior;
+- named focused test lane and commands in the epic implementation plan;
+- migration and compatibility impact;
+- authoritative target/owner/trust/locality/fallback and credential impact;
+- accepted-caveat impact and provider-neutral extension impact;
+- observable signals and rollback/disable mechanism;
+- size of no more than three agent-days; otherwise split it. **Exemption (cutover/parity):** MIG-002, MIG-004, MIG-005, MIG-008, and the JOB-010 through JOB-014 legacy-parity tickets are exempt from the three-day bound. They are bounded wiring/parity over existing engines ("no second engine"), so their implementation scope is small; their size is dominated by legacy-parity test matrices, not new code. Each still names one outcome, exact dependencies, rollback/disablement, and is sized by its test-matrix scope in the epic implementation plan. The E11 release/campaign gate tickets (REL-001 through REL-005) are likewise exempt — they are release-orchestration gates sized by evidence scope and multi-day D6 campaign duration, not agent-days, and the Release Owner may split any of them into phased sub-tickets (e.g. evidence rollup / HA-DR rehearsal / final sign-off) at execution time. The exemption is not transitive — no other ticket may exceed three days by citing it.
+
+## Groomed backlog
+
+The backlog contains 105 implementation tickets (audited 2026-08-25 against the `#### ID` nodes in this document; the previous "95" was a stale hand-count). Of these, 88 ids have at least one ticket file and 17 are unbuilt backlog. Counting NODES is not the same as counting delivered CAPABILITY - see the epic exit-gate audit, which found ~17 gate clauses whose named production path has no caller. Sizes are planning estimates: **S** is up to one agent-day, **M** is up to three. Each ticket is independently reviewable. Code-level file lists, signatures, and red/green commands are produced in the implementation plan for that epic.
+
+### E0 — Program foundation
+
+#### FND-001 — Record the workload lifecycle ADR (S)
+
+- **Depends on:** none.
+- **Outcome:** Lock distinct job/attempt/lease delivery machines plus `batch`, `browser_session`, service desired/instance semantics, including time limits, cancellation, retries, checkpoint/quarantine, provider pause/resume, and no public ingress.
+- **Acceptance:** Human-readable ADR and machine-readable JSON agree; diagrams, exhaustive allowed/forbidden transitions, reachability, terminal immutability, one example per workload, and heartbeat/Commander/crew/run mapping are present.
+- **Test:** Structured checker parses both authorities and rejects graph/table drift; string-fragment presence is insufficient.
+
+#### FND-002 — Record authority and migration ADR (S)
+
+- **Depends on:** none.
+- **Outcome:** Declare PostgreSQL/Git/object-store/worker authority and the single-writer strangler rule.
+- **Acceptance:** The ADR forbids database peer sync and permanent dual writes, defines cutover ownership per aggregate, and defines quarantine behavior for late worker output.
+- **Test:** Architecture checker validates every authority row and single-writer transition.
+
+#### FND-003 — Threat model and trust-boundary inventory (M)
+
+- **Depends on:** FND-001, FND-002.
+- **Outcome:** Model tenant, operator, worker host, sandbox, provider, plugin, secret store, object store, and browser-session threats.
+- **Acceptance:** Every crossing has authentication, authorization, confidentiality, integrity, revocation, audit, failure mode, severity, owner tickets, and verification lane in machine-readable and rendered forms. The unsafe hosted override is forbidden.
+- **Test:** Checker rejects missing attributes/owners/unknown tickets and every Critical/High control without a release test.
+
+#### FND-004 — Golden journey and failure corpus (M)
+
+- **Depends on:** FND-001.
+- **Outcome:** Define nine deterministic fixtures covering coding, browser, service, cancellation, egress denial, provider pause/resume, late-output quarantine, and secret-in-argv rejection.
+- **Acceptance:** A strict schema covers tenant, typed requester/executor, discriminated execution source, placement, immutable inputs/base, job/attempt/lease/fence, ordered events/digests, artifacts, cost/usage bounds, cancellation/product-approval/runtime-decision, cleanup/timing, terminal state, audit, and forbidden effects.
+- **Test:** Schema plus semantic/cross-reference validation for every fixture.
+
+#### FND-005 — Merge gates, feature flags, and ownership rules (M)
+
+- **Depends on:** FND-003.
+- **Outcome:** Add the program’s branch protection, merge-train, flag, code-ownership, reproducible-build, and append-only evidence policy.
+- **Acceptance:** Distributed execution defaults off and resolves deployment→Organization→workload; public ingress and unsafe hosted fallback remain hard negative; protocol/migration/security custodians, named partial gates, immutable evidence names, and D0–D6 thresholds are documented. Root `pnpm build` remains authoritative until this ticket pins mutable catalog/connector inputs and updates the root script, AGENTS, and every required CI caller together; `pnpm -r build` is additional same-revision package evidence, not a replacement. QA/handoff validation requires full revision, named owner, REQUIRED/HARD/INITIAL/OBSERVED values, requirement IDs, frozen schedule/sample fields, and append-only attempts.
+- **Test:** Configuration plus gate/evidence/build-contract checkers prove hosted exclusions, shared-replica ownership, authoritative-build parity, immutable records, and non-waivable HARD failures.
+
+#### FND-006 — Disable cloud plugin process composition (M)
+
+- **Depends on:** FND-003, FND-005.
+- **Outcome:** Make Decision #103 true at the PR #320 plugin process/composition boundary instead of trusting the current cloud allowlist or child-process marker.
+- **Acceptance:** In `cloud_auth`, `worker-manager`, `worker-fork`, `lifecycle`, and `loader` cannot construct, fork, start, resume, or dispatch a plugin worker; startup cannot use `AOA_PLUGIN_WORKER_PROCESS=1` as a parent-process escape hatch; stale ready rows reconcile to blocked metadata-only state. A rolling multi-replica upgrade denies new activation, drains/cancels queued/running plugin work, terminates every child, and reaches zero runnable work before advancing. Rollback retains the Decision #103 deny boundary and never re-enables hosted plugins. `local_trusted` and single-tenant `authenticated` process behavior remain unchanged.
+- **Test:** Five intentional current-defect cases plus passing `ui-static` characterization, six typed-sink GREEN matrix, real-app/startup composition, parent-marker bypass negative, process-spawn/worker-dispatch sentinels, multi-replica drain, stale-row reconciliation, safe rollback, source-boundary mutations, and self-hosted positive regression.
+
+#### FND-007 — Freeze execution sources and legacy parity (M)
+
+- **Depends on:** FND-002, FND-004.
+- **Outcome:** Freeze the PR #320 current-system crosswalk, the closed execution-source provenance union, and a machine-readable legacy-control parity matrix before E1 can freeze v1.
+- **Acceptance:** [`current-main-crosswalk.md`](current-main-crosswalk.md) covers Decision #117 routing and per-Organization concurrency clamps, heartbeat and warm agent leases, Commander/warm conversation leases, crew, direct one-shot extraction/compaction/supported readiness, workspaces/outputs/previews, connector/OAuth continuity, tenant model-provider credential materialization, E2B provider lifecycle/control credentials/environment leases, the explicit migration-0188 snapshot/marker seam, and every plugin/runtime extension sink. Every row names bridge/disable, shadow, cutover, drain, rollback, hard-negative evidence, and an existing owner ticket. The parity matrix maps each source kind to checkout/assignment, capacity claim/release/wakeup, product/runtime approvals, budgets, audit, cost, outputs/run summaries, completion/cancel/retry, and `not_applicable` rationale. Principal IDs are opaque; only `task_run` requires `runId`/`issueId`.
+- **Test:** Structured checker rejects missing/unknown sinks, source variants, parity dimensions, owner tickets, dispositions, cutover phases, migration-0188 snapshot/marker evidence, or unjustified `not_applicable`; mutation fixtures cover fabricated task provenance and sentinel-Organization admission.
+
+#### FND-008 — Disable cloud plugin runtime and browser surfaces (M)
+
+- **Depends on:** FND-006.
+- **Outcome:** Close the remaining plugin host APIs/browser surfaces and preserve the already fail-closed external-adapter boundary.
+- **Acceptance:** In `cloud_auth`, `loader-import`, `ui-static`, install/reinstall/upgrade/uninstall, tools, jobs, webhooks, MCP bridge/RPC, streams/events, UI/static contributions, and background activation fail before package I/O, import, dispatch, process, or browser-code effects. Registered HTTP denials preserve Decision #103's exact 503 `PLUGIN_WORKER_BLOCKED_IN_CLOUD` envelope/docs pointer, persisted `statusReasonCode`, and marketplace `errorCode`/`errorDocs`; non-HTTP surfaces use a typed equivalent. External-adapter install/load/reload/UI-parser exclusions remain intact. Metadata-only reads do not evaluate executable manifests. Rolling upgrade drains queued/running work and subscriptions across replicas; rollback retains the deny contract. Self-hosted behavior remains unchanged and there is no operator escape hatch.
+- **Test:** Real-app exact-denial route matrix; persisted/marketplace code checks; package-I/O/import/static/dispatcher sentinels; scheduled/webhook/tool/job/MCP negatives; cached UI and stale/queued/running-row drain cases; external-adapter exclusion regression; safe-rollback and source-boundary mutations; and self-hosted positives.
+
+### E1 — Versioned worker protocol
+
+#### PRT-001 — Create the worker-protocol package (S)
+
+- **Depends on:** FND-001.
+- **Outcome:** Add a dependency-light package containing wire types, validators, constants, and JSON fixtures, usable by server and worker without importing either.
+- **Acceptance:** Package builds in isolation, publishes no Node-only runtime dependency or private source subpath, exposes only the reviewed built root API, and packs exact runtime/declaration bytes usable without source-tree resolution.
+- **Test:** Package typecheck/build/pack, exact-tarball import smoke from server and minimal worker fixtures, and static/dynamic/bare-builtin import-boundary bypass corpus.
+
+#### PRT-002 — Define identifiers and state machines (M)
+
+- **Depends on:** PRT-001, FND-007.
+- **Outcome:** Generate branded IDs and distinct job, attempt, lease, browser-session, service, and service-instance transitions from the machine-readable E0 lifecycle contract.
+- **Acceptance:** Unknown states fail closed; `dead_letter` is reachable only with explicit `policy_exhausted` reason and `failed` only with `non_retryable_failure`; retry creates a new attempt; a `park_run` human-wait ends the current attempt and releases its lease, resuming as a new fenced attempt rather than a compute-holding parked state; service health/stop/loss never masquerade as generic attempt terminal states; terminals are immutable.
+- **Test:** Exhaustive Cartesian state/reason transition tests compared with the E0 JSON authority, including false exhaustion reasons and every illegal/cross-lifecycle transition.
+
+#### PRT-003 — Define job and lease envelopes (M)
+
+- **Depends on:** PRT-002, FND-003.
+- **Outcome:** Define immutable job input and discriminated provenance, capability requirements, lease ACK, renewal, cancellation, deadlines, attempt number, and fencing token.
+- **Acceptance:** Tenant IDs, strict `task_run | commander_turn | crew_run | one_shot | browser_request | service_reconcile` source, typed requester/executor, authoritative placement-policy reference, target requirements, and policy hashes are mandatory. Principal IDs are opaque text; only task runs require `runId`/`issueId`. Platform-managed secret material uses typed opaque handles only. Workload-supplied workspace paths use sandbox-relative branded paths; the only sandbox-absolute path is a typed secret-file target under `/run/aoa-secrets/`. Neither form can represent a host path. Safe additive data is limited to bounded namespaced extensions with explicit `critical`/`mustUnderstand` behavior; arbitrary free-form strings receive producer-side known-secret-canary scanning before persistence or dispatch.
+- **Test:** Every source-kind valid/invalid structural round trip; fabricated task identity and task execution-principal/assignee mismatch; explicit JOB-001/JOB-010 requester-authorization handoff; POSIX/Windows host-path rejection; secret canaries in argv/URL/header/extension strings; critical-extension rejection; and complete delivery identity echo on ACK/renew.
+
+#### PRT-004 — Define worker event and acknowledgement protocol (M)
+
+- **Depends on:** PRT-002.
+- **Outcome:** Define sequenced event batches, cumulative ACKs, logs, metrics, state transitions, browser observations, and service health events.
+- **Acceptance:** Events require authenticated `(Organization, Company, worker, job, attempt, lease, fence, seq)` identity plus `eventDigest`, the lowercase SHA-256 of the RFC 8785 canonical JSON for every immutable event field except the digest itself. Producer and receiver recompute it; the receiver authorizes all presented identities against the active lease and rejects a mismatch before persistence. Retransmitting an already committed ID/digest is idempotent; a duplicate ID with different recomputed digest is rejected and audited; duplicate IDs inside one submitted batch are invalid. Service-instance started/health/checkpoint/stop/lost/interrupted/resumed events carry service, instance, and generation identity. Large payloads use blob references.
+- **Test:** Canonical key-order/number/Unicode bytes, mutation without rehash, retransmit, in-batch duplicate, stored-digest conflict, gap, out-of-order, service transition, stale-fence, and cumulative-ACK fixtures.
+
+#### PRT-005 — Define artifacts, workspaces, secrets, and network policy (M)
+
+- **Depends on:** PRT-003, FND-003.
+- **Outcome:** Define workspace manifests, patch manifests, ordinary fenced artifact commits, device-authenticated quarantine uploads, secret handles, retention, and default-deny egress policy.
+- **Acceptance:** Object keys are tenant/job/attempt scoped; size/hash are mandatory; sensitive browser artifacts have explicit retention. Ordinary commit requires the current fence. Quarantine has a separate prefix and operation, records observed identity/hash/size/sensitivity/reason, returns an orphan receipt, and exposes no auto-apply or checkpoint-selection operation.
+- **Test:** Cross-tenant key, path traversal, oversized object, forbidden network, secret-canary, active commit, stale-fence quarantine, wrong prefix/hash/size, and quarantine non-promotion fixtures.
+
+#### PRT-006 — Capability and protocol negotiation (S)
+
+- **Depends on:** PRT-003, PRT-004, PRT-005.
+- **Outcome:** Define worker version/range, server-registered target profile, worker-reported dynamic platform/capacity/capabilities, policy version, and must-understand negotiation.
+- **Acceptance:** Eligibility is the intersection of the server target profile and worker report. A worker cannot advertise its way into a higher trust/provider/credential/locality class. Every source variant and opaque principal survives the context-free syntax conformance corpus. Reserved/sentinel and requester-authority denials remain policy conformance owned by TEN-006 and JOB-001/JOB-010; the UUID syntax schema does not pretend to know domain admission state. Unknown critical extensions and policy versions fail closed; safe optional extensions may be ignored and preserved.
+- **Test:** Current/N-1 negotiation, every structurally checkable source variant and mismatch, false privileged advertisement, workload-slot, policy-version, must-understand, and no-overlap matrices; TEN-006/JOB-001/JOB-010 separately exercise sentinel/unmapped and requester-authority admission.
+
+#### PRT-007 — Define transport, control, error, and frozen cross-version contracts (M)
+
+- **Depends on:** PRT-003, PRT-004, PRT-005, PRT-006.
+- **Outcome:** Define framework-neutral enrollment, poll/offer/no-work, ACK, renew, event upload, artifact/quarantine control, cancel, separate product-approval and runtime-decision request/results, checkpoint, graceful-stop/drain command ACKs, stable error codes, retry hints, server time, authentication audience, anti-replay, and final frozen compatibility corpus.
+- **Acceptance:** Product approvals and runtime decisions have distinct IDs, digests/versions/TTL/idempotency semantics and cannot be worker-created or conflated. Runtime decisions are a strict `permission | work_question` union: permission preserves `allow_once | allow_run | allow_always | deny`, work questions preserve bounded options and answer payload, and both bind source revision plus timeout policy. `continue_with_default` binds an explicit validated default: permission permits only `allow_once | allow_run | deny` as a timeout default, while a work question has exactly one bounded default option; missing, multiple, mismatched, or `allow_always` timeout defaults fail closed. `park_run` releases the active sandbox lease and ends the current attempt without holding compute: the job stays open awaiting the human answer, and a new fenced attempt is dispatched on answer or on the validated timeout default — no managed-sandbox (E2B) VM is held across the wait (CAV-001), and resume follows the fenced-restart handoff (CAV-003). Every operation names request/response schemas, correlation/idempotency identity, payload/timeout/retry rules, and stable errors for malformed, unauthorized, incompatible, stale fence, sequence gap, event hash mismatch, revoked target, throttled, oversized payload, and terminal states without tenant-existence or secret disclosure. The complete v1 consumer is frozen only after PRT-007 exists, hash pinned, and proven independent from current source. Because the first distributed release has no earlier consumer, its gate records `baseline_established`; the first and every later contract change must prove current-producer→frozen-consumer and frozen-producer→current-consumer behavior for all common surfaces, plus fail-closed negotiation for unsupported critical behavior.
+- **Test:** Frozen valid/invalid vectors for every source, product/runtime approval separation, nonce/digest/version/TTL, lost responses, retry-after, duplicate requests, stale fence, sequence gap, event hash mismatch, revocation, incompatible version/capability, oversized payload, unknown control/error, safe additive preservation, critical-extension rejection, unknown-state rejection, fixture-source independence, and manifest hashes. After the baseline, run the same corpus bidirectionally against the oldest supported frozen consumer.
+
+### E2 — Tenant-safe control-plane kernel
+
+#### TEN-001 — Introduce new-path tenant schema and repository boundary (M)
+
+- **Depends on:** FND-002, FND-003.
+- **Outcome:** Define normalized Organization-owned job/worker/service tables and tenant-scoped repository interfaces without the sentinel Organization default.
+- **Acceptance:** Every owned row has non-null Organization identity; Company-owned rows prove the Company belongs to the same Organization; raw unscoped repository reads are not exported.
+- **Test:** Migration integration test and compile-time repository API test.
+
+#### TEN-002 — Enforce a non-owner database role and RLS harness (M)
+
+- **Depends on:** TEN-001.
+- **Outcome:** Run application queries with a non-owner role and force RLS on new-path tenant tables.
+- **Acceptance:** Missing tenant context returns no tenant rows or raises an error by policy; owner/superuser credentials are absent from the application container; migrations use a separate role.
+- **Test:** Real PostgreSQL cross-tenant read/write/delete and missing-context suite.
+
+#### TEN-003 — Mandatory transaction tenant context (M)
+
+- **Depends on:** TEN-002.
+- **Outcome:** Provide one transaction wrapper that sets Organization context and exposes tenant repositories only inside the callback.
+- **Acceptance:** HTTP, scheduler, reconciliation, and worker-event paths use the wrapper; context cannot leak through pooled connections.
+- **Test:** Concurrent two-tenant pool reuse, rollback, nested transaction, and background-job tests.
+
+#### TEN-004 — Composite tenant integrity constraints (M)
+
+- **Depends on:** TEN-001.
+- **Outcome:** Add composite uniqueness and foreign keys for job/company/run, worker/Organization, artifact/job, service/company, and secret-handle ownership.
+- **Acceptance:** Direct SQL cannot construct mixed-tenant relationships even when application checks are bypassed.
+- **Test:** Negative migration integration cases for every composite relationship.
+
+#### TEN-005 — Tenant adversarial property suite (M)
+
+- **Depends on:** TEN-003, TEN-004.
+- **Outcome:** Generate randomized tenant graphs and attempt cross-tenant identifiers through repositories, HTTP endpoints, worker events, WebSockets, and object keys.
+- **Acceptance:** Every operation fails closed without disclosing existence; failures are audited where appropriate.
+- **Test:** Seed-reproducible property suite in the merge-train lane.
+
+#### TEN-006 — Remove the sentinel Organization default (M)
+
+- **Depends on:** TEN-001, FND-007.
+- **Outcome:** Remove the fail-open sentinel Organization default from existing Company creation and every writer that can feed distributed execution, then backfill and constrain real Organization ownership before new-path multi-Organization writes are enabled.
+- **Acceptance:** No schema default, seed, route, background job, import, or test helper may silently assign the sentinel Organization. Every existing Company is mapped through an explicit idempotent migration or blocks rollout with an attributable remediation record; unresolved rows cannot submit, place, lease, receive events, or own objects. Rollback preserves the explicit mapping and never restores a fail-open default.
+- **Test:** Generated-migration integration, full Company-writer inventory, missing/invalid Organization negatives, idempotent backfill, rollback rehearsal, and distributed submit/placement denial for unmapped rows.
+
+### E3 — Durable job control
+
+#### JOB-001 — Submit immutable jobs transactionally (M)
+
+- **Depends on:** PRT-003, TEN-003, TEN-006.
+- **Outcome:** Create a job plus outbox notification in the same transaction from an authorized discriminated execution source.
+- **Acceptance:** Client idempotency key prevents duplicate jobs; source provenance, input hash, and policy snapshot are immutable; only `task_run` sources require `runId`/`issueId`; the control plane validates `requestedBy` against authenticated/domain authority and rejects sentinel or unmapped Organization admission before persistence; no worker is contacted inside the transaction.
+- **Test:** Duplicate submission, transaction rollback, tenant/requester-authority mismatch, sentinel/unmapped Organization, and concurrent submit tests.
+
+#### JOB-002 — Enroll workers with device-bound identity (M)
+
+- **Depends on:** PRT-006, PRT-007, TEN-003.
+- **Outcome:** Enroll platform-managed, Organization-managed/dedicated, and owner-desktop workers with durable device identity, scoped logical target profiles, and explicit lifecycle.
+- **Acceptance:** Single-use codes expire; `platform` profiles are operator-only with null Organization/owner and no tenant-facing enumeration; `organization` profiles bind Organization; `owner` profiles bind Organization plus owner; one device may have multiple Organization-scoped logical profiles. Sessions are short lived, audience/target/generation bound, and carry no authority beyond the selected profile. Rotation, reinstall, replacement, transfer, loss, owner membership removal, revocation, and deletion have explicit audited behavior.
+- **Test:** Replay, expiry, platform-enrollment authorization, cross-tenant target enumeration, wrong Organization/owner, multi-Organization logical profiles, owner removal, replaced generation, rotated key, reinstall, transfer denial, revocation, and token-audience tests.
+
+#### JOB-009 — Make hybrid target placement authoritative (M)
+
+- **Depends on:** FND-002, PRT-006, PRT-007, TEN-003, TEN-004, JOB-001, JOB-002.
+- **Outcome:** Persist one authoritative placement policy/decision selecting legacy, managed-cloud, dedicated-worker, or owner-desktop execution from rollout, workload, credential binding, scoped target profile, trust, verified capability, resolved provider constraints, locality, capacity, and health.
+- **Acceptance:** One job/attempt has one target and execution owner; workers cannot self-select or self-promote; the placement transaction preserves job RLS before releasing details even for a global platform target; personal credentials remain bound to their authorized owner target; required/preferred/forbidden targets and explicit fallback are immutable and auditable; provider profile hash/runtime/resource/operation/locality ceilings are evaluated before lease; unavailable, revoked, unmapped, over-limit, or locality-incompatible targets queue or fail closed rather than silently widening placement. Shadow placement cannot lease or cause effects.
+- **Test:** Mixed target-scope/tenant/workload property tests, global-target cross-tenant non-disclosure, false privileged capability/limit, provider-profile mutation/hash mismatch, owner mismatch/removal, target generation replacement, concurrent capacity, drain/revocation, required target offline, permitted/forbidden fallback, personal credential binding, local-only data, shadow mode, and deterministic replay.
+
+#### JOB-003 — Lease and ACK compatible jobs atomically (M)
+
+- **Depends on:** JOB-001, JOB-009, PRT-007.
+- **Outcome:** Lease the oldest eligible job only through its authoritative placement decision and registered target profile.
+- **Acceptance:** Concurrent workers cannot own the same attempt; lease includes ACK deadline, expiry, and fence; incompatible workers see no job details.
+- **Test:** Real PostgreSQL concurrent-claim and capability-selection tests.
+
+#### JOB-004 — Renew leases and enforce fencing (M)
+
+- **Depends on:** JOB-003, E6-D1-FOUNDATION.
+- **Outcome:** Renew only the active lease and require its fence for events, artifacts, secret access, completion, and service health.
+- **Acceptance:** Expired or replaced workers cannot mutate state; lease duration and renewal interval are server policy, not worker choice.
+- **Test:** Clock-boundary, stale fence, duplicate renew, revoked worker, and replacement-attempt tests.
+
+#### JOB-005 — Ingest events and terminal results idempotently (M)
+
+- **Depends on:** JOB-004, PRT-004.
+- **Outcome:** Store event batches with unique sequence constraints and transactionally project accepted state changes.
+- **Acceptance:** Duplicate batches return the same cumulative ACK; gaps are rejected with expected sequence; terminal result is accepted exactly once.
+- **Test:** Duplicate, out-of-order, partial retry, concurrent terminal, and control-plane restart tests.
+
+#### JOB-006 — Cancellation, expiry, retry, and reconciliation (M)
+
+- **Depends on:** JOB-004, JOB-005.
+- **Outcome:** Add requested cancellation, lease reaping, bounded retry/backoff, dead-letter/quarantine, and leaked-attempt reconciliation.
+- **Acceptance:** Cancellation is observable to the worker; expiry eventually creates a new attempt or terminal failure by policy; late results never overwrite the winner.
+- **Test:** Disconnect before ACK, after ACK, during execution, during upload, and after terminal commit.
+
+#### JOB-007 — Organization quotas and worker revocation (M)
+
+- **Depends on:** JOB-003, JOB-006.
+- **Outcome:** Enforce per-Organization running limits, workload-specific capacity, spend/runtime caps, and immediate target revocation.
+- **Acceptance:** Revocation blocks refresh and new leases, marks active leases canceled, and requests sandbox termination; capacity is not released twice.
+- **Test:** Concurrent quota claim, revocation race, budget exhaustion, and capacity reconciliation tests.
+
+#### JOB-008 — Operator job and worker controls (M)
+
+- **Depends on:** JOB-005, JOB-006, JOB-007, JOB-009.
+- **Outcome:** Expose tenant-scoped job/attempt/event/worker/placement status, cancellation, drain, and revocation through control-plane APIs and a minimal operations UI.
+- **Acceptance:** Operators can explain target selection/fallback denial and why a job is queued or terminal, inspect redacted durable evidence, cancel an attempt, drain a worker, and revoke a target without secret material or cross-tenant identifiers. Until `E10-REALTIME-FOUNDATION` passes, the UI uses explicit refresh and makes no durable realtime catch-up claim.
+- **Test:** API authorization/contract tests plus UI tests for queued, leased, canceling, failed, revoked, and stale-worker states.
+
+#### JOB-010 — Preserve admission and assignment invariants (M)
+
+- **Depends on:** TEN-006, JOB-001.
+- **Outcome:** Reuse the current atomic issue checkout and single-assignee authority for task-run submission while defining explicit admission/idempotency rules for Commander, crew, one-shot, browser, and service sources.
+- **Acceptance:** Each execution-source kind names its checkout/assignment rule or `not_applicable` rationale. Task admission preserves dependency eligibility, single assignee, idempotent same-source replay, and the current explicitly bounded stale-owner adoption behavior. A task cannot submit for the wrong assignee or bypass the current atomic conditional-checkout contract; concurrent legacy/distributed submission has one winner; reassignment or status change cancels/fences the losing execution; failed submission or pre-lease rollback releases the same authoritative claim exactly once; no bridge invents a second assignment store. The observable single-winner contract is authoritative; the plan does not freeze a stale SQL implementation detail.
+- **Test:** Dependency eligibility, concurrent checkout/submit, same-source replay, stale-owner adoption boundary, legacy/distributed race, assignee mismatch/removal/reassignment, status-change fencing, source-kind admission matrix, duplicate idempotency key, failed submission, and rollback release.
+
+#### JOB-011 — Preserve approvals and completion policy (M)
+
+- **Depends on:** PRT-007, JOB-006, JOB-010.
+- **Outcome:** Route existing product-action and crew-dispatch approvals, durable runtime decisions, and completion policy through the distributed lifecycle without creating a second policy engine.
+- **Acceptance:** Product approvals and PRT-007 nonce/digest/version/TTL-bound runtime decisions remain separate aggregates. Denial/timeout fails closed before the governed effect; worker events cannot create, approve, or override policy; cancel, retry, and cutover rollback preserve current completion and approval semantics.
+- **Test:** Product approval and runtime-decision request/result allow/deny/timeout/default/mismatch, including missing/multiple/invalid defaults and forbidden persistent timeout grant; crew-dispatch approval, completion-policy matrix, retry, stale worker event, and rollback with active work.
+
+#### JOB-012 — Preserve budget and authoritative cost policy (M)
+
+- **Depends on:** JOB-005, JOB-007, JOB-010.
+- **Outcome:** Preserve agent/Company/department spend/runtime policy, warnings/incidents, and authoritative usage/cost attribution without creating a second budget or pricing engine.
+- **Acceptance:** Worker usage is evidence, not a charge. The control plane creates one authoritative cost event per accepted event/job/attempt from server-owned provider, model, biller, billing type, rate/version, and rounding policy. Every applicable budget scope is checked at admission and before the next governed effect; post-cost evaluation, warnings/incidents, exhaustion pause/cancel, reservation release, and capacity release are idempotent and occur exactly once. Duplicate/replayed events do not double-charge, and rollback preserves current hard-stop semantics.
+- **Test:** Worker-supplied price/rate rejection; server rate/version/rounding fixtures; duplicate usage/cost; each budget scope; admission/effect/post-cost checks; warning/incident idempotency; concurrent exhaustion; pause/cancel/reservation/capacity release; retry attribution; and active-work rollback.
+
+#### JOB-013 — Preserve transactional activity audit (M)
+
+- **Depends on:** JOB-005, JOB-010, JOB-011, JOB-012.
+- **Outcome:** Project accepted distributed state changes, controls, and accounting into the existing tenant-scoped activity and hub-audit contracts without treating worker observations as accepted product actions.
+- **Acceptance:** The accepted mutation and its audit projection commit in one control-plane transaction; publication follows commit. Duplicate/replayed events do not duplicate activity; actor/source/job/attempt identity and affected domain resource remain attributable; rejected/stale worker observations create no accepted product action; self-hosted audit semantics remain compatible.
+- **Test:** Per-source accepted/rejected/stale mutations, approval and budget actions, duplicate/replay, transaction rollback, publication-before-commit denial, tenant scope, actor attribution, and cutover rollback.
+
+#### JOB-014 — Preserve task outputs and run summaries (M)
+
+- **Depends on:** JOB-005, JOB-006, JOB-010, JOB-011, JOB-012, JOB-013.
+- **Outcome:** Project accepted artifacts and terminal state into the current task-output, review, primary-selection, run-summary, and terminal-status contracts.
+- **Acceptance:** Artifact commit remains distinct from explicit task-output projection. Provider/external idempotency identity, primary-output rules, review state, typed creator/source provenance, and run-summary behavior are preserved. Success/failure/cancel/dead-letter creates the correct summary exactly once; stale or losing-attempt output is quarantined and cannot become the selected result; self-hosted projections remain compatible where the product contract requires it.
+- **Test:** Duplicate provider/external identity, primary/review transitions, retry attribution, stale completion, output selection/quarantine, Commander/crew/one-shot projections, terminal-state and run-summary parity, and rollback after accepted versus unaccepted artifacts/events.
+
+#### JOB-015 — Deliver queued control commands to a running worker (M)
+
+- **Depends on:** JOB-004, JOB-006.
+- **Outcome:** Surface a lease's un-ACKed control commands to the worker holding it through the frozen lease-renew response's bounded additive extension, and apply them worker-side under the existing replay/gap/conflict/stale classification and the existing control-ACK route. Today only `cancel` and `graceful_stop` reach a worker, collapsed into the `cancelRequested` boolean; `drain`, `product_approval_result`, and `runtime_decision_result` are persisted and never delivered.
+- **Acceptance:** The `cancelRequested` boolean is preserved unchanged so an unadopted worker is byte-unaffected, and the extension is non-critical so it is ignored rather than rejected. Delivery is at-least-once per fresh renewal and never within a replayed renewal, whose stored response body is reproduced verbatim. Redelivery stops at an ACK whose echoed command sequence matches the stored command; a mismatched sequence leaves it pending. An over-budget command list is still delivered, carrying an explicit overflow marker so a partial view is never indistinguishable from an empty one, and a single command too large for the channel is terminal rather than stalling — the marker names it and a rejected ACK clears the queue behind it, and a malformed extension is a delivery fault rather than an absence of commands. A command counts as delivered only when a worker-side handler applies it, not when it appears in the projection. No worker-protocol edit is required.
+- **Test:** Pending/absent projection parity, unadopted-worker compatibility, boolean-and-extension redundancy, sequence gap, duplicate command id, stale fence, overflow-marked truncation with its under-budget twin and its distinguishability from an empty extension, an oversized leading command whose rejected ACK unblocks the command behind it, replayed-renewal body identity, matched- versus mismatched-sequence ACK, and worker-side application of each delivered kind.
+
+#### JOB-016 — Price accepted usage at ingest, on the in-transaction accepted-event seam (M–L)
+
+- **Depends on:** JOB-005, JOB-012. Filed at M1 Step 0 (S0-3, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4); `M1a` Track A.
+- **Closure prerequisite (prose, not a graph edge):** `E3-F037` closure also requires `WRK-018` merged. The seam and the pricing registration do not wait on it, but the finding may not close until a real producer emits `usage`. ★ *Moved out of the machine-readable `Depends on:` line at M1 Step 0 (S0-8), a planning-session decision under founder delegation (F2), so the dependency graph does not hold the seam behind an L ticket. Superseded text: "**Depends on:** JOB-005, JOB-012, WRK-018. ★ The `WRK-018` edge is for **closing `E3-F037` only** …".*
+- **Outcome:** Build decision `E3-D-ACC` (recorded in the E3 `decisions.md` as this ticket's first commit and approved by a distinct reviewer before any build): a seam through which an accepted event is projected **inside the ingest transaction while the attempt's fence is still live**, because the after-commit `onAttemptTerminal` hook is too late (ingest has already made the attempt terminal, so `lockActiveFence` throws). The existing bridges each open their own `runInTenant` and re-lock the fence, so registering them as they are would deadlock; each gains a core that takes the caller's transaction. Register `priceAcceptedUsage` onto the seam and compose `jobBudgetCostBridge` default-off. Owns finding **E3-F037**.
+- **Acceptance:** (1) one handed-off run produces exactly one `cost_events` row with cost > 0 plus one `authoritative_cost` receipt; (2) a replay of the same batch produces `replayed` and no second row; (3) after a hard-stop breach the **next dispatch is refused or paused** — usage arrives just before `terminal`, so cancelling the breaching attempt proves nothing; (4) an attempt that goes terminal with no `usage` event emits a classified signal, tested — the producer is best-effort, so without it a parse miss silently reproduces `E3-F037`; (5) a projector failure never rolls back the append — it writes the receipt as `pending` (never a new `failed` status; decided at S0-8 as `E3-D-ACC` point (c), see the E3 task) and a detector surfaces stale pendings, and a drain is blocked while a priced-usage receipt is `pending` (★ *superseded text: "it writes a `pending`/`failed` receipt a detector surfaces"*); (6) usage-then-terminal and cancel-then-terminal in one batch do not trip `guardActiveFence`. Multi-tenant (F10): pricing, the receipt and the refusal are attributed to the attempt's own Organization and Company, and a second enabled tenant's attempts in the same test are unaffected. `E3-F037` closes only with `WRK-018` merged.
+- **Test:** Embedded-PostgreSQL same-transaction suite over the seam (usage-then-terminal, cancel-then-terminal, replay, projector-throw), the next-dispatch refusal after a hard-stop breach, the terminal-without-usage signal, a two-Organization attribution case, and a positive control: removing the registration reds the cost-row assertion.
+
+#### JOB-017 — Audit and output bridges registered on the accepted-event seam (M)
+
+- **Depends on:** JOB-016, JOB-013, JOB-014. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** Register `recordAcceptedActivity` (for a named, recorded set of accepted mutations) and the output projection onto the `E3-D-ACC` seam that `JOB-016` builds — not a second seam. Record the decision on `projectTerminalWinner`: **retired**, because the ingest's `attempt_terminal` projection already makes the attempt terminal and the canary and crew terminal projections already write the run summary, or reworked, with the reason. Promote `E3-17-output` and `E3-audit-parity-bridge` to `wired` on evidence.
+- **Acceptance:** Each named accepted mutation writes exactly one activity row and one `activity_audit` receipt in the ingest transaction; a replay writes none; a rejected or stale observation writes none; the output projection writes one `task_outputs` row with its receipt and no `attempt_terminal` throw when the output event and the terminal event arrive in one batch; a projector failure leaves the append committed and a surfaced receipt. Multi-tenant (F10): every row carries the attempt's own Organization and Company, and a second tenant's activity is untouched.
+- **Test:** Embedded-PostgreSQL same-batch cases for audit and output, replay, rejected-observation, projector-throw, a two-Organization isolation case, and the `check-gate-clause-wiring` promotion with a positive control that unregistering reds.
+
+### E4 — Worker daemon
+
+#### WRK-001 — Scaffold the separately deployable worker (S)
+
+- **Depends on:** PRT-001, FND-005.
+- **Outcome:** Add a workspace package and container entrypoint with strict config parsing, structured logs, graceful shutdown, and no server/database imports.
+- **Acceptance:** Worker starts without database credentials, exposes only local health/metrics, and exits on invalid endpoint or trust configuration.
+- **Test:** Build, config matrix, signal handling, and dependency-boundary test.
+
+#### WRK-002 — Device identity and session renewal (M)
+
+- **Depends on:** WRK-001, JOB-002.
+- **Outcome:** Generate/store a worker key, enroll, maintain short-lived sessions, and handle rotation/revocation.
+- **Acceptance:** Private key never enters logs/config files; container mode supports mounted secret storage; desktop mode exposes an OS-keychain interface.
+- **Test:** Enrollment fake server, token expiry, key rotation, corrupt key store, and revoked-session tests.
+
+#### WRK-003 — Poll, ACK, and capability advertisement (M)
+
+- **Depends on:** WRK-002, JOB-003.
+- **Outcome:** Long-poll for work, advertise measured capacity/capabilities, ACK promptly, and enforce local concurrency.
+- **Acceptance:** Worker does not prefetch secrets or broad queues; backoff is bounded and jittered; shutdown stops leasing before draining work.
+- **Test:** Empty poll, compatible job, incompatible job, backpressure, API outage, and drain tests.
+
+#### WRK-004 — Sandbox supervisor and process-tree cancellation (M)
+
+- **Depends on:** WRK-003, PRT-003.
+- **Outcome:** Define provider-neutral create/execute/cancel/kill/destroy plus list/inspect and idempotent reconcile/cleanup supervision, with negotiated checkpoint/restore and health capabilities, while keeping tenant commands outside the worker process.
+- **Acceptance:** Lease loss withdraws effect authority but triggers cancellation and eventual kill through a distinct monotonic cleanup authority bound to provider resource/ownership labels, target generation, job/attempt/lease/observed fence, and deadline. Cleanup can only list/inspect matching resources through a management-only projection or cancel/kill/destroy/reconcile; even same-resource inspection cannot return command, environment, logs, secrets, workspace/customer bytes, or object grants. It cannot create, execute, resume, checkpoint, reveal other resources, or open egress. Provider operations have deadlines and stable idempotency keys; unsupported checkpoint/restore/health calls fail explicitly rather than being guessed; sandbox identity and provider operation IDs are attached to all logs and cleanup records.
+- **Test:** Fake provider happy path, capability negotiation, unsupported optional operations, hung create, ignored cancel, forced kill after lease expiry/replacement, denial of every effectful operation under cleanup authority, cross-resource/target label denial, same-resource safe-projection redaction, lost-response replay, list/inspect pagination, idempotent cleanup, cleanup-authority expiry/escalation, destroy failure, checkpoint/restore/health when advertised, leaked-resource reconciliation, and worker shutdown tests.
+
+#### WRK-005 — Lease renewal and local fence enforcement (M)
+
+- **Depends on:** WRK-004, JOB-004, E6-D1-FOUNDATION.
+- **Outcome:** Renew while active and close ordinary control/data paths plus fence-aware governed egress after fence loss or expiry.
+- **Acceptance:** After fence loss the worker cannot use ordinary artifact commit, fetch secrets, complete, or perform governed effects. The local proxy closes at the locally known lease deadline even while disconnected, and a remote proxy rejects a replaced generation/fence immediately. It may retain encrypted orphan output and use only the distinct device-authenticated quarantine upload defined by PRT-005/PRT-007. Offline policy is immutable per workload.
+- **Test:** Control-plane partition with Internet still reachable, delayed renewal response, clock skew tolerance, remote fence replacement, locally expired proxy session, direct-destination denial, replacement attempt, quarantine-only reconnect, and no post-fence governed-effect tests.
+
+#### WRK-006 — Encrypted SQLite event outbox (M)
+
+- **Depends on:** WRK-005, JOB-005.
+- **Outcome:** Persist sequenced events locally until cumulatively acknowledged.
+- **Acceptance:** Restart resumes from the last ACK; queue size and disk limits are enforced; sensitive payloads are encrypted or referenced as blobs.
+- **Test:** Crash between send/ACK, duplicate send, corrupt row quarantine, full disk, and sequence recovery tests.
+
+#### WRK-007 — Restart recovery and orphan cleanup (M)
+
+- **Depends on:** WRK-004, WRK-006, JOB-006.
+- **Outcome:** On startup, reconcile local sandboxes/outbox rows with control-plane lease state.
+- **Acceptance:** Live owned work resumes only when policy permits; stale sandboxes are killed; unknown artifacts are quarantined; cleanup is observable and retryable.
+- **Test:** Crash at each lifecycle checkpoint using the fake provider.
+
+#### WRK-008 — Serve a worker its own registered self-model (S)
+
+- **Depends on:** JOB-002, PRT-006.
+- **Outcome:** A worker-authenticated read of its OWN execution target's registered profile and provider-constraint profile, so a daemon can assemble the `WorkerSelfModel` the poll loop requires. Closes the control-plane half of the E4-D12 live-dispatch gap without a frozen wire change. **Slice 1 (control plane) has landed; slice 2 (daemon assembly and composing the loop) is OUTSTANDING and is where live dispatch actually begins.**
+- **Acceptance:** The route carries no target, organization, or slug identifier — the target comes from the authenticated principal, so cross-tenant reach is answered by construction rather than by a check that can drift; a legacy credential, a stale device generation in either direction, a revoked or disabled target, and an absent profile each refuse with the same coarse code; the route is not mounted at all when distributed execution is off.
+- **Test:** Unit admission matrix plus embedded-PostgreSQL integration proving the provider-constraint profile still brands after a live JSONB round trip, with a mutated-field pair proving that check can fail.
+
+#### WRK-009 — No fabricating provider in the shipped worker image (S)
+
+- **Depends on:** WRK-004, DEP-001.
+- **Outcome:** Remove the success-fabricating test double from the worker daemon's production source tree and prove, against the BUILT image, that it is gone. A default `createFakeSandboxProvider` returns exit 0, which the supervisor maps to `terminal{status:"succeeded"}`, completing a tenant attempt for work that never ran.
+- **Acceptance:** The built worker image contains no fake/test-double provider and no test tree of our own emitted output; the assertion is proven to FAIL against the pre-move image; images are reproducible from source (build outputs are excluded from the build context, so a file removed in source cannot keep shipping).
+- **Test:** Image-content assertions run in the D1 lane against the freshly built images — the lane that has both a Docker daemon and both images — verified as executing, not skipping.
+
+#### WRK-010 — Sustained worker authority via device-proof session renewal (M)
+
+- **Depends on:** JOB-002, WRK-002.
+- **Outcome:** A worker holds authority for as long as it stays healthy, without a human re-pasting an enrollment code. Closes finding E4-F007: the enrollment code route lives ten minutes and a session fifteen, and no route renews a device session, so a wired worker goes authority-less at T0+15min. A device-proof-bound renewal endpoint mints a fresh short-lived session from the worker's own device key; the long-lived material never leaves the host.
+- **Acceptance:** A worker with a valid device proof obtains a fresh session with no enrollment code and no human step; the renewal is refused for a revoked, disabled, or generation-superseded target with the same coarse code every other worker route uses; the endpoint is not mounted when distributed execution is off; the ten-minute code route is never consulted on the renewal path. The 15-minute ceiling on any single session is unchanged — renewal issues a NEW bounded session, it does not extend an old one.
+- **Test:** Unit admission matrix over the renewal decision (revoked / stale-generation / disabled / valid) plus embedded-PostgreSQL integration proving a device proof mints a session after the code route has lapsed, with a positive control proving the same proof is refused once the target is revoked.
+
+#### WRK-011 — A provisioned worker can be OFFERED work and can ACCEPT it (L)
+
+- **Depends on:** WRK-010, WRK-008.
+- **Outcome:** Closes finding E4-F010: a worker that enrols perfectly, on a target whose placement profile an administrator has ratified, is invisible to the scheduler and would refuse an offer if it ever got one. A worker that already holds a live session and can still sign with its enrolled device key may present a REFRESHED hello on a new local (non-frozen) route; if that hello stays inside the ratified ceiling, `profile_snapshot` and `profile_hash` are replaced **together** and a session bound to the new hash is minted **inside the same transaction**, because a hash change kills the caller's own session at `worker-session-auth.ts:167` and it has no other route back. The daemon builds that hello from facts it reads over the WRK-008 slice-1 self-model route — giving that route its first production caller — once per boot, before it polls. Slice detail behind the dependency edges: WRK-010 slice 1 exports the `SESSION_MAX_MS` this route mints against, and slice 2 supplies the daemon `SessionStore` the returned session must land in. The design also records a THIRD blocker E4-F010 never named and that fires EARLIER than either half it does: the enrolled all-zero capacity is a hard `Math.min` ceiling on the polled capacity (`job-leasing.ts:566`), so the admissible workload list is empty and `repositories/tenant/job-control.ts:1810-1812` returns zero lease candidates before the static matcher is reached.
+- **Acceptance:** A provisioned worker is actually OFFERED work, proven through the real `poll` service behind a `no_work` precondition control rather than against the matcher in isolation, and the daemon's own `offerSatisfiesWorker` admits that same offer; snapshot and hash move in one write, a refresh returns a usable session, and the OLD session is proven dead; a mint that throws leaves no committed refresh; a worker cannot write a capability outside the administrator-ratified ceiling and a legacy worker token — which carries no device proof — cannot refresh at all; a no-op refresh writes nothing and mints nothing; the route is not registered when distributed execution is off; and the unprovisioned desktop stays unmatchable under the DSK-001 assertions, unmodified. It does NOT claim a composed daemon polls, ACKs and supervises (`createPollLoop` still has zero production callers after this ticket — that is WRK-008 slice 2b), nor that work executes end to end (CLI-006/D2).
+- **Test:** Unit admission matrix over the four guards with a positive control asserted BEFORE any refusal case is built on the fixture (E1-F008: five placement guards passed their own named tests while deleted, because every fixture was refusing earlier for an unrelated reason), plus an embedded-PostgreSQL suite driving poll → refresh → poll on one seeded org and its refusal matrix, plus a daemon-side unit proving the self-check admits the offer that suite captured — parsed through the frozen `leaseOfferV1Schema` and shared as a fixture, since the two packages cannot import each other.
+
+#### WRK-012 — A self-model refresh channel for a long-lived worker (E4-F008 successor) (scope)
+
+- **Depends on:** WRK-008.
+- **Outcome:** Add a self-model refresh channel (a periodic or poll-triggered re-read of `client.selfModelRead` that updates `PollLoopDeps.self`) plus a stated policy for leases in flight when the provider-constraint digest rotates (finish under the old constraints, or fence). WRK-008 slice 2b reads the self-model ONCE at boot and never re-reads it, so a mid-life provider-constraint rotation cannot be observed. Filed at WRK-008 completion so E4-F008 is owned by a ticket that exists and has not shipped (finding E4-F013), not left `owned` by shipped WRK-008. Owns finding E4-F008. LOW: the direction of failure is closed (a stale digest makes the worker unmatchable, not wrongly matched — `capabilities.ts:466-467`).
+- **Acceptance:** Written at sprint start (post-Sprint-5), against the tree as it exists then; no result doc until the channel is built. E4-F008 stays open (LOW) until then.
+
+#### WRK-013 — A durable lease-candidate source for the startup reconciler (E4-F009 successor) (M)
+
+- **Depends on:** WRK-008, WRK-007. Founder rulings F4 and F5 (`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2) are its design inputs; both were ruled 2026-09-21.
+- **Outcome:** Add a durable local store of accepted lease offers a restarting daemon can replay into `StartupReconcilerDeps.leaseCandidates`, written on ACK and pruned when the attempt ends, then compose `createStartupReconciler` at boot (conditionally on an org/owner-scoped target) **before** the poll loop starts, and promote E4-3-survives-restart. WRK-008 slice 2b deferred the reconciler for ONE real blocker: `leaseCandidates` has no durable local source (the outbox persists events, not offers), so the lease-authority probe would run over `[]` every boot — a guard that evaluated nothing. Filed at WRK-008 completion so E4-F009 is owned by a ticket that exists and has not shipped (E4-F013). Owns finding E4-F009. **F5 (fence):** a candidate the probe finds live is not re-attached (D2) and is not kept alive — the daemon stops renewing it and lets the control plane's lease reaper end the attempt. **F4 (named narrowing):** on the container path a restarted daemon cannot enumerate orphan sandboxes (its lease capability has lapsed), so no worker-side teardown runs there and orphan reclamation rests on the adapter-manager reaper; this is recorded as a named narrowing of journey item 8's "cleanup/recovery" clause with an owner, not as a residual.
+- **Acceptance:** A restart with a stored candidate runs the probe over that candidate, not `[]`; a live candidate is fenced (no further renewal) and ends through the control-plane reaper; a dead candidate is pruned; an empty store boots with a **named reason** rather than a silent skip; the reconciler completes before the first poll; a platform-scoped target skips with a named reason. Positive control: removing the store's write-on-ACK reds the restart case. Multi-tenant (F10): the store is keyed per lease and never lets one Organization's candidate be probed under another's session. ★ *Superseded acceptance: "Written at sprint start (post-Sprint-5); no result doc until the source is built. E4-F009 stays open (MED) until then."* — the task is now written (E4 implementation plan §4c, M1 Step 0).
+- **Test:** Component suite over a composed daemon with an in-memory control plane: ACK → persist, restart → probe → fence, end → prune, empty store → named reason, ordering before the poll loop, and the store-removed positive control.
+
+#### WRK-014 — Container device identity: a `mounted_secret` custody key-load + enrolment path (scope)
+
+- **Depends on:** WRK-002.
+- **Outcome:** Give a containerized (`mounted_secret`) worker a device identity and key — the first BUILD of the live-worker-dispatch chain and the hard gate on every later link (`WAVE-4-RESEQUENCE.md` §3.1, SPIKE F1). Re-verified from source at tip: `MountedSecretKeyStore` (`identity/key-store.ts:61`) has ZERO production constructors (only `__tests__/`); the only production `DeviceRecordStore` (`createOsRecordStore`, `worker-keystore/src/identity-store.ts:114`) is injected only by `desktop-host.ts:133,139`, a package the worker image (`docker/worker/Dockerfile`, closure = worker-daemon+worker-protocol+pino) never copies; the container runs `bin/worker-daemon.js` in `mounted_secret`, and the enrolment block is gated `os_keychain && identityStore && receiptStore` (`bin/worker-daemon.ts:304`), so a container never enrols, generates no key, and holds no identity. No ticket owned this: WRK-002/DSK-001..004/WRK-008/010/011 all compose ON TOP of an `os_keychain` identity. Filed so the graph can see the chain's hard gate (it had no ticket and no node — WAVE-4-RESEQUENCE §4).
+- **Acceptance:** Written at sprint start (WAVE-4-RESEQUENCE §5 step 2 — the first BUILD), against the tree as it exists then; no result doc until a container can obtain and re-load a device key. Blocks nothing shipped (the distributed flag is off; the legacy in-process path is unaffected).
+
+#### WRK-015 — POSIX enrolment-code input for a Linux container worker (scope)
+
+- **Depends on:** WRK-014.
+- **Outcome:** Accept a POSIX absolute enrolment-ticket path for a Linux container (`WAVE-4-RESEQUENCE.md` §3.2, SPIKE F5). Re-verified at tip: `assertLocalAbsolutePath` (`enrollment-input.ts`, a DSK-001 Windows deliverable) normalizes `/`→`\` and requires `/^[A-Za-z]:\\/`, so the `{kind:"path"}` arm rejects every POSIX absolute path (`/worker/state/ticket`) with `EnrollmentInputError`. The fix is not loosening a denylist but stating the accepted POSIX shape positively, preserving the file's three security properties (locality check BEFORE the read; no failure echoes the input; the `enrollmentCode` logger-redaction name). Sits BEHIND WRK-014 — the enrolment block never executes on a container until identity exists (WAVE-4-RESEQUENCE §3.2 "unreachable until 3.1"), so a POSIX fix sequenced first would exercise nothing.
+- **Acceptance:** Written at sprint start (post-WRK-014, the same container-enablement step); no result doc until a POSIX enrolment path is accepted. Blocks nothing shipped.
+
+#### WRK-016 — Replicated/autoscaled-fleet worker identity granularity + retirement runbook (scope)
+
+- **Depends on:** WRK-014.
+- **Outcome:** Decide + build the identity-granularity model for a REPLICATED/autoscaled worker service, plus the deliberate retirement/replacement runbook. WRK-014 gives a SINGLETON canary container a durable identity (a `file_record` store on a named volume + a writable-state-dir assert) — exactly what the E7-1 campaign needs — but that "one named volume per worker" mandate breaks for a replica set: `docker-compose.staging.yml` workers declare `deploy.replicas: 2` + autoscale 2–8 and share one enrolment code, so N replicas cannot each own a distinct durable identity via a single named volume, and scale-down leaves orphaned `workers` rows with no retirement procedure (the server denies a re-minted `workerId` as `worker_transfer_denied` forever; there is no container reset). That granularity decision (per-container vs per-replica vs per-target under autoscaling + deny-transfer) is DEFERRED from WRK-014 (§4) because its shape is not decided. Filed so the dependency graph sees the gap (WAVE-4-RESEQUENCE §4). Owns NO finding — the replicated-fleet gap exists only as WRK-014 §4's deferral, never filed as an `E4-Fxxx`.
+- **Acceptance:** Written at sprint start (post-WRK-014, when the fleet moves from a singleton canary to a replicated set), against the tree as it exists then; no result doc until a replicated worker service can hold per-replica durable identities AND a retirement runbook exists. NOT on the E7-1 critical path (the campaign enrols one worker). Blocks nothing shipped.
+
+#### WRK-017 — a CI-exercised first container-enrol on d1 (WRK-015 Part 2, split) (scope)
+
+- **Depends on:** WRK-015.
+- **Outcome:** Prove WRK-014 + WRK-015 end to end by having the d1 merge-train ENROL a real `file_record` container worker in CI: switch ONE d1 worker (`worker-a`) to `file_record` + a compose `command:` override onto `container-host.js` (NOT an image-CMD repoint — that crash-loops every still-`mounted_secret` container), seed its platform target + a bound enrolment code, deliver a ticket file, and assert a persisted `DeviceIdentityRecord`+receipt (with `worker-b` on `mounted_secret` as the regression control). SPLIT from WRK-015 at its own Step-0 gate (WRK-015-design §3/§4/§8 Q1): a source-cited investigation found the d1 harness has NO worker-enrol flow and adding one is LARGE — the harness acts as the HTTP client itself (no live daemon loop), registers targets org-scope only via fresh-UUID superuser SQL AFTER `up`, `worker-a` is platform-scope (a mint path with no HTTP route + un-exercised operator-DB authority machinery), there is no ticket-file delivery mechanism, and a first-boot enrol failure is terminal for `up --wait` (no `restart:` policy). Part 1 (the POSIX validator) shipped alone under WRK-015; this closes the "no real container has ever enrolled in CI" gap.
+- **Acceptance:** Written at implementation start (post-WRK-015), against the tree as it exists then; no result doc until the d1 stack brings `worker-a` to healthy AND it enrols (a persisted identity in its volume) while `worker-b` does not. Reaches ENROL only, not dispatch (needs DEP-012/DEP-011 + the dispatch flag + an outbox). NOT on the E7-1 critical path (the campaign enrols one worker at campaign time via the CLI-006 runbook). Owns NO finding. Blocks nothing shipped.
+
+#### WRK-018 — The usage producer: a stdout stream channel and a composed `observeRun` (L)
+
+- **Depends on:** WRK-008, CLI-003, DEP-012. Filed at M1 Step 0 (S0-3, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4); `M1a` Track A. Sized L; the E4 plan splits it into slices, each at most three agent-days.
+- **Outcome:** A distributed attempt emits a `usage` event built from what the agent actually reported. Today `makeSupervisor` is composed without `observeRun` and `ExecuteResult` carries only placeholder `stdoutRef`/`stderrRef`, so there is nothing to read. Add an optional stdout/usage stream channel to the provider port, carried through the E2B provider (its transport already supports `onStdout`) **and** through the provider-wire/adapter-manager lane, redacted by the per-run canaries before it leaves the worker (H-04, zero tolerance); parse `claude_local` usage from its `stream-json` result line; compose `observeRun`; flip the pinning test that asserts it absent. Without this, `JOB-016` has no units to price and `E3-F037` cannot close.
+- **Acceptance:** One real run (keyed, inside the F8 envelope) emits exactly one `usage` event whose token counts match the agent's result line; a planted canary in stdout never appears in any event, log or evidence; a run whose output carries no parseable usage emits no `usage` event and does not fail (the `JOB-016` terminal-without-usage signal then fires); the networked lane carries the same channel; a provider that does not implement the channel behaves exactly as today. Multi-tenant (F10): the channel is per attempt, and canaries are per run, so a second tenant's run in the same test cannot read or redact into the first's stream.
+- **Test:** Port-contract and supervisor unit suites, E2B mock-transport stream cases, provider-wire/adapter-manager stream cases, a canary-redaction case per lane, the flipped `observeRun` pin, and the one keyed acceptance run.
+
+### E5 — Workspaces, artifacts, secrets, and network policy
+
+#### DAT-001 — Immutable workspace snapshot format (M)
+
+- **Depends on:** PRT-005, TEN-004.
+- **Outcome:** Create canonical manifests for either a Git commit base or a content-manifest base, recording algorithm/revision, dirty state, tracked/untracked inclusion, ignore and case policy, provenance, normalized paths, sizes, hashes, executable bits, and object references.
+- **Acceptance:** Git and non-Git granted folders snapshot deterministically; dirty/untracked content follows the declared inclusion policy; path traversal, symlink escape, device files, case collisions, ignored-file leakage, base-algorithm mismatch, and size limits fail closed.
+- **Test:** Cross-platform Git-clean/Git-dirty/non-Git folder manifest fixtures, including untracked include/exclude, ignore rules, case sensitivity, executable bits, traversal/symlink/device attacks, and repeatable content-base hashes.
+
+#### DAT-002 — Direct upload/download and fenced artifact commit (M)
+
+- **Depends on:** DAT-001, JOB-004.
+- **Outcome:** Issue scoped object-storage grants and commit verified manifests through the control plane.
+- **Acceptance:** Worker uploads bypass the API body path; wrong prefix/hash/size/tenant/fence cannot be committed; incomplete uploads expire.
+- **Test:** MinIO integration suite with malicious keys and stale fences.
+
+#### DAT-003 — Patch output and conflict quarantine (M)
+
+- **Depends on:** DAT-002.
+- **Outcome:** Represent coding output as patch/commit plus base/result hashes and provide an explicit apply/review service.
+- **Acceptance:** Matching base applies deterministically; mismatched base never auto-applies; binary and large outputs use artifact references.
+- **Test:** Clean apply, conflicting base, rename, deletion, binary, and duplicate-result tests.
+
+#### DAT-004 — Lease-scoped secret broker (M)
+
+- **Depends on:** JOB-004, JOB-009, TEN-004, PRT-005.
+- **Outcome:** Extend the existing secret and MCP OAuth broker paths with opaque execution handles resolved only for an active compatible lease and per-request fence authorization; define the same lease/fence broker contract for a device-local personal credential without creating or uploading a competing credential/token store.
+- **Acceptance:** The tenant worker protocol and sandbox cannot list secrets or receive connector refresh tokens or provider-control credentials; owner-only credentials enforce dispatching identity. A device-local handle resolves only inside its OS-protected target broker and binds Organization, owner, job, attempt, lease, fence, target generation, destination, and policy; the control plane receives identity/status/audit metadata, never its value. Governed connector/header materialization occurs only inside the fence-aware proxy or remote service; platform-managed credentials never become direct sandbox egress credentials; revoke/rotate/membership loss/fence or target replacement takes effect without rebuilding job envelopes. The separate provider-management credential lifecycle is owned by DEP-006/CLI-001, not this tenant credential broker.
+- **Test:** Wrong tenant/job/target/owner, stale/replaced fence, worker partition with Internet available, owner membership removal, underlying local credential present but AoA activation revoked, connector refresh race, rotation/revocation, direct platform-materialization denial, plaintext-token rejection, and audit-integrity tests. DSK-001/002 run the local-broker cases on every advertised OS.
+
+#### DAT-005 — Egress policy and credential redaction (M)
+
+- **Depends on:** DAT-004, WRK-004.
+- **Outcome:** Enforce default-deny destination policy through the fence-aware egress path, block private/metadata/control-plane ranges and direct bypass, and redact known secret values from events.
+- **Acceptance:** Every governed request carries reauthorized lease/fence/target/destination context; DNS rebinding and direct IP variants are handled; bypassing the proxy is denied; policy version is recorded; redaction applies before the local outbox; missing authorization or telemetry fails closed.
+- **Test:** Fake DNS/HTTP targets, direct-socket and alternate-protocol bypass, control-plane partition with Internet available, replaced-fence denial, expiry, destination mutation, plus log and artifact-leak corpus.
+
+#### DAT-006 — Reconcile local workspaces and orphan output (M)
+
+- **Depends on:** FND-002, JOB-006, WRK-007, DAT-003, PRT-007.
+- **Outcome:** Admit explicit local folder grants, stage isolated snapshots, and reconcile desktop/dedicated results against the declared base, owner, placement, attempt, lease, and fence through valid promotion or quarantine.
+- **Acceptance:** Matching active output commits idempotently; expired, replaced, wrong-owner, locality-denied, base-mismatched, or duplicate output never overwrites the source tree. Orphan upload uses the distinct quarantine prefix/operation, retains hashes/provenance, and cannot update the old attempt. Applying a patch revalidates the current local base.
+- **Test:** Folder/symlink/case/special-file escape, dirty/untracked snapshot, likely-secret exclusion, disconnect/restart, stale fence, replacement attempt, advanced base, duplicate/rename/delete/binary patch, partial write/full disk, orphan recovery, locality allowed/denied, and repeated reconciliation.
+
+#### DAT-007 — Brokered internal tool surface over the worker path (M)
+
+- **Depends on:** DAT-004, JOB-002.
+- **Outcome:** Relocate #320's in-process brokered internal AoA tool surface (memory, tasks, goals, artifacts, `use_skill`, `ask_human`) so a remote-worker sandbox reaches it as a tenant-scoped control-plane API authenticated by the run-JWT, preserving the per-actor RBAC gate. Do not create a second tool registry, memory store, or task store; the control plane remains the sole executor of tool effects.
+- **Acceptance:** Tool serving enforces Decision #118/#119 visibility for the resolved actor kind (org/crew/Commander), scoped to the job's Organization and Company; the run-JWT audience binds the calling sandbox to its job/attempt/lease/fence; a stale, replaced, or wrong-tenant caller is denied without existence disclosure; the sandbox never receives database or memory-table access; `ask_human` routes through the PRT-007 `work_question` path; unknown tools fail closed. Self-hosted behavior is byte-identical.
+- **Test:** Per-actor RBAC visibility matrix (identity/company/domain tiers), cross-tenant and stale-fence denial, run-JWT audience mismatch, unknown-tool rejection, and a no-DB/no-memory-access assertion — driven by a stub run-JWT-authenticated caller against the control-plane broker in the D0/D1 harness (no live sandbox required); CLI-002 later exercises it end-to-end. This ticket takes no dependency on E7.
+
+#### DAT-008 — Provider-credential materialization for placed work (M)
+
+- **Depends on:** DAT-004, DAT-005.
+- **Outcome:** Own inherited deferral #1 — the seam between the lease-scoped secret broker and the execution surface that must actually receive a credential. Mint an execution-secret handle at placement, resolve it only inside the sandbox boundary, and keep connector OAuth on the proxy path while the model-provider key follows the `env` + `sandbox_local_only` class fixed by crosswalk row CM-013.
+- **Acceptance:** A malformed provider binding refuses rather than falling back to the company key; a proxy-class row cannot be laundered into a literal; every refusal reason is actionable at the call site rather than discarded; no credential value is serialized into protocol, prompt, or evidence.
+- **Test:** Pure admission matrix plus broker round trip, with mutation coverage over every guard. **Slices 1-4 have landed; slices 5/6/7 (worker-side redemption) are DEFERRED, so this ticket does NOT yet close CM-013 — see `scripts/crosswalk-coverage.json`, where that row remains a declared `open_gap`.**
+
+#### TRACK-001 — The dependency graph must not drift behind the work (S)
+
+- **Depends on:** none.
+- **Outcome:** `check-dependency-graph.mjs` reasons over the ticket graph in this document, which is hand-maintained and had drifted: DAT-008, WRK-008 and WRK-009 appeared here zero times while carrying landed code, so every reachability answer the checker gave was unsound. Add a guard that fails when a ticket FILE exists whose id has no `#### ID` node here.
+- **Acceptance:** The check is asymmetric on purpose — a built ticket the authority cannot see is a FAILURE, while an id named here with no file yet is the BACKLOG and must not fail (19 such ids exist today); a combined filename such as `MIG-005-006-007-shadow-design.md` expands to every id it names; an empty result set is treated as a broken checker rather than a clean tree.
+- **Test:** Unit suite pinning each of those decisions, plus a proven fail-first run naming exactly the untracked ids.
+
+#### DAT-009 — Provider-side artifact export under a worker-minted grant (M)
+
+- **Depends on:** DAT-002, DAT-006.
+- **Outcome:** Implement the byte-egress decision (`DECISION-byte-egress-and-provider-topology.md`, Option D): the provider reads a file from inside its sandbox and PUTs it directly to object storage under a short-lived, prefix-scoped, worker-minted presigned grant, returning a reference. The `SandboxProvider` port gains a grant INBOUND and a reference OUTBOUND and **never** carries bytes. Unblocks BRW-003 and therefore BRW-005/006. **This is the FIRST production consumer of the DAT-002 grant pipeline** — `artifactTransferGrant` has zero production callers and the only real presigned PUT ever performed is the D1 harness.
+- **Acceptance:** The frozen request schema requires `expectedSha256` and `maxBytes`, so the capability is TWO operations — digest-and-size, then export-under-grant — never one; a file that changes between them fails closed at commit against the store-observed hash. The capability lives in `packages/sandbox-provider-contract` and is implemented per provider, so a desktop provider satisfies it against local storage; `E2bTransport.readFile` stays unsurfaced. The cleanup-authority no-customer-bytes guarantee is untouched, not amended. The fence window (a presigned PUT outlives the fence checked only at mint) is closed by a stated TTL plus either a sweeper or an explicitly accepted orphan policy.
+- **Test:** Contract conformance against the fake provider (no live sandbox), a fence-loss-mid-flight case proving the orphan policy, a digest-drift case proving commit refuses, and a `local_disk` case proving the path fails closed with an operator-actionable message.
+
+#### DAT-010 — Artifact retention becomes control-plane-owned at commit (S)
+
+- **Depends on:** DAT-002.
+- **Outcome:** `browser-artifact-retention.ts` states that retention is "control-plane-owned, and never caller- or worker-supplied", because "a caller or worker choosing the retention of a `browser_cookie_state` or `browser_storage_state` artifact is a privilege the threat model must not grant". `artifact-commit.ts` grants exactly that privilege — it stores `manifest.retention`, the worker's declared value — while the total, fail-safe function that exists to own the decision has ZERO production callers. Derive retention from the frozen `kind` at commit and ignore what the manifest claims.
+- **Acceptance:** A manifest declaring `audit` for a credential-bearing kind stores `ephemeral`; every one of the 12 frozen kinds derives its documented class; an unrecognised kind fails SAFE to the shortest class rather than the longest; a disagreement between the declared and derived class is observed rather than silently swallowed. `sensitivity` is deliberately unchanged — its frozen schema is single-valued, so deriving it would compute a constant.
+- **Test:** Table-driven derivation over all frozen kinds, a worker-declared-downgrade case, an unknown-kind fail-safe case, and the artifact-commit integration suite unchanged end to end.
+- **Note:** This makes the stored value TRUSTWORTHY; it does not make it EFFECTIVE. Nothing reads the column to act — that is the enforcement follow-up, which must NOT start before this ticket, or it would enforce the worker's choice.
+
+#### DAT-011 — Trigger the orphan sweep without enumerating tenants (S)
+
+- **Depends on:** DAT-009.
+- **Outcome:** DAT-009 slice 2 built an orphan sweep runner that nothing calls. A periodic sweeper would have to ENUMERATE ORGANIZATIONS, and the tenant repository boundary deliberately has no unscoped reader — building that enumeration for housekeeping would punch a hole in the tenancy model. Trigger the sweep instead from the `stale_fence` commit refusal (and from successful commits), which already runs inside the right tenant context.
+- **Acceptance:** The sweep never changes a commit outcome — a throwing sweep leaves the response identical; it is debounced per organization; and `isSweepEligible` is UNCHANGED, so the trigger decides when to look and never what qualifies (a refusal does not make its own object sweepable, because the grant stays redeemable until `expiresAt` and a retry could still re-PUT).
+- **Test:** Trigger on refusal and on success, a throwing-sweep isolation case, debounce hold and release, and an anti-vacuity case distinguishing "swept nothing" from "never ran".
+- **Residual, accepted deliberately:** an organization whose LAST artifact activity produced an orphan keeps it until that organization commits again. Bounded to one org's most recent orphan, and strictly better than today, where nothing is ever collected. If that becomes unacceptable the fix is an audited operator-scoped maintenance surface, NOT a quiet cross-tenant reader.
+
+#### TRACK-002 — Execution census: a test file that nothing runs is not coverage (S)
+
+- **Depends on:** TRACK-001.
+- **Outcome:** `check-test-inventory.mjs` asks whether the suite SHRANK; nothing asked whether anything RUNS what it counted. Nine `*.test.mjs` files were invoked by nothing at all — one of them 141 tests and RED, on a mutation test whose own mutation is a no-op, so it had correctly detected it could not evaluate what it guards and the detection reached nobody. Add a census: every `*.test.mjs` on disk must be declared `runs` (naming workflow + step) or `unrun` (with a reason saying what would have to change), and every package containing a vitest spec must appear in `vitest.config.ts`'s hand-maintained `projects[]`.
+- **Acceptance:** Declaration-based, not observation-based, because CI jobs are separate runners, `d1-merge-train.yml` is a different workflow a `pr.yml` census could never see, and the heavy jobs skip on docs-only PRs — so an artifact-consuming census would either fail every docs PR or pass having collected nothing. A comment naming a file does NOT satisfy `runs`. An empty discovery, manifest, or projects list each fail. The limit of the `runs` direction is named in the guard's own source rather than described as enforcement.
+- **Test:** Unit suite pinning each decision (comment-stripping, missing reason, renamed step, stale entry, vitest project gap, anti-vacuity), plus a proven fail-first run naming all nine.
+
+### E6 — Deployment and distributed test harness
+
+#### DEP-000 — Deterministic fake sandbox provider (M)
+
+- **Depends on:** WRK-004, FND-004.
+- **Outcome:** Provide a networked fake provider that scripts create, execute, event, hang, cancel, crash, checkpoint, and destroy behavior from validated golden fixtures.
+- **Acceptance:** Tests can address a fake sandbox by provider ID, inspect invocations, and inject a failure at each lifecycle checkpoint without invoking tenant code on the host worker.
+- **Test:** Provider-contract suite shared with E2B plus fixture determinism and reset-isolation tests.
+
+#### DEP-001 — Separate signed control-plane and worker images (M)
+
+- **Depends on:** WRK-001, FND-005.
+- **Outcome:** Produce pinned, non-root images with distinct dependencies/permissions plus minimum SBOM, source provenance, test-root signing, and admission verification used by D1.
+- **Acceptance:** Control plane lacks Docker/worker tooling; worker lacks UI/server/database tooling; images expose health/version/source metadata; D1 accepts only recorded signed digests and rejects a tampered or unsigned digest. REL-004 later replaces test roots with release roots and adds vulnerability policy/attestation breadth.
+- **Test:** Image contents, user/capability, read-only-root, reproducible source linkage, SBOM generation, signature/provenance allow/deny, tampered digest, and startup smoke tests.
+
+#### DEP-002 — D1 Docker Compose topology (M)
+
+- **Depends on:** DEP-000, DEP-001, TEN-002.
+- **Outcome:** Add isolated networks and services for PostgreSQL, MinIO, one control-plane replica, at least two workers with distinct registered profiles, fake provider, Toxiproxy, and test runner.
+- **Acceptance:** No shared writable volume; worker cannot reach PostgreSQL; control plane cannot reach provider control endpoints except through declared APIs; startup is deterministic.
+- **Test:** Network-denial assertions and one fake-provider job.
+
+#### DEP-003 — Migration job and readiness contract (M)
+
+- **Depends on:** DEP-002, TEN-001.
+- **Outcome:** Separate privileged migrations from application startup, preserve the explicit populated-instance migration-0188 snapshot/marker preflight, and distinguish liveness, readiness, and dependency health.
+- **Acceptance:** Control plane does not serve traffic before compatible schema; worker readiness requires valid session/provider health; failed migrations do not loop destructively. The first populated single-tenant→`cloud_auth` flip requires explicit operator intent and exact candidate SHA, takes and checksum-validates a snapshot before writing the durable `0188` marker, validates that snapshot by restoring it to an isolated pre-cutover database, verifies the marker, and is idempotent. Missing opt-in, snapshot/restore-validation failure, marker write failure, or verification failure stops before deployment/cutover; application startup cannot auto-bypass the gate.
+- **Test:** Old/new schema, empty/populated database, no opt-in, snapshot failure with no marker, isolated restore-validation failure, marker write/verification failure, repeated idempotent invocation, unavailable object store/provider, and rollback-startup tests.
+
+#### DEP-004 — Focused and merge-train CI lanes (M)
+
+- **Depends on:** FND-005, DEP-002.
+- **Outcome:** Add path-filtered unit/contract jobs and a D1 distributed merge-train job with evidence artifacts.
+- **Acceptance:** Protocol/schema paths trigger their mandatory consumers; distributed logs, events, database state, and object manifests are retained on failure.
+- **Test:** CI configuration validation and deliberate failing fixture proof.
+
+### E6-D1-FOUNDATION — Core distributed integration gate
+
+This is a named partial gate, not a ticket and not E6 completion. It requires DEP-000 through DEP-004 on the same main revision; their closure requires TEN-002, JOB-003, and WRK-004.
+
+Evidence meets the separate quantitative preflight in [`test-gates.md`](test-gates.md): deterministic fake-provider behavior; separate least-privilege, test-signed/provenanced images; the networked PostgreSQL/MinIO/control-plane/worker/fake-provider/Toxiproxy/runner topology; no shared writable volume; worker database denial; control-plane provider/tenant-command denial; submit→placement→lease→ACK and provider fault samples; migration/readiness; retained failure evidence; and an independent `e6-d1-foundation` QA record/handoff.
+
+It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward. It does not certify the event outbox, full failure harness, staging, managed-provider isolation, two-replica HA, or release readiness.
+
+#### DEP-005 — Network failure and clock-control harness (M)
+
+- **Depends on:** DEP-002, JOB-006.
+- **Outcome:** Provide deterministic latency, partition, disconnect, and time-boundary controls.
+- **Acceptance:** Tests can cut worker/control-plane, worker/object-store, and control-plane/database links independently without sleeps as assertions.
+- **Test:** Demonstration cases for pre-ACK disconnect, lost completion ACK, and expired lease.
+
+#### DEP-006 — Staging manifests and configuration contract (M)
+
+- **Depends on:** DEP-003, DEP-008, DEP-009.
+- **Outcome:** Define a two-control-plane/four-worker staging deployment across two failure domains with external database/object storage, shared realtime and admission stores, managed provider-control secret injection confined to the adapter management boundary, autoscaling limits, and rollout order.
+- **Acceptance:** Migration runs first; N/N-1 control-plane and worker rollout works; workers drain before termination; shared admission cannot fall back to process memory; all mutable configuration is documented and validated. Provider-control credentials are provider-account/audience scoped, mounted or brokered only to the adapter-management process, absent from tenant sandbox/protocol/env/metadata/evidence, rotatable without image rebuild, revocable through the provider/target kill path, and never retained in a leaked-resource record.
+- **Test:** Render/config validation and staging smoke deployment plus managed-secret mount/broker scope, sandbox/env/metadata/support-bundle absence, rotation overlap/cutoff, old-key denial, revocation, worker restart, and post-rotation cleanup reconciliation.
+
+#### DEP-007 — Distributed observability baseline (M)
+
+- **Depends on:** DEP-002, PRT-004, JOB-005, WRK-006.
+- **Outcome:** Correlate `execution source -> job -> attempt -> lease -> sandbox/service instance`, with metrics for queues, leases, workers, provider lifecycle, egress denials, secret reads, and artifacts.
+- **Acceptance:** One trace follows a fake job end to end; tenant identifiers are access controlled; high-cardinality fields are logs/traces rather than metric labels.
+- **Test:** Telemetry contract assertions in D1.
+
+#### DEP-008 — Managed sandbox isolation conformance (M)
+
+- **Depends on:** DAT-005, DEP-004, E6-D1-FOUNDATION.
+- **Outcome:** Create the provider-neutral hostile isolation/cleanup suite every managed sandbox adapter must pass before tenant canary.
+- **Acceptance:** Tenant commands run only inside the sandbox; jobs share no writable workspace/home/process/network/secret/object grant; host/provider sockets, database, metadata, private networks, worker controls, and control-plane internals are unreachable; fence loss blocks governed effects while the narrow monotonic cleanup authority remains usable; TTL, cancel, kill, destroy failure, worker crash, provider outage, and leak reconciliation are bounded. E6 certifies the suite and its hostile local/reference implementation, not E2B. CLI-001 must pass the same applicable suite against E2B before any E2B canary or D2 pass.
+- **Test:** Malicious workload probes, cross-job access, DNS/IP/proxy bypasses, provider-credential probes, a control-plane partition that leaves public Internet reachable followed by fence replacement, stale-fence governed-effect denial, post-fence cleanup success, cleanup-authority privilege/cross-resource denial, same-resource management-only inspect projection with zero command/env/log/secret/customer bytes, ignored cancel, forced kill, destroy failure, crash/outage, and leaked-resource cleanup.
+
+#### DEP-009 — Two-replica control-plane HA and shared admission (M)
+
+- **Depends on:** TEN-005, JOB-007, JOB-009, DEP-005, DEP-007, E6-D1-FOUNDATION.
+- **Outcome:** Extend D1 to two interchangeable control-plane replicas using PostgreSQL/shared-store placement, lease, quota, rate-limit, and admission authority.
+- **Acceptance:** Replicas cannot double-place/lease, exceed Organization capacity, or disagree on an accepted event/terminal result; polling is replica agnostic; replica loss preserves correctness and bounded progress; process-local admission state is forbidden.
+- **Test:** Concurrent submit/poll/lease/event with restart, partition, delayed commit, quota/placement race, lost ACK, shared rate-limit behavior, and cross-tenant adversarial traffic.
+
+#### DEP-010 — The provider seam: one authoritative port and a composition root that supplies it (M)
+
+- **Depends on:** DEP-000, WRK-004, CLI-001.
+- **Outcome:** A production process can construct a real sandbox provider and hand it to the worker daemon, so dispatch has something to run work in. Resolves finding E6-F008 (the contract package's provider-neutral `SandboxProviderDriver` and worker-daemon's per-op `SandboxProvider` are structurally distinct ports) by naming ONE authoritative port, and resolves E6-F004 (where the fake imports the port from). It **NARROWS** E6-F003 (the networked driver API) — DEP-010 answers *which port* the driver speaks but **DEFERS** the containerized wire to successor **DEP-011**, wiring the desktop/self-hosted lane only. The worker daemon still constructs no provider itself (E4-D01 holds); the composition root lives outside the daemon package.
+- **Acceptance:** Exactly one port is authoritative and documented as such; the composition root injects a real `E2bSandboxProvider` into `bootstrapWorkerDaemon` via the `provider` seam; the boundary checker still forbids the daemon importing a provider; a worker with no injected provider still refuses to dispatch (the shipped default is unchanged and provably inert). This ticket wires the seam and the root; it does NOT by itself turn dispatch on (that is WRK-008 slice 2b behind its flag).
+- **Test:** Unit proof that the composition root produces a daemon whose dispatch decision is `compose:true` only when a real provider is injected and the flag is on; a boundary-check run proving the daemon package still cannot import the provider; the port-reconciliation documented against E6-F008.
+
+#### DEP-011 — The containerized worker→provider networked wire (E6-F003 successor) (scope)
+
+- **Depends on:** DEP-010, DEP-012.
+- **Outcome:** Specify the request/response wire a containerized worker's provider driver speaks to `adapter-manager` over `control-net` — the half of E6-F003 that DEP-010 deferred. Filed at DEP-010 completion so E6-F003 is owned by a ticket that exists and has not shipped (finding E4-F013), not left `owned` by shipped DEP-010. Becomes required only when a containerized worker under `docker-compose.staging.yml` must dispatch; its peer `adapter-manager` (the server that terminates this wire) had zero implementation and no owning ticket, so specifying the wire alone was a spec against an unimplemented peer for an unbuilt caller — hence the deferral. That peer is now the tracked node **DEP-012** (the adapter-manager server), which DEP-011 depends on: the two are one seam, two ends, co-designed. Owns finding E6-F003.
+- **Acceptance:** Written at sprint start (post the earlier chain builds), against the tree as it exists then; no result doc until the wire is built. E6-F003 stays open (HIGH) until then.
+
+#### DEP-012 — adapter-manager: the out-of-process networked provider host (scope)
+
+- **Depends on:** DEP-010.
+- **Outcome:** Build `adapter-manager` — the seventh chain link (`WAVE-4-RESEQUENCE.md` §3.7). The real `E2bSandboxProvider` may not run in the worker container: `staging-manifest-invariants.mjs` `checkProviderControlBoundary` (`:436`) machine-enforces `E2B_API_KEY` + `provider-ctl-net` membership as EXACTLY the `adapter-manager` service, so the containerized worker's `deps.provider` must be a networked driver (DEP-011) that RPCs each op to a separate host holding the key. `docker-compose.staging.yml:316` DECLARES that service (image `aoa-adapter-manager:staging`) but no build produces it — zero source, no Dockerfile, no wire, no worker client. This node is the server DEP-011 was waiting on (previously unowned — WAVE-4-RESEQUENCE §3.7 / §4). It hosts the same authoritative per-op `SandboxProvider` port DEP-010 named, moved across a process boundary so the credential + E2B egress live on one isolated surface. Depends on DEP-010 (the port + composition-root decision, which transitively carries CLI-001's `E2bSandboxProvider`); DEP-011 is repointed onto it.
+- **Acceptance:** The design is **SLICED** (`DEP-012-design.md` §S1: Slice 1 splits into Unit A — the wire plumbing over `MockE2bTransport` — + Unit B — the ownership fork + redaction). Per-unit result docs (`DEP-012-unit-a-result.md`, …) land as each build-unit ships; the ticket CLOSES when the server lands (real provider + credential + deploy). The provider-topology CONTRACT is SETTLED in [`qa/2026-08-28-adapter-manager-scope.md`](qa/2026-08-28-adapter-manager-scope.md) §8 (credential=(i); redacted-projection wire; no streaming slice; durable idempotency ledger; Slices 1–5) and is not re-opened.
+#### DEP-013 — A consumer for the D1 verdict (scope)
+
+- **Depends on:** DEP-004.
+- **Outcome:** Give the merge-train verdict a READER. `d1-merge-train.yml` failed on three consecutive integration-branch merges (`c3d26657d` 08-29, `07ed2cc42` 08-30, `b6e02a478` 08-31; last green before that `50380b6f7` 08-25) and nobody noticed — five days in which a red lane was indistinguishable from a green one. DEP-004 specified that failure evidence is **retained**, and it was: all three red runs uploaded a complete evidence bundle. **Consumption was never specified**, so all three bundles expired unread. The lane runs on `push` (40/40 recent runs; its declared `merge_group` trigger has NEVER fired) and is not a required check, so its verdict arrives after the merge it could have stopped and lands in front of no one. Not one lane: `cross-platform-weekly.yml`'s last three scheduled runs (08-16/23/30) are all `cancelled` — three weeks with no verdict at all — so the consumer is workflow-agnostic by construction, driven by a committed manifest. Filed by WRK-017, whose charter ("CI-exercised") forced it to measure the lane it depended on; the build break itself is E6-F010 and is fixed.
+- **Acceptance:** Stated in terms of the CONSUMER, never the check — an acceptance of "`d1-merge-train` passes" would re-file this bug. The unit is a `(workflow, branch)` **stream**, not a workflow: `d1-merge-train` declares `branches: [main, docs/replatform-program]`, so one query per workflow would let a green on `main` mask a red on the integration branch — i.e. would not have reported the very incident that motivated this. A stream whose latest completed run is anything other than `success` (the evaluator is **success-only**, never an enumeration of bad conclusions — GitHub also terminates runs `neutral`/`skipped`/`stale`/`startup_failure`/`action_required`), or which fails the test its declared mode names, produces a consumed artifact within one bounded reconciliation interval. Two modes, because wall-clock staleness is wrong for a `paths:`-filtered workflow: `coverage` (is the newest commit matching the workflow's own path filter covered by a run?) for push-triggered streams, so a merely quiet path reports nothing and no incident exists that only a forced push could close; `cadence` for schedules, which is the only mode that can see `cross-platform-weekly`'s three blank weeks. **The absence of consumption is itself detectable and is the ONLY thing that blocks — and it is measured on the PUBLISH, never on the run:** `policy` fails when the tracking issue's `last-reconciled` marker is stale, because a reconciler that starts and dies still records a recent *completed* run and would keep a run-based heartbeat beating while nothing was consumed. A red watched stream never fails `policy`. Every workflow file carries an entry and every declared branch its own; zero workflows or zero entries fails. Promotion to a required check is REJECTED on measurement, not taste: `docs/replatform-program` has no branch protection at all (404), `main` requires exactly `ci-required`, the lane never runs on `pull_request`, and a second required context violates the hard rule `scripts/lib/ci-lanes.mjs` machine-enforces. Sliced A–E in [`DEP-013-design.md`](epics/E6-deployment-test-harness/tickets/DEP-013-design.md) §7; the blocking reader (C) lands LAST, only after it has been observed failing.
+- **Test:** Manifest completeness (including per-declared-branch), empty-reason and anti-vacuity refusals; the success-only predicate exercised over the FULL conclusion vocabulary — including the five this repository has never produced, since those are the ones no future reader will think to add — with a mutant reverting it to an enumeration killed by them; coverage mode reporting an uncovered matching commit while staying silent on a quiet path; cadence mode reporting `cross-platform-weekly`'s real blank weeks that coverage mode provably cannot see; a green on one branch not masking a red on the other; green stays silent but STILL publishes; issue idempotency. Plus four positive controls, because a consumer nobody has watched fail is the same defect one level up: a **replay against the recorded 08-25→09-03 run history** (reports from 08-29, stops at `ee74f9c8c`) rather than a fixture; the live consumer firing on `cross-platform-weekly`, which is genuinely cancelled today so nothing must be broken to arrange it; the reader made to fail by starving the publish; and — the control that would have caught this design's own first draft — a reconciler that RAN, COMPLETED and never published, which must still red `policy` and `ci-required`.
+
+#### DEP-014 — The adapter-manager image in the signed image build, admitted in CI; NOT pushed (M)
+
+- **Depends on:** DEP-001, DEP-012. Filed at M1 Step 0 (S0-3, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §4); `M1a` Track A.
+- **Outcome:** `docker/images/build.sh` builds today only the control-plane and worker images; `docker/adapter-manager/Dockerfile` exists but only the operator-dispatched `deploy-replatform-campaign.yml` builds it. Add the adapter-manager to the same signed build — built, digested, SBOM'd and admitted in CI, exactly as its two siblings; **NOT pushed** — and have the D1 merge train build it. This is the image half of what was recorded as "DEP-011's deploy half"; it deploys nothing by itself.
+- **★ Amended 2026-09-21 — the push is DESCOPED** (decided under founder delegation F2 (M1 planning session, 2026-09-21), after DEP-014's build measured that no push mechanism exists for any of the three split images). Superseded text: title *"The adapter-manager image in the signed image build, pushed by CI"*; outcome *"digest, SBOM, provenance and admission, exactly as its two siblings — pushed by CI"*. Why: founder ruling **F3** has the shipped CI boot (DEP-015) **build** all three images from source, so nothing in M1 consumes a pushed tag; and publication is a deliberate, authorized act, never a side effect of a lane. Publishing the adapter-manager image — together with the control-plane and worker images — belongs to the **M5 release lane** at the integration checkpoint.
+- **Acceptance:** The build emits an adapter-manager digest, SBOM and admission entry alongside the other two; admission rejects a tampered or unsigned adapter-manager digest; the image carries no `E2B_API_KEY` and no worker or server tooling; the D1 train builds it on every run. Positive control: an image with no admission entry is refused.
+- **Test:** Image-content and admission allow/deny cases for the new image in the D1 lane, plus the existing build/SBOM/sign scripts' checks extended to three images.
+
+#### DEP-015 — The shipped CI boot lane (M)
+
+- **Depends on:** DEP-014, DEP-011. Founder ruling F3 (the definition of "shipped CI boot", `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2) is its specification. The through-the-daemon consumer (`packages/worker-networked-host/src/bin/networked-host.ts`, DEP-011 Slice 2b-ii) is BUILT and ships inert; this ticket is the boot that runs it. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** Per F3: a **dispatch-only** CI job, never on push, bound to a named candidate, that on that exact candidate **builds** the control-plane, worker and adapter-manager images from source, boots them together with a **CI-generated control-plane keypair**, applies a worker provider-URL overlay, and runs the journey in that boot in a keyed lane. `checkDispatchDefaultOff` is amended **only for that overlay** — every other manifest keeps rejecting `AOA_WORKER_PROVIDER_URL` on a worker. It is not the operator campaign deploy.
+- **Acceptance:** One dispatched run on a named candidate builds all three images from that candidate's source, boots them, and runs `pnpm verify:e7-1-distributed-run` against a run the boot executed; the keypair exists only for that job; the default-off invariant still reds on every manifest except the overlay (positive control: the same env on the base staging manifest reds); the job cannot trigger on push; the keyed spend happens only inside the F8 envelope. Multi-tenant (F10): the boot seeds the campaign's Organization set through the per-Organization rollout policy — at least two enabled Organizations and one control Organization that is not.
+- **Test:** Workflow-shape guard (dispatch-only, candidate input required, no push trigger), the scoped `checkDispatchDefaultOff` amendment with its positive control, and one keyed dispatched run as the acceptance evidence.
+
+#### DEP-016 — The `m1-spine` campaign profile on the D1 compose (M)
+
+- **Depends on:** JOB-016, JOB-017, DEP-004. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** A campaign profile the `M1-D1-SPINE` gate record is produced from: a one-worker topology on the D1 compose, evidence retained **on pass** (the D1 train keeps it only on failure today), and audit and cost assertions. The reference provider emits **canned usage**, and the profile asserts exactly one `cost_events` row with cost > 0 per priced attempt. Without the canned usage and its assertion, the spine prices nothing and still passes.
+- **Acceptance:** A passing profile run retains its evidence bundle; the cost and audit assertions hold per attempt; a **positive control** with usage suppressed reds the profile. Multi-tenant (F10): the profile runs at least three Organizations — two enabled through the per-Organization rollout policy and one control that is not — and asserts each enabled tenant's journey, audit and `cost_events` attribution separately, and the control tenant's refusal.
+- **Test:** The profile run itself, its usage-suppressed positive control, and a per-tenant assertion case for each enabled Organization.
+
+#### DEP-017 — A live env-absence probe on the distributed stage-in path (M)
+
+- **Depends on:** DEP-008, DAT-008. Founder ruling F9 (`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2) chose to build this rather than narrow criterion 5. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** Criterion 5 observed, not argued: a probe that runs inside a distributed sandbox after stage-in and reports whether any host, infrastructure or cross-tenant credential is present in its environment. This closes finding E8-F012's gap **for the M1 distributed path only**; it does not make DE-08 meet H-06, and the reviewers' acknowledgement that H-06 remains unmet is part of the record.
+- **Acceptance:** On a clean run the probe reports absence and the evidence names every variable class it checked; a **positive control** plants a canary credential in the stage-in path and the probe turns red; the probe's own output passes through the per-run canary redaction. Multi-tenant (F10): the probe runs for each enabled tenant, and a credential belonging to another tenant is one of the planted cases.
+- **Test:** The probe unit suite, the planted-canary positive control, and one observed run per campaign profile that uses it.
+
+#### DEP-018 — Campaign fault matrix and injection harness, per gate profile (M)
+
+- **Depends on:** DEP-016, DEP-015, WRK-013, DEP-005. Filed at M1 Step 0 (S0-3); `M1a` Track A.
+- **Outcome:** A declared fault matrix per gate profile, each case with its expected classification, and a harness that injects it. `M1-D1-SPINE`: the journey's fault controls (Toxiproxy), restart and reconciliation (`WRK-013`), and cancellation. `M1a-D2-MECHANISM`: cancellation, provider failure, reconciliation and every cleanup path. `M1-D2-CODING`: all of that plus the credential cases. **Every profile also carries the F10 tenant matrix.**
+- **Acceptance:** Every declared case has a run showing its injection fired and the observed classification matching the expected one; a case whose injection did not fire is a failure, not a pass. The tenant matrix in every profile: the journey passes for each enabled tenant; A cannot lease, read, cancel or see B's jobs, events, secrets, staged inputs, outputs, cost rows or tool calls — each attempt denied, not merely empty, through the non-owner `aoa_app` pool with RLS; the control tenant is refused distributed execution and stays on the legacy path. Each tenant denial has a positive control: the same request made by the owning tenant succeeds. ★ **Legacy rows, tested directly** (added at M1 Step 0, S0-8, from the E0–E2 delta review, under F10): `cost_events`, `activity_log`, `task_outputs` and `provider_credentials` are granted to `aoa_app` with **no RLS** (E2-D03, locked; bounded by E2-D10), so for them the cross-tenant case is **denied or filtered** through the production query path, with a same-tenant positive control and a predicate-removed anti-vacuity read — E2's RLS evidence is not cited for them.
+- **Test:** The matrix declaration and its checker, one injection-fired record per case, and the paired same-tenant success for every cross-tenant denial.
+
+#### DEP-019 — The `m1-spine` journey, driven by the DEPLOYED worker (M)
+
+- **Depends on:** DEP-016, DEP-011, WRK-017, WRK-018, JOB-016. Filed 2026-09-23 by the M1 planning session under founder delegation F2, after the distinct reviewer of `DEP-016` found the gate's worker clause unsatisfiable from that profile alone; `M1a` Track A.
+- **Why it exists, measured:** `M1-D1-SPINE` requires the included lifecycle on *"one control-plane instance, one separately deployed worker"* (`docs/replatform/epic-regrooming/scope-triage.md`). `DEP-016`'s `m1-spine` profile has a deployed worker service, but the journey is HARNESS-driven: the profile plays the worker over `/worker-control/*` itself, the D1 workers do not dispatch (`AOA_WORKER_DISPATCH_ENABLED` declared ABSENT, `scripts/lib/d1-dispatch-declared.mjs`), and the reference provider's `execute` runs no command, so the deployed worker is not the thing that performs the work. `DEP-016-result.md` §5.3 records this as a stated limitation and flags it for a D1 topology ticket. This is that ticket, and nothing more.
+- **Outcome:** The `m1-spine` journey is worker-driven: the deployed worker leases, executes on the reference provider, forwards usage and reaches a durable terminal, and the harness only DISPATCHES (seeds the job) and ASSERTS. Three parts. **Unit A** — the reference provider EXECUTES a scripted command deterministically, writing the `claude --output-format stream-json` transcript the worker's own usage observer parses, so the `DEP-016` canned units survive the move from the harness's forwarding to the worker's real producer. **Unit B** — the `DEP-016` verdicts gain a worker-driven arm, extended in place in `scripts/lib/m1-spine-assertions.mjs`, never forked. **Unit C** — the topology: the reference provider hosts the gated per-op provider wire, the control plane mints the run's owned-labels capability, and the one deployed worker boots the networked container root with dispatch armed.
+- **Acceptance:** The journey's lease → execute → events → terminal is performed by the DEPLOYED worker, proven by the attempt's own rows naming that worker's enrolled identity; a **control in which the worker is not the executor turns the assertion RED**, so "worker-driven" cannot be claimed vacuously; the usage positive control still reds, now at the worker's parser rather than the harness's forwarding; and every per-tenant `DEP-016` property (F10) still holds — per-tenant journey, audit and cost attribution, the hostile cross-tenant cases, and the control tenant's refusal. Multi-tenant (F10): the three-Organization set is unchanged, and the deployed worker is offered no work for the other enabled tenant or for the control tenant, each with the owning tenant's offer as its positive control.
+- **Test:** The scripted-command suite with its mutation table (Unit A); the extended verdict self-test including the not-the-executor fixture and a lane-drift test that the harness-driven and worker-driven lanes cannot diverge (Unit B); the profile run itself, its usage-suppressed positive control and its not-the-executor control, on the keyless D1 lane (Unit C).
+
+#### DEP-020 — The M1a harness gaps: a fault-matrix step on the keyed lane, and the E5 clause-4 / clause-5 floors (S)
+
+- **Depends on:** DEP-015, DEP-018, DEP-019. Filed 2026-09-24 by the M1 planning session under founder delegation F2, after three committed QA records — the `M1a-D2-MECHANISM` `a2`, the `M1-D1-SPINE` `a2` and the E5 exit-gate audit `a2` — each returned `Result: fail` with failure class `harness`; `M1a`.
+- **Why it exists, measured:** the `M1a` mechanism was proven and the evidence apparatus around it was not. Three defects, each measured at `7be35ae6b`/`6b468773f1`: (1) `.github/workflows/m1-shipped-boot.yml` has **no fault-matrix step**, so `M1a-D2-MECHANISM` stands at *"23 declared, 23 pending, 0 fired"* and R5 fails; (2) **no case in any of the three profiles names redaction, a canary or a planted leak**, so E5 clause 5 has no floor evidence at all; (3) `M1-D1-SPINE` declares **no lease-expiry or wrong-lease redemption-refusal case**, so E5 clause 4 misses its `proven_in_d1` floor and its one cross-tenant arm carries no control by its own admission. A fourth, found on entry: `d1-merge-train.yml` had no `workflow_dispatch`, so a newly declared `d1.*` case's first execution would have been the push that merged it.
+- **Outcome:** the D1 lane is dispatchable (`workflow_dispatch` with a `lanes` selector; the false comment that justified its absence is quoted, dated and superseded in place). `m1-shipped-boot.yml` gains a `fault-matrix` journey phase and two keyed-only steps that map the journey's own observations onto the three cases those observations decide — and refuse rather than filing a row they cannot support; exactly those three flip to `required`. `redaction` becomes a required case FAMILY in every profile with an enforced shape, and `credential` gains two required refusal KINDS in every profile, so neither floor can be dropped by a later declaration edit. `M1-D1-SPINE` implements all three new cases live and keylessly.
+- **Acceptance:** every newly declared case has a run showing its **injection fired** with the observed classification matching the declared one, or is `pending` with a `pendingKind`, an honest `pendingReason` and an owner; every new checker red is demonstrated by a one-fact mutation against a zero-violation anchor; the redaction case requires the canary ABSENT from both streams, an unseeded twin PRESENT verbatim, and non-zero observed bytes per stream, so neither arm passes alone; each lease-scoped refusal carries a same-tenant live-lease positive control. Multi-tenant (F10): the clause-4 cases run on tenant A of the three-Organization set and the wrong-lease arm uses a second attempt of the SAME tenant, so the lease binding rather than tenancy is what is under test; the existing nine cross-tenant surfaces and the control tenant's refusal are unchanged and still asserted.
+- **Test:** `scripts/check-campaign-fault-matrix.test.mjs` (31 pure-node tests, one red per new violation code) in `pr.yml` `policy`; the three live cases on the keyless `m1-fault-matrix` job of `d1-merge-train.yml`, dispatched on the feature branch; the lane's existing suppressed-injection positive control, which every new case honours.
+
+#### DEP-021 — The in-flight window that makes M1a's last two D1 fault cases fire, and the fake provider's INBOUND boundary arm (S)
+
+- **Depends on:** DEP-018, DEP-019, DEP-020. Filed 2026-09-24 by the M1 planning session under founder delegation F2, on the `M1a` critical path: `M1-D1-SPINE` fails on one REQUIRED case, `d1.reconcile.worker_startup_lease_probe`, which `DEP-018` allocates to it by name and which exists in NO driver — so freezing a new `M1a` candidate would reproduce the same failure at a new sha and spend a keyed E2B run to discover it; `M1a`.
+- **Why it exists, measured:** a harness cannot mint the lease candidate the case needs. `SqliteLeaseCandidateStore.listEntries` requires each row to satisfy `leaseOfferV1Schema` AND decode to the lease id and Organization its own row is keyed by, so a harness-minted offer belongs to a harness worker and `worker-b`'s probe answers it `dead` — the pruned arm, never the fenced one. The only real route is restarting `worker-b` MID-RUN, and the reference provider had no way to be mid-anything: `executeScriptedCommand`'s transcript is a pure function of `(args, usage)` and returned immediately. Separately, `scripts/check-sandbox-fake-provider-boundary.mjs` is OUTBOUND ONLY — it enforces what the fake provider may import and says nothing about who may import IT, which is the direction that decides whether a FABRICATING provider is production-reachable. Measured at `eb8458bb3` that property already HELD and NOTHING ENFORCED IT.
+- **Outcome:** `--aoa-fake-delay` (bounded, fail-closed, refused outright by the synchronous entry point rather than dropped) gives the reference provider an in-flight window, and `d1.reconcile.worker_startup_lease_probe` fires on it keylessly. `d1.provider.worker_terminal_mapping` fires too and needed NO new mechanism — `--aoa-fake-timeout` has existed since DEP-019 — so `DEP-020`'s routing of both cases to the keyed lane was one measurement short. The boundary guard gains an INBOUND arm over every workspace package, derived from `pnpm-workspace.yaml`'s own globs and fail-closed on an empty scan. ★ Clause 5's D1 redaction case is NOT unblocked and its `pendingReason` is CORRECTED: the remedy it named (one `--aoa-fake-echo-env` flag) is false at HEAD — the echo's only channel is `ExecuteInput.onStdout`, whose tail is scrubbed by the adapter-manager's own capture, scrubbed again by the supervisor, and then consumed solely by `createUsageObserver`, which emits four integers and never populates the `obs.logs` field that becomes a log event; the log that would have carried it was DROPPED by ruling F2 (2026-09-23, `E4-F019`). So the case is blocked on a DECISION, not a flag, and the flag is deliberately not added.
+- **Acceptance:** both flipped cases have a live keyless run showing the injection fired with the observed classification matching the declared one, and both appear in the lane's suppressed-injection reds so neither can pass vacuously; the reconcile case's observable is ATTRIBUTED (the fence line ABSENT before the restart and PRESENT after, carrying THIS run's lease id, with neither sibling arm of the same three-way branch naming that lease) rather than merely present; the provider case is provably distinct from `d1.provider.execute_deadline_exceeded` because the worker's mapper writes `exec_timeout` where the harness's `terminalPayloadFor` writes `provider_timeout`; every inbound-guard red is demonstrated by a one-fact mutation, including a positive control in which a production manifest is given the dependency; both superseded `pendingReason`s are kept verbatim and dated, never deleted. Multi-tenant (F10): both cases run on tenant A of the three-Organization set and neither alters the existing cross-tenant surfaces or the control tenant's refusal.
+- **Test:** `packages/sandbox-fake-provider` vitest (102 tests) plus five one-fact mutations each reding exactly one test; `scripts/check-sandbox-fake-provider-boundary.test.mjs` (63 pure-node tests, 16 of them new positive controls and fail-closed refusals) and `scripts/check-campaign-fault-matrix.test.mjs` in `pr.yml` `policy`; the two live cases on the keyless `m1-fault-matrix` job of `d1-merge-train.yml`, dispatched on the feature branch; the lane's existing suppressed-injection positive control, which both new cases honour.
+
+#### DEP-022 — The fourteen M1a-D2-MECHANISM cases that had no driver (S)
+
+- **Depends on:** DEP-015, DEP-018, DEP-020, DEP-021. Filed 2026-09-24 by the M1 planning session under founder delegation F2, on the `M1a` critical path; `M1a`.
+- **Why it exists, measured:** the E5 exit-gate audit `a2` (`Result: fail`) failed criterion 7's R5 on one sentence — the `M1a-D2-MECHANISM` profile *"declares nine `d2m.tenant.cross.*` cases and every one is `pending`"* — and R4 on the clause-4 and clause-5 floors. At `b12aed2f7` the profile stood at 26 declared, 3 required, 23 pending: `DEP-020`'s fault-matrix step files rows only for the three cases the journey itself observes. The drivers for the missing cases already EXISTED and were already proven live on the `M1-D1-SPINE` lane; the single thing stopping the shipped-boot lane reusing them was that `tests/d1/lib/e6f-harness.mjs` hardcoded `-f docker-compose.d1.yml` into all seven of its compose calls and the D1-only `test-runner` service into all twenty of its HTTP-client dexecs.
+- **Outcome:** the harness's stack binding becomes a default-identical PARAMETER (`composeBaseArgs()`, `HTTP_SERVICE`, `--env-file`), and a new `cross-tenant` phase on the shipped-boot lane drives fourteen cases through those same injections against the SHIPPED control plane: the nine `d2m.tenant.cross.*` surfaces, the four `d2m.tenant.legacy.*` no-RLS tables, and `d2m.credential.wrong_lease_redemption_refused` (clause 4's D2 observation). The phase runs in BOTH modes — it touches no provider — while the grading `fault-matrix` step stays keyed-only, so the keyless rehearsal is free and a keyed run is only ever spent confirming rows. ★ Clause 5's D2 case is NOT unblocked and its `pendingReason` is CORRECTED: re-measured link by link at HEAD on the D2 path, the remedy it named ("a keyed run asserting the run's own streams") is false for the same reason `DEP-021` measured on the D1 twin — the E2B provider runs behind the SAME adapter-manager, whose `createRunOutputCapture` scrubs the only echo channel, and the scrubbed tail's sole consumer emits four integers and never populates the `obs.logs` field that becomes a log event, that log having been DROPPED by ruling F2 (`E4-F019`). `pendingKind` moves `keyed → structural` and the owner is re-pointed to the planning session (F2). ★ A credential-bearing reply reported WHOLE out of the container is fixed at the root for both lanes: `resolveExecutionSecretHttp` now narrows to `{outcome, reason, code}`.
+- **Acceptance:** every flipped case files a row with a SAME-TENANT POSITIVE CONTROL that is asserted BEFORE its denial is classified (ruling F10: denied, not merely empty), each denial PINNED to its exact refusal rather than "not 200"; the four legacy tables additionally carry the anti-vacuity control (the predicate-removed read returns the row); every case appears in the lane's suppressed-injection reds by construction, one `injection_did_not_fire case=<id>` line per case; the declaration is checked against a SECOND source (`scripts/lib/__tests__/d2m-cross-tenant-coverage.test.mjs`, two-sided) so a case flipped to `required` with no driver reds in pure node rather than on a paid run; no case is flipped without a driver, and the six provider-dependent cases stay `pending` with their reasons. Multi-tenant (F10): every case runs across the two enabled Organizations of the three-Organization set, and the control tenant's refusal is untouched.
+- **Test:** `scripts/lib/__tests__/e6f-harness-binding.test.mjs` and `scripts/lib/__tests__/d2m-cross-tenant-coverage.test.mjs` in `pr.yml` `policy`, each with its own positive control demonstrated by a one-fact mutation; `scripts/check-m1-shipped-boot-shape.test.mjs` extended for the five new candidate-control markers; the `m1-fault-matrix` job of `d1-merge-train.yml` dispatched on the feature branch as the live control for the default binding and the narrowed resolve reply; the shipped-boot lane's own `cross-tenant` step and its suppressed-injection positive control, whose first execution is the post-merge keyless dispatch named in the result record §8.
+
+#### DEP-023 — Clause 5's floor: the run-output redaction observation surface (S)
+
+- **Depends on:** WRK-018, DEP-017, DEP-019, DEP-021, DEP-022. Filed 2026-09-24 by the M1 planning session under founder delegation F2, on the `M1a` critical path; `M1a`.
+- **Why it exists, measured:** clause 5 of the frozen E5 audit matrix had no floor on EITHER lane, failing audit rule R4 and `M1a` exit criterion 7. `DEP-021` and `DEP-022` each measured the reason link by link and each concluded, correctly, that the case was blocked one layer DEEPER than a flag or a keyed run: redaction works and is applied twice, but the scrubbed stdout tail's only consumer (`createUsageObserver`) returns four integers and never populated `obs.logs`, because the log that would have carried it was built and then DROPPED under ruling F2 (2026-09-23, filed `E4-F019`). So the scrubber's marker terminated in an integer parser and reached neither declared stream, and both tickets recorded that unblocking it was a DECISION about that ruling rather than a build task.
+- **Outcome:** that decision's SAFE half, built. `--aoa-fake-echo-env=<NAME>` on the reference provider plants the leak as ONE tagged stdout line (fail-closed on an absent variable); the adapter-manager's capture and the daemon's own capture each scrub it, both fail-closed; and `selectRunOutputProbeLines` forwards AT MOST ONE tagged, truncated line to both declared streams, ONLY under `AOA_WORKER_RUN_OUTPUT_PROBE=1`, which only `docker/d1/m1-spine.override.yml` sets — so production is byte-identical and `WRK-018` 1(c)'s data-minimisation limit and the open **F7** output-mechanism ruling are not pre-empted. ★ Writing the log half safely REQUIRED closing `E4-F019` rather than inheriting it: `createRedactingDestination` scrubs the fully-serialized pino record BELOW the `msg`/`time`/`level` the sink adds, which is that finding's own closure route 2, and it closes the class for every worker log line rather than only the new one. `E4-F019` moves to `resolved` and its ownership key is deleted in the same commit. ★ `d1.redaction.planted_canary_scrubbed` flips `pending → required` with the driver that fires it; the keyed twin `d2m.redaction.planted_canary_scrubbed` stays `pending` with its reason superseded in place, because flipping it needs a keyed run to show it fired and this ticket may not dispatch one — `pendingKind` moves `structural → keyed` and the owner is re-pointed from F2 (discharged) to F8.
+- **Acceptance:** the case asserts, on the SAME run, on BOTH declared streams: the planted canary ABSENT, the scrubber's own `REDACTION_MARKER` PRESENT, and non-zero observed bytes — no arm passing alone. Multi-tenant (F10): both enabled Organizations plant their OWN canary and are asserted independently (the same-tenant positive control), and each tenant's canary must be ABSENT from the OTHER tenant's event stream. `injectionFired` is decided by the MARKER, never by the harness's own intent, so the case appears in the lane's suppressed-injection reds by construction. No unscrubbed value can reach the surface, and the `E4-F019` sink-collision class is not reachable through it — both argued from code, with mutations that red.
+- **Test:** `packages/worker-daemon/src/__tests__/run-output-probe.test.ts` and `packages/sandbox-fake-provider/src/__tests__/echo-env.test.ts` in the required `verify` gate, each with a standing positive control (the UNWRAPPED logger still emitting `"msg"` — i.e. `E4-F019` itself — and the mirrored tag pinned against the daemon's own constant); the `m1-fault-matrix` job of `d1-merge-train.yml` dispatched on the feature branch, both its profile run and its suppressed-injection control.
+
+#### DEP-024 — Clause 5 on the KEYED lane: the probe armed, the leak planted, the case driven (S)
+
+- **Depends on:** DEP-015, DEP-017, DEP-020, DEP-022, DEP-023. Filed 2026-09-25 on the `M1a` critical path; `M1a`.
+- **Why it exists, measured:** `DEP-023` built the observation surface and proved it on the D1 twin, and a Codex correction on its PR #602 then measured that the keyed twin `d2m.redaction.planted_canary_scrubbed` was blocked by THREE absences rather than by a keyed run — which is why its `pendingKind` was `structural`, not `keyed`. (1) `AOA_WORKER_RUN_OUTPUT_PROBE` was set in exactly ONE place in the repo, `docker/d1/m1-spine.override.yml`, so the shipped-boot worker forwarded no probe line at all; (2) the only producer of a tagged line was the reference provider's `--aoa-fake-echo-env`, which the real E2B lane does not run, so nothing planted the leak there; (3) there was no driver. Spending the keyed envelope before (1) and (2) were wired would have burned it to learn `no_scrubber_marker_observed`.
+- **Outcome:** all three wired, and the blocker reduced to exactly one keyed dispatch. (1) the flag is armed on all three shipped-boot workers, held by `SHIPPED_BOOT_RUN_OUTPUT_PROBE_ENV` in `evaluateShippedBootOverlayInvariants` and documented at last; the chain from that flag to both streams was measured link by link ON THIS LANE (`bin/networked-host.js` → `runContainerHost` → `bootstrapWorkerDaemon`, which builds the logger with `redactionCanaries` and therefore wraps the sink in `createRedactingDestination` — the `E4-F019` closure is CONDITIONAL on that option, so the root had to be read rather than assumed). (2) no product code: the case seeds its OWN worker-driven job and therefore authors the tenant command, a `printf` of the run's redeemed env var behind `RUN_OUTPUT_PROBE_TAG`; `seedSpineWorkerDrivenJob`'s three D1-specific facts (target id, policy hash, tenant command) become default-identical parameters, plus a `dexec` render seam. ★ THE PLANTED VALUE IS NEVER A REAL PROVIDER KEY — it is a canary minted for that one arm as the job's own Company secret, because echoing a live key into a third-party sandbox's stdout would put it into E2B's own service logs, which no scrubber of ours reaches. (3) `scripts/lib/m1a-redaction-probe.mjs` (pure judge) + `scripts/m1-shipped-boot/redaction.mjs` (observer) + a KEYED-ONLY `redaction` phase and lane step. ★ The case is PHASE-owned (`PHASE_OWNED_CASES`), not driver-owned: `runCrossTenantCases` runs in BOTH modes and refuses any row that did not fire, and this case cannot fire in `keyless`, where no adapter-manager and therefore no sandbox exists. ★ `d2m.redaction.planted_canary_scrubbed` stays `pending` with `pendingKind` moving `structural → keyed` and its reason superseded in place; `faultMatrix` reads the declaration to decide whether to fold the phase's row, so the row enters the graded bundle on the same commit that flips the field and not before. ★ A twin DEP-023 left standing was found by the class sweep and fixed here: the D1 override's arming of that same flag had NO static guard, although its two neighbours do, so a drop would have reded the `required` D1 case mid-campaign instead of pre-boot.
+- **Acceptance:** BOTH arms inside ONE keyed run — a withheld-plant job first, then the planted job — with the graded arm requiring the canary ABSENT from both declared streams AND from the OTHER tenant's whole event stream (F10), the scrubber's own `REDACTION_MARKER` PRESENT on a line that also carries this run's probe tag on BOTH, and non-zero observed bytes per stream; and the withheld arm required to be present, to have RUN (non-empty own event stream, or "no marker" is indistinguishable from "never ran") and to report `injectionFired: false`. Neither arm passes alone. No unscrubbed value can reach either stream and the `E4-F019` sink-collision class is not reachable through the surface — both argued from code on this lane, with the conditional closure route named.
+- **Test:** `scripts/lib/__tests__/m1a-redaction-probe.test.mjs` (17 controls, each green assertion paired with the mutation that breaks it) and `scripts/lib/__tests__/dep-024-worker-driven-seed.test.mjs` (default-identical + override + a RENDER-and-PARSE control whose own positive control reds on a newline inside a string literal) in the required `policy` gate; the three overlay-invariant controls in `scripts/check-staging-manifest.test.mjs` and the D1 twin's in `scripts/lib/__tests__/m1-spine-assertions.test.mjs`, all mutation-proven; the `m1-fault-matrix` job of `d1-merge-train.yml` dispatched on the feature branch for the default-identical claim; and ONE keyed `m1-shipped-boot` dispatch, owed to F8, for the case itself.
+
+#### DEP-025 — Clause 5's two flip preconditions closed: the suppressed arm per stream, both arms' attempt status (S)
+
+- **Depends on:** DEP-023, DEP-024. Filed 2026-09-25 on the `M1a` critical path; `M1a`.
+- **Why it exists, measured:** `DEP-024` reached this programme's hard two-round Codex cap and handed up TWO round-3 findings unfixed, with a classification that was correct: they are FLIP PRECONDITIONS, not merge blockers, because `faultMatrix` folds the redaction phase's row into the graded bundle only while the declaration says `required`, so a `pending` case leaves no window in which either hole can produce a false pass. (a) A suppressed-arm hole `DEP-024`'s OWN round-2 fix opened: making `injectionFired` the conjunction of both streams closed a false pass on the graded arm and made `suppressed.injectionFired !== false` unable to see a withheld-plant arm carrying its own nonce-tagged marker on exactly ONE stream (`true && false === false`), although such a marker already proves something other than this case's injection can generate the evidence. (b) `attemptStatus` was read, logged and carried on the row's `detail` and asserted NOWHERE, so a suppressed job reaching a durable `failed` after `attempt_started` had a non-empty event stream, no markers, and satisfied every suppressed check — non-vacuity claimed from a failed setup. The harness itself names that contract: `awaitSpineWorkerDrivenTerminal` documents that a timeout is "judged by the verdict … never swallowed here", i.e. it delegates the assertion to its caller.
+- **Outcome:** both closed, each mutation-proven, and the case DELIBERATELY NOT FLIPPED. (a) the suppressed branch iterates the DECLARED streams and requires each `scrubberMarkerObservedOnStream[stream] === false` explicitly, refusing an unreported stream rather than reading it as clean; the AND-collapse is kept only as a backstop. ★ Its TWIN was fixed with it: `summary.suppressedUnfired`, which becomes the row's `positiveControlPassed`, carried the identical collapse and would have reported a PASSING positive control on the very observation the new loop refuses. (b) `REDACTION_PROBE_REQUIRED_ATTEMPT_STATUS`, asserted on BOTH arms from one helper so they cannot drift apart, in the PURE judge so it has a control at all, and fail-closed on an absent status. ★ A Codex round on this PR then found the same class inside this diff (`E.1(a)`): the refusal lived only in the throwing process, while `journey.mjs` deliberately RETAINS `error.rows`, so a later standalone `fault-matrix` would grade a pass-shaped row for a failed setup — the row now carries both statuses and degrades `injectionFired`, the classification and `positiveControlPassed`. ★ The class sweep for (b) found and fixed the D1 twin (`d1.redaction.planted_canary_scrubbed` read `attemptStatus` into its row's `detail` and asserted nothing), and measured a member of `DEP-024`'s own shared-surface class its diff-scoped count had missed — the D1 case's `logs` arm is attributable only POSITIONALLY, and `m1-fault-matrix` brings the stack up ONCE and runs the suppressed control against it, so that control provably reads a stale marked line every run. Filed as `E6-F033`, `unowned`, with the reason it is not fixed here. ★ The case stays `pending`/`keyed`: these fixes make the judge STRICTER and cannot justify a flip, and not one line of the keyed-only `redaction` phase has ever executed anywhere.
+- **Acceptance:** the suppressed arm is refused when the scrubber's marker appears on EITHER declared stream individually, and when a declared stream reports no observation at all; `summary.suppressedUnfired` and the row's `positiveControlPassed` are false on the same shapes; both arms are refused unless their own attempt reached `succeeded`, with an absent status refused; and the RETAINED row carries `gradedAttemptStatus`/`suppressedAttemptStatus` on both lanes. ★ THE ARTIFACT-ALONE PROPERTY HOLDS FOR THE GRADED ARM ONLY, AND THIS ACCEPTANCE IS PARTIAL RATHER THAN MET: a GRADED-arm failure degrades `injectionFired` and the classification, so a standalone `fault-matrix` verdict over the artifact reds; a SUPPRESSED-arm failure (non-`succeeded`, or a marker on one stream) clears only `positiveControlPassed`, and `evaluateFaultMatrixEvidence`'s `family === "redaction"` branch NEVER READS THAT FIELD — measured at source, it is read only in the `credential` branch and the `tenantCase` branch — so an artifact-only verdict still passes on that half. That residual is Codex round 3, verified and HANDED TO THE PLANNING SESSION unfixed under rule C's two-round cap, with two candidate fixes and the measurement that the general one reds the `required` D1 case; see DEP-025-result §11 and the declaration's own `pendingReason`. An earlier draft of this line claimed the property for EITHER arm, which contradicted the same ticket's §11 — corrected rather than left, because a false claim of enforcement is worse than a missing check. `evidence`, `pendingKind`, `pendingOwner`, `injection` and `redactionCase` are unchanged; `pendingReason` is superseded in place with the new red shapes, `DEP-024`'s text kept verbatim.
+- **Test:** `scripts/lib/__tests__/m1a-redaction-probe.test.mjs` grows `18 → 27` controls in the required `policy` gate, every new one paired with the mutation that breaks it (the per-stream loop removed; `summary.suppressedUnfired` collapsed back to the AND; both `requireArmSucceeded` calls removed; the row's degradation undone; the `positiveControlPassed` conjunct undone; the shared attempt-failure token re-spelled instead of imported) and every one re-measured against the FINAL tree rather than left at the count it first showed — and each pre-fix RED was `<no violations>`, i.e. the judge raised nothing at all. The D1 twin's new assertion is demonstrated GREEN on a live stack by the `m1-fault-matrix` job of `d1-merge-train.yml` dispatched on the feature branch; its red shape is argued from the identical predicate, which is mutation-proven in the pure judge. ONE keyed `m1-shipped-boot` dispatch remains owed to F8 for the case itself.
+
+#### DEP-026 — Clause 5's THIRD flip precondition closed: the withheld-plant arm is graded (S)
+
+- **Depends on:** DEP-023, DEP-024, DEP-025. Filed 2026-09-25 on the `M1a` critical path; `M1a`.
+- **Why it exists, measured:** `DEP-025` closed clause 5's first two flip preconditions and handed up a third under rule `C`'s two-round Codex cap, with the verification at source: `evaluateFaultMatrixEvidence`'s `family === "redaction"` branch NEVER READ `positiveControlPassed`, the only field the withheld-plant arm sets — the field is read in exactly two places, the `credential` branch and the `tenantCase.kind in {cross_tenant_denial, legacy_table_isolation}` branch, and `d2m.redaction.planted_canary_scrubbed` is `family: "redaction"` with a `redactionCase` and no `tenantCase`. So a suppressed arm that terminated non-`succeeded` or carried its own nonce-tagged marker on a stream had that field cleared by `DEP-025`'s fixes and NOTHING graded it: every field the branch did read stayed pass-shaped, so a STANDALONE verdict over the retained row reported no violations while the run itself reded. That is `E6-F023` in artifact form — a bundle disagreeing with its own run — and the retained bundle exists precisely so a reader can grade it independently of that run. `DEP-025` also measured that the GENERAL fix reds the `required`, currently-green `d1.redaction.planted_canary_scrubbed`, because that case files no such field at all.
+- **Outcome:** the GENERAL fix (`DEP-025` §11 option B) taken, and DELIBERATELY NOT narrowed to keep the D1 case green. The branch grades the withheld arm through a DECLARED `redactionCase.suppressedArm`, read by ONE helper (`classifyRedactionSuppressedArm`) shared by the declaration half and the evidence half so the two cannot drift apart — the asymmetry that produced `DEP-025` finding (a). `in_run` REQUIRES `positiveControlPassed === true`; `none` is an EXEMPTION that must name its blocking finding ids and a reason, each checked for CONTENT rather than presence; an ABSENT or unrecognised scope is REFUSED (`evidence:redaction_suppressed_arm_undeclared`), which is the load-bearing half, because a guard that quietly passes a case it cannot grade is the same defect one level out. `d2m` declares `in_run`, which `redactionProbeMatrixRow` already satisfies, so AFTER THE FLIP ITS RETAINED ARTIFACT ALONE IS GRADEABLE ON BOTH ARMS. ★ THE D1 JUDGEMENT IS A SPLIT, measured link by link and stated rather than avoided: `(a)` for the `events` stream — an in-run withheld-plant second job WOULD be soundly readable, because `queryJobEventPayloadText`'s SQL is `WHERE job_id = $jobId`, so that half is a REAL BUILDABLE GAP, filed as `E6-F034` — and `(c)` for the `logs` stream, which is structural: `composeServiceLogs("worker-b")` is the whole service log and the probe line carries no per-run token (`createUsageObserver` emits `logger.info({ probeLine }, RUN_OUTPUT_PROBE_LOG_MESSAGE)` with no `jobId`), i.e. `E6-F033`. The exemption is whole-case rather than per-stream for a measured reason: `redactionCase.streams` names TWO streams while `positiveControlPassed` is ONE boolean, so an events-only arm reported through it would flatten a per-stream requirement into a scalar in the PERMISSIVE direction — exactly `DEP-025` finding (a). ★ A THIRD measurement: the D1 lane's campaign-scoped substitute is NOT case-scoped — `d1-merge-train.yml`'s suppressed-injection step greps its output for the literal `injection_did_not_fire`, which ANY of the profile's cases satisfies — so nothing ties that redness to this case, which is why `E6-F034` is filed as a gap rather than recorded as covered. `E6-F033` is NOT closed and is not claimed to be; it is now cited by a machine-checked declaration rather than only by prose.
+- **Acceptance:** the redaction branch reds a case declaring an `in_run` arm whose row reports `positiveControlPassed` as `false`, `null` or absent; reds an absent or unrecognised `suppressedArm` rather than skipping it; reds a `none` exemption that does not name a non-empty `blockedBy` array of non-empty ids and a non-empty `reason`; and passes a justified exemption WITHOUT the row field. The declaration half is a genuine SECOND source (`E.2.1`), requiring PRESENCE on a `required` case — so answering the question becomes a mechanical precondition of a `pending` case's flip — and well-formedness always, so no case can park a broken shape behind `pending`. `d2c.redaction.planted_canary_scrubbed` is deliberately left without the field: no producer anywhere in the repo writes a `d2c.redaction.*` row, so it cannot honestly answer it. `evidence`, `pendingKind`, `pendingOwner`, `injection` and `expectedClassification` are unchanged on both cases; `d2m`'s `pendingReason` is superseded in place with the new red shapes, `DEP-025`'s text kept verbatim under `$supersededPendingReason_DEP025`.
+- **Test:** `scripts/check-campaign-fault-matrix.test.mjs` grows `32 → 39` controls in the required `policy` gate. The pre-fix RED was `38 tests / 32 pass / 6 fail` with the judge raising NOTHING on any of the six — the assertion messages print an EMPTY violation-code list, the same `<no violations>` shape `DEP-025` recorded. Five mutations, each reverted and the tree asserted back to its baseline: the evidence-half grade removed (`4` red); the fail-closed `unknown_scope` arm removed (`4` red, including both declaration controls); the exemption's justification requirement dropped (`2`); the declaration half's presence requirement removed (`1`, with the evidence half intact, which is what proves it is a second source and not a restatement); and the row field accepted as TRUTHY rather than strictly `true` (`1`, the fail-closed row). ★ A SEVENTH control came from self-auditing this ticket's OWN diff (`E.1a`): the well-formedness check on `blockedBy` answers "is what I wrote well-formed?" and NOT "does the thing it names exist?", so an exemption naming a PHANTOM finding would have passed everything — an unchecked exemption, which is the class one level out. It cross-references every declared id against a SECOND SOURCE, the `## <ID>` headings of every epic's `findings.md` (deliberately NOT `finding-ownership.json`, whose key is DELETED on closure, so it would red on a correct declaration naming a since-closed blocker), with two non-vacuity assertions first and a mutation (`M6`) that reds on the committed file naming the phantom id. ★ AND ITS DUAL, also from self-audit: an exemption that OUTLIVED its reason — a case declaring `scope: "none"` whose ROW nonetheless reports `positiveControlPassed`, meaning the driver grew the arm and nobody deleted the exemption, so the field the grader would have required is present and DELIBERATELY UNGRADED. Refused as `evidence:redaction_suppressed_arm_exemption_stale`, spelled after the file's own precedent (`evidence:pending_case_reported` refuses a `pending` case that DID produce evidence, on the same reasoning with the polarity flipped), and telling the reader to flip the declaration to `in_run` rather than delete the row field. Its control reds on `true` AND on `false` — the field's PRESENCE is the drift, not its value — with mutation `M7`. ★★★ CODEX ROUND 1 RAISED TWO P2s, both REAL, both FIXED (one round, two findings — counted per `E.3` rule 5, so rule `C`'s cap still has a round in hand). (a) A blocker id that is PHANTOM or RESOLVED left the exemption unchecked — and the second half REVERSED reasoning this ticket had already written down: it had cross-referenced the epics' `findings.md` headings and argued AGAINST `scripts/finding-ownership.json` because closure DELETES its key, when closing the blocker is PRECISELY what must invalidate the exemption (the D1 case's own `reason` says so). MEASURED: `E9-F003`/`E9-F007` are closed, absent from the register, and their headings survive (232 headings vs 104 register keys). So the register is the OPENNESS source and the headings the EXISTENCE source, with two distinct codes that a control asserts do not collapse. (b) The cross-reference lived only in the self-test, so `check-campaign-fault-matrix.mjs` — invoked by `m1-shipped-boot.yml:438`'s keyed artifact-verdict step and twice by `d1-merge-train.yml` without that suite — never performed it: a check the production path never ran, which is this ticket's own subject matter in its own diff. Now `evaluateRedactionExemptionBlockers` in the lib (kept SEPARATE from the pure declaration evaluator because the sets come from the filesystem, loaded by the new `scripts/lib/finding-sources.mjs`), called by all THREE production declaration-validating paths, FAIL-CLOSED when the sources are unusable (six shapes controlled) and scoped so a matrix with no exemption needs none. ★ Plus an ANTI-ORPHAN control (`REL-004`'s lesson on this ticket's own verifier): it walks four directories for `evaluateFaultMatrixDeclaration(` and asserts set EQUALITY with the three known callers, so a new validator cannot be added unswept. `32 → 41` controls; mutations `M8` (call removed from the guard CLI — anti-orphan reds), `M9` (openness sourced from headings — both blocker controls red) and `M10` (a RESOLVED blocker in the COMMITTED declaration, judged end-to-end through the guard CLI — exit 1), all reverted. The class sweep enumerated all `9` row fields the grader reads or a builder emits: `2` in the class shape, `1` a hole, `1` fixed — `attemptStatus` is in the shape and is recorded as NOT a hole rather than claimed as a fix, because `DEP-025` already grades that fact twice through `injectionFired` and `observedClassification`. The dual (a graded field no producer sets) found `0`. TWO free `d1-merge-train` runs cover the live D1 lane, whose only `required` redaction case this change touches: `36134477276` on the code head (preflight `38/38/0`, live matrix `25/25/0`, the retained-bundle VERDICT green — which is where a wrong exemption would have surfaced, suppressed control red) and `36138531579` on the FINAL head `e5cbb0c8cf` with ALL SIXTEEN STEPS `success` (preflight `41/41/0`, the PREDICTED move from `38`, which is what excludes a stale-checkout reading (`E6-F031`) by evidence rather than assurance; live matrix `25/25/0`; and zero `redaction_exemption_blocker` codes in the whole job log, so the new production cross-reference and the guard CLI are silent on the committed tree). ONE keyed `m1-shipped-boot` dispatch remains owed to F8 for the case itself.
+
+#### DEP-027 — D1 clause-5 nonce attribution and case-scoped withheld-plant control (S)
+
+- **Depends on:** DEP-023, DEP-025, DEP-026. Filed 2026-09-26 on the `M1a` critical path; `M1a`. Owns `E6-F033` and `E6-F034`.
+- **Outcome:** the reference provider's echo accepts an inert per-arm nonce and emits it on the probe line; the D1 redaction case runs an unseeded withheld-plant job and a planted job in one invocation, scopes both event and whole-service-log observations to their own nonce, requires both attempts to reach `succeeded`, and reports per-stream control evidence plus `positiveControlPassed` for the standalone grader.
+- **Acceptance:** stale lines bearing another arm's nonce cannot satisfy either arm; missing per-stream evidence, a failed setup, or the redaction marker on either withheld stream makes the retained row fail. The withheld job is genuinely unseeded: it carries no provider-secret handle and therefore uses no real credential or planted canary. `suppressedArm` becomes `{"scope":"in_run"}` only after these controls pass. No keyed or paid workflow is dispatched.
+- **Test:** focused fake-provider and pure D1 redaction-evidence tests prove RED then GREEN for stale nonce, missing stream evidence, failed setup, and a marker on either suppressed stream; the free D1 merge-train remains the live campaign requirement before milestone closure.
+
+### E7 — Coding/CLI workload on E2B
+
+#### CLI-001 — E2B provider implementation (M)
+
+- **Depends on:** WRK-004, DAT-005, DEP-006, DEP-008.
+- **Outcome:** Implement secure create/execute/cancel/kill/destroy/list/inspect/reconcile-cleanup operations and advertised optional checkpoint/restore/health capabilities behind the worker provider interface.
+- **Acceptance:** Secured access is enabled; the provider-control credential is injected only into the adapter-management boundary under DEP-006, is account/audience scoped, rotatable/revocable without tenant exposure, and old-key denial does not prevent cleanup through current management authority. Template/image/policy and verified E2B limit/capability matrix are pinned; admission rejects or attributes work outside those limits; metadata contains no secrets; every sandbox has an enforced TTL; cleanup is idempotent after lost responses; unsupported operations are explicit; the common provider/protocol seam contains no E2B-specific field.
+- **Test:** Provider contract plus every applicable DEP-008 real-E2B isolation/cleanup case, not a subset, and real-E2B managed-secret injection/rotation/revocation: tenant credential probes fail, old key fails after cutoff, new key continues lifecycle operations, kill switch stops create/execute, and current monotonic cleanup still destroys pre-rotation resources. Record provider/template/policy versions, the verified limit/capability matrix, each supported case, and each genuinely unsupported optional capability with its fallback; no required isolation, fencing, TTL, kill, inspect, or cleanup case may be marked unsupported.
+
+#### CLI-002 — Full workspace staging and adapter execution (M)
+
+- **Depends on:** CLI-001, DAT-002.
+- **Outcome:** Stage a declared snapshot and actor-authorized context bundle, install only approved runtime inputs, run one existing CLI adapter, and record exact adapter/tool/context versions. **v1 sandboxed-coding adapter scope is `claude_local` + `codex_local`** — the two #320 fully wired (provider-key allowlist plus brokered MCP staged into the VM) and that W8 live-validates. Every registered adapter has an explicit disposition, grounded in the registry (`server/src/adapters/registry.ts` — 12 types) and the sandbox provider-key map (`sandbox-env-allowlist.ts`: anthropic/openai/gemini/xai/cursor), not the CLAUDE.md table (which omits several): **Follow-up** (local CLI with a #320-threaded sandbox provider key; admit once in-VM MCP staging + model→provider mapping are proven) — `gemini_local`, `opencode_local`, `cursor`, `grok_local`, `pi_local`. **Out of scope for the sandbox path in v1** (remain on the legacy/self-hosted route; fail closed under `cloud_auth`) — `acpx_local` and `openclaw` (local CLIs with no sandbox provider-key mapping), `cursor_cloud` (executes on the Cursor cloud service, not a local CLI in the VM), `openclaw_gateway` (gateway transport, not a CLI), and `hermes_local` (PAPERCLIP wire-protocol external-agent runtime). No adapter is left undispositioned. See CM-007 for the parallel readiness-probe matrix. On the shared cloud pool, coding jobs authenticate with the company's own provider API key (CM-013) resolved on the host and materialized in-sandbox via the U5 allowlist, reaching the provider API through the DAT-005 fence-aware egress proxy; Decision #104's keyless-CLI (subscription) model applies to self-hosted/local execution only, not the shared cloud pool.
+- **Acceptance:** The agent sees the expected source, instructions, and memory-derived context allowed by Decisions #118/#119; the worker has no memory/database access; host paths are absent; unsupported files fail before execution. A coding adapter outside the v1 sandboxed scope fails closed with an attributable reason before execution — never a silent host fallback.
+- **Test:** Deterministic fake CLI modifies a known file inside E2B.
+
+#### CLI-003 — Logs, cancellation, usage, and result collection (M)
+
+- **Depends on:** CLI-002, JOB-005, DAT-003.
+- **Outcome:** Stream durable events, cancel the process tree, collect bounded usage evidence for JOB-012 to price server-side, and commit patch/artifact results.
+- **Acceptance:** Cancellation reaches terminal state within policy; duplicate result delivery is harmless; output cannot commit after lease loss.
+- **Test:** Real E2B success, cancellation, forced timeout, and lost-ACK cases.
+
+#### CLI-004 — E2B cleanup reconciliation (S)
+
+- **Depends on:** CLI-001, JOB-006.
+- **Outcome:** Reconcile leaked/paused sandboxes against active leases and terminate or quarantine them through WRK-004's monotonic cleanup authority.
+- **Acceptance:** Every sandbox is attributable to a job/attempt/resource/target generation; repeated cleanup is idempotent; cleanup cannot create/execute/resume/checkpoint/open egress or inspect command/env/log/secret/customer bytes; list/inspect returns only ownership labels, opaque management IDs, lifecycle state, and cleanup metadata for matching resources; provider outage backs off with an alert; expired authority cannot be escalated or retargeted.
+- **Test:** Fake leaked sandbox plus real-E2B tagged-resource reconciliation covering post-fence cleanup, cross-resource/label denial, same-resource safe projection, effect-operation denial, lost-response replay, authority expiry/escalation, provider credential rotation, and final zero-resource assertion.
+
+#### CLI-005 — Bridge existing runs to distributed jobs (M)
+
+- **Depends on:** CLI-003, CLI-004, DEP-005, JOB-009, JOB-010, JOB-011, JOB-012, JOB-013, JOB-014.
+- **Outcome:** Convert one existing Organization heartbeat run into a new job without moving the whole product domain, and support a non-executing shadow comparison of routing, provenance, and policy.
+- **Acceptance:** One run has exactly one authoritative executor; shadow mode cannot lease or cause external effects; atomic checkout, single assignee, approvals/completion, all budget/cost hard stops, transactional activity, output/run-summary behavior, and failure release match the current path; disabling the rollout flag stops new distributed jobs while explicitly draining or canceling active attempts.
+- **Test:** Legacy/new envelope and control-invariant equivalence, checkout/approval/budget/audit/cost/output parity, double-execution prevention, failed-submit release, flag disablement, rollback, and active-attempt drain tests.
+
+#### CLI-006 — First coding golden journey and tenant canary (M)
+
+- **Depends on:** CLI-005, JOB-008, DEP-009, MIG-008, E10-REALTIME-FOUNDATION.
+- **Outcome:** Route one Organization’s coding task through the distributed path and surface its durable evidence in the existing run experience.
+- **Acceptance:** MIG-008 has reconciled legacy environment leases/resources and moved provider-control authority before the rollout flag can transfer the first live execution. Create task, schedule, lease, stage, execute, stream, produce patch, review, retry, cancel, audit, and operator inspection all succeed; existing non-canary tenants remain on the legacy path.
+- **Test:** D1 full failure matrix and D2 real E2B journey.
+
+#### CLI-007 — A canary-aware credential path for the coding journey (S)
+
+- **Depends on:** CLI-006, DAT-008.
+- **Outcome:** The canary sandbox receives a real provider credential so the coding journey's execute hop can run a credentialed task. Closes finding E7-F001: the canary credential binding is four explicit nulls (for replay-stable placement digests), so the DAT-008 mint refuses on owner-authority disagreement and no handle is written — the canary CLI has no key even on real E2B. The fix is a canary-aware mint that authorizes a Company-key `provider_key` handle for a canary run whose owner authority is established without a personal `credentialKind`.
+- **Acceptance:** A canary placement mints a Company-key handle and the lease envelope carries a non-empty `secretHandles`; the placement-digest replay invariant still holds; the mint's owner-authority gate is unchanged in strength; fail-closed preserved (no owner authority ⇒ no handle, visible degrade, no key in prompt/event/log). Unblocks but does not promote E7-1 (that needs a cited dispatched real-E2B run).
+- **Test:** Unit mint/owner-authority matrix + placement-digest replay proof + embedded-PG canary placement showing a non-empty handle set; the real-E2B leg is Sprint 5's operator-dispatched journey.
+
+#### CLI-008 — The capability half: make the sandbox agent able to work, and make that CHECKABLE (L)
+
+- **Depends on:** CLI-006, CLI-007.
+- **Outcome:** Own and close E7-F003. Today the distributed sandbox reaches the agent through argv
+  ONLY — no MCP tools, no instructions bundle, no workspace, no output capture — and the acceptance
+  verifier cannot see any of it: no clause reads workload, args, exitCode, stdout or any produced
+  artifact, and clause 3 is terminal-agnostic, so a run that exits 127 with a context-free prompt
+  passes. Fix the judge first, then the capability.
+
+  ★★★ **THE TWO SENTENCES THAT USED TO BE HERE WERE MEASURED FALSE. Do not restore them.** This node
+  asserted that "the FROZEN SandboxProvider port has no file-staging operation … so a file reaches the
+  sandbox through argv staging or not at all — and argv is bounded". Both halves were refuted by
+  measurement on 2026-09-03 and the ticket's own §3 carries the superseding banner:
+  (1) `capabilities.ts` defines a wire/registry VOCABULARY, not the port — the port is
+  `worker-daemon/src/supervisor/provider.ts`, in a package that is **not frozen**, and it had already
+  grown to thirteen methods (DAT-009, `d5885053f`); (2) the argv cliff is **8,192 characters PER
+  ARGUMENT**, not ~8 KB per job. CLI-008 Unit B shipped the channel on that basis (`393f7a251`):
+  `stageFiles` on the non-frozen port, pointer via `extensions[]`, bytes via object storage, with
+  `git diff packages/worker-protocol/src` empty.
+
+  What SURVIVES is the number, as its own finding: **E7-F008** — a task whose assembled prompt exceeds
+  8,192 characters is refused `prompt_too_large` and cannot dispatch distributed at all. That is a LIVE
+  refusal today. What does NOT survive is the inference "therefore the channel must not be argv-shaped".
+- **Acceptance:** A distributed coding run the verifier can DISTINGUISH from a context-free one — the
+  agent had tools, had its identity and company context, had a repository, and something it produced
+  reached AoA, each asserted by a clause rather than printed as an observation. Until the verifier
+  clause lands, no green E7-1 is evidence of capability, and the go-book says so.
+- **Test:** A fixture proving the CURRENT verifier blesses a context-free run (the blind spot, pinned
+  before it is closed), then the same fixture failing once the produced-output clause is asserted;
+  per-unit integration proof for the channel, tools, context, workspace and return path as each lands.
+
+> **Link-scoped successors for `CLI-008` — `CLI-010` … `CLI-016`.** Deliberately NOT a `####`
+> heading: `check-dependency-graph.mjs` reads every `#### ` line as a ticket node, so a heading
+> beginning `CLI-008` would mint a second `CLI-008` node with no `Depends on:` line and red the
+> graph. Measured, not guessed — it did exactly that on the first attempt.
+
+★★★ **WHY THESE EXIST, AND WHY THEY ARE NUMBERED.** *Added 2026-09-21 (M0 unit 4, founder decisions
+D1 + D5).* `scope-triage.md`'s `M1b` required-result set named its members `CLI-008-F1a`,
+`CLI-008-F1b`, `CLI-008-F3`, `CLI-008-F4`, `CLI-008-F5`, `CLI-008-F6` and `CLI-008-C5`. **Those ids
+cannot be expressed to the guards.** `check-finding-ownership.mjs:423` tests ownership with an exact
+`tickets.has(entry.ticket)`, and `findTicketIds` (`:50`) derives ids from filenames with
+`/^([A-Z]+-\d+)/` — so `CLI-008-F1a` resolves to nothing, and a `CLI-008-F1a-result.md` would
+resolve to **`CLI-008`**, marking the parent shipped and orphaning every finding it owns. The ids are
+therefore numeric, and the mapping is fixed here so no reader has to guess it:
+
+| Old link-scoped id | Ticket | Unit F §1.6 link |
+|---|---|---|
+| `CLI-008-F1a` | **`CLI-010`** | link 1, the CAPTURE side — the metadata-only enumeration seam; fences `captureSandboxEntries` ★ *(corrected 2026-09-21: read “the EMIT half — tell the agent where to write”. F1a was always the capture side; the emit build has no id until `CLI-011` rules. This row is the AUTHORITATIVE crosswalk, so it had to change with the node below it.)* |
+| `CLI-008-F1b` | **`CLI-011`** | link 1, the output-mechanism design review (design-only as to BUILD) |
+| `CLI-008-F3` | **`CLI-012`** | link 3, the worker-side consumer: digest → mint grant → export → commit |
+| `CLI-008-F4` | **`CLI-013`** | link 4, the announcement: `EventSequencer.artifactPrepared` |
+| `CLI-008-F5` | **`CLI-014`** | link 5, the projector: `foldAttemptEvidence` hard-codes `detectedFiles: []` |
+| `CLI-008-F6` | **`CLI-015`** | link 6, the judge — `countProducedOutputs` (clause 6) |
+| `CLI-008-C5` | **`CLI-016`** | Unit C slice 5 — arms the tool surface |
+
+★ **Link 2 has no successor because it is BUILT** (`e2b-provider` `artifactExportMode =
+"grant_upload"`, real `digestArtifact`/`exportArtifact`, PR #353). Unit F §1.6 strikes it through.
+Seven successors for six links is not an arithmetic error: link 1 splits into `F1a`/`F1b`, and `C5`
+is a Unit C slice that the `M1b` set carries alongside them.
+
+★★ **Only `CLI-011` and `CLI-015` carry ticket FILES today; the other five are nodes only.** That is
+deliberate and is what the coverage guard is built for: *"the authority names a ticket that has no
+file yet → that is the BACKLOG … NOT a failure"* (`scripts/lib/ticket-graph-coverage.mjs`). Files
+exist exactly where a finding is re-pointed, because `check-finding-ownership` needs a file on disk
+to accept an owner. Minting five more design docs with no design behind them would be inventing
+evidence.
+
+★★★ *Corrected 2026-09-21 (post-M0 regroom). The M0 unit-4 renumbering wrote these nodes from an older reading of Unit F, and four of them contradicted the corrected E7 implementation plan — which a later session reads from HERE, not from the plan. The id mapping the founder ruled (D1, D5) is unchanged; only the subjects, dependencies and outcomes are corrected to match what the code requires.*
+
+#### CLI-010 — Unit F link 1, the CAPTURE side: pin the metadata-only enumeration seam, fence the byte-reading one (S)
+
+- **Depends on:** CLI-008.
+- **Outcome:** `E2bTransport.listDir` returns **absolute file paths, not directories** — the one
+  asymmetry a consumer gets wrong silently. Pin it with a **metadata-only** enumeration test: no
+  `readFile`, no digest, no bytes. And **fence `captureSandboxEntries`**: it calls `readFile` and
+  hashes the bytes **in the daemon**, which the E2B and networked lanes' data-plane contract forbids
+  (*"GRANTS OUT, NEVER BYTES"*, `packages/worker-daemon/src/lease/artifact-export.ts`). It is a
+  local/desktop-lane tool and stays **inert** on those lanes; it is **not** "the capture half" there.
+- **Acceptance:** A `listDir` returning directory entries fails loudly rather than silently
+  enumerating nothing; the enumerator's dependency surface contains no byte-returning read.
+- **Test:** `packages/worker-daemon/src/__tests__/sandbox-listdir-binding.test.ts`.
+- ★ *Corrected 2026-09-21 (CLI-010 build, verified at source; `E7-D09`, decided under founder
+  delegation F2).* The Outcome's first sentence was true of the mock only: the real
+  `E2bTransport.listDir` listed one level, directories included, and discarded each entry's type.
+  The ticket is widened to fix the seam — files only, recursive, absolute, bounded, failing loudly
+  on a bound breach — with an added test `packages/sandbox-e2b-provider/src/__tests__/list-dir-files-only.test.ts`.
+  Live-sandbox behaviour stays unproven until `CLI-012`'s keyed real-run acceptance.
+- ★ *Corrected: M0 labelled this node "the EMIT half: tell the agent where to write (M)" and gave
+  it a real-E2B build acceptance. That is `F1b`'s subject, not `F1a`'s — and the emit half is
+  **design-only until `CLI-011` rules**, so a build ticket for it here would have let emit work start
+  before the mechanism was chosen. It also described `captureSandboxEntries` as "the CAPTURE half",
+  reversing the data-plane correction.*
+
+#### CLI-011 — Unit F link 1, the output-mechanism design review (M)
+
+- **Depends on:** CLI-008.
+- **Outcome:** The design review that the founder's output-mechanism ruling (**F7**, `docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2) is taken on: the candidate analysis, the writer census, the keyed `files.read` probe (inside the F8 envelope), the §6-constraint table, the positive-control table and an adversarial pass, with the `WRK-018` stdout channel priced as an input. **This ticket makes neither choice binding on its own** — the ruling follows it and is recorded separately. Design-only as to
+  BUILD — no build may be assigned from it — but its result is required before `M1b` passes, because
+  `CLI-015` cannot proceed without the ruling and exit criterion 4 depends on it. Owns **E7-F026**.
+- **Acceptance:** A committed result naming each candidate mechanism with its price and size (or a
+  recorded "neither is reachable" with a named cause), the options refuted, and the pins each option
+  would move; followed by a separately recorded F7 ruling.
+- ★ *Corrected 2026-09-21 (M1 Step 0, S0-4), verified against the E7 implementation plan's `CLI-011`
+  task.* *Superseded text: size "(S)"; Outcome "The founder ruling on HOW output leaves the sandbox,
+  recorded."; Acceptance "A committed result naming the chosen mechanism, the options refuted, and
+  the pins each option would move."* The plan sizes it "≤3 agent-days" and says the ticket "makes
+  neither choice binding on its own"; a node saying the ruling itself is the ticket's output let a
+  reader treat the review's result as the ruling.
+- **Test:** Not a build ticket; the evidence is the decision record and the pin census it cites.
+- ★ **The emit-half BUILD has no id yet, deliberately.** It is filed **after** this ruling, because
+  what it builds depends on which mechanism is chosen. Filing it earlier would pre-empt the ruling.
+- ★ *Updated 2026-09-23: the ruling is taken (`epics/E7-coding-e2b/decisions.md`, `E7-D11`, ruling F7
+  under founder delegation F2) and the emit build is filed as **`CLI-017`**, whose node is at the end
+  of this E7 section. The sentence above is kept as written, because it records why the id did not
+  exist until now.*
+
+#### CLI-012 — Unit F link 3, the worker-side consumer (M)
+
+- **Depends on:** CLI-010, DAT-009.
+- ★ *Corrected 2026-09-21 (Codex, PR #526):* the edge read `CLI-010` only, while the prose below makes `DAT-009` slices 3c/3d a
+  prerequisite. The graph is ticket-granular, so `DAT-009` is the finest edge it can express — and
+  it **does not block**: `DAT-009-slice-1-result.md` already exists, and `findCompletedTicketIds`
+  (`/^([A-Z]+-\d+).*-result\.md$/`) reads that as `DAT-009` complete; `check-dependency-graph`
+  checks graph shape, not completion. **The operative precondition is therefore this prose:
+  CLI-012 does not start until `DAT-009-3c` and `-3d` have approved results.** Giving slices their
+  own graph nodes is gate-owner grooming, not done here.
+- **Outcome:** Sequence digest → mint upload grant → export → commit. This is DAT-009 slice 3's
+  charter; nothing calls `exportArtifact`/`digestArtifact` today, which is why link 2 being built
+  flips no counter.
+- **Acceptance:** A committed `job_artifacts` row of the counted kind, produced by a real run.
+- **Test:** The keyed export lane extended to the full sequence, with a TOCTOU refusal case.
+- ★ **It enumerates METADATA ONLY — never bytes — and must NOT call `captureSandboxEntries`** (see
+  `CLI-010`); the provider's `digestArtifact` supplies digest and size, `exportArtifact` does the
+  upload. **Per-entry it must carry an absolute path, a LINK MARKER and a byte SIZE** — the size so
+  the `SD-6` bounds are enforced before `digestArtifact` materialises a whole tenant-controlled file
+  in the shared adapter-manager process, which is **`E5-F009`**, and which this ticket closes. The
+  marker is an enumeration-time **snapshot**, so a **no-follow recheck at digest/export** is required
+  too: a file swapped for a symlink after enumeration would otherwise be hashed and exported through
+  its target, and the existing re-hash TOCTOU check would pass.
+  ★ *Corrected 2026-09-23 (ruling F7, `epics/E7-coding-e2b/decisions.md` `E7-D11`; Codex P1, PR #575).
+  **Superseded text:** "It enumerates PATHS only and must NOT call `captureSandboxEntries`".*
+  "Paths only" is the wrong axis: the rule is **no bytes**. `RealE2bTransport.listDir` returns
+  `readonly string[]` — `filesOnlyFromListing` uses `type` only to drop directories and discards
+  `symlinkTarget` — and the `CLI-011` P-011 probe (run `35833717162`, arm `S-P5`) measured the
+  consequence live: the link `l1` arrives as an ordinary file path while `files.read` follows it. A
+  paths-only seam therefore makes the required symlink refusal (`A-O2-4`) **impossible**, and
+  `R/l1 → .aoa-run-prompt.md` or `→ /proc/self/environ` would be digested and exported as "output".
+- ★ **This ticket owns the enumeration PORT — its file list says so.** A fenced **metadata-only enumeration operation** on the worker's `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`), implemented by the E2B provider over its private `#transport.listDir` (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) and bound on the networked lane (`packages/provider-wire/src/driver.ts`, which has no enumeration today, **plus** the matching gated owned-op route in `packages/adapter-manager/src/server.ts` — without it the server 404s the op, so a driver-only binding is unreachable; no change to the frozen `PROVIDER_OPERATIONS` vocabulary). The port exposes no enumeration at all at present, so without this the consumer has nothing to call.
+- ★ **The sequencer COMPOSITION surface is NOT this ticket's** — it belongs to E5's `DAT-009-3c`/`3d`, which this ticket waits on (they supply `SupervisorDeps.resolveExportArtifacts` and its composition). ★ *Corrected (Codex, PR #526): an earlier revision of this node said both seams were “scheduled nowhere else”, which assigned the composition surface twice and left the port out of every file list.*
+- ★ **The real-run acceptance also depends on the emit build** (filed after `CLI-011`), because a
+  run produces a file only once the agent is told where to write. Before that, this ticket is proven
+  against a fixture sandbox, not a real run.
+
+#### CLI-013 — Unit F link 4, the announcement (S)
+
+- **Depends on:** CLI-012.
+- **Outcome:** `EventSequencer` gains `artifactPrepared`, so a committed artifact is visible to the
+  control plane's evidence stream. ★ This blocks PROJECTION onto the task; it does **not** block the
+  counter — `countProducedOutputs` reads `job_artifacts` directly and joins no events (§1.8).
+  Conflating the two is the error Unit F's design exists to correct.
+- **Acceptance:** The event appears in the stream for a run that committed an artifact.
+- **Test:** Sequencer unit coverage plus one end-to-end observation.
+- ★ **Not best-effort.** `EventSequencer.#emit` increments `#seq` **before** awaiting the sink, so a
+  failed emit leaves a hole the control plane classifies as a `gap` and the terminal never lands.
+  This ticket owes a recorded contiguity decision — fatal, allocate-on-success, or retry-until-land
+  — and its sink-failure test follows that decision.
+- ★ **Emission belongs on the sequencer-completion / supervisor path**, not in `CLI-012`'s producer:
+  the producer returns export *requests* and has already returned before any commit exists.
+
+#### CLI-014 — Unit F link 5, the output projection (M — design first)
+
+- **Depends on:** CLI-013.
+- **Outcome:** A distributed run's committed artifact reaches the task surface through **the one
+  sanctioned writer**, `jobOutputBridge.projectAcceptedOutput`, which writes the `task_outputs` row
+  **and** its `output_projection` receipt in one tenant transaction **while the attempt's fence is
+  still open**.
+- **The owed design comes first.** The write cannot happen from the terminal projection: the canary
+  projector fires **after** the ingest transaction commits and terminalizes the attempt, and the
+  bridge throws `attempt_terminal` once the fence closes. `job-events.ts` is also one layer too late,
+  because `acceptEvent` does fence-check and append in a single transaction holding the row lock, and
+  the bridge opens its **own** `runInTenant`. The design is one of exactly two shapes: a
+  **transaction-aware callback inside `acceptEvent`**, or a **bridge operation that accepts the
+  existing repository transaction**. Until one is recorded, no file list is meaningful.
+- **Moves a counter:** the receipt-backed output counter (`countProducedOutputs` arm 2,
+  `taskOutputs`). It does **not** move the qualifying-artifact counter (arm 1, link 3).
+- **Acceptance:** `artifact_prepared` and the terminal event ingested **in the same batch** yield one
+  `task_outputs` row with its receipt and no `attempt_terminal` throw. Projection-failure behaviour
+  follows the recorded design; rollback removes the chosen hook.
+- **Test:** That same-batch integration case — it fails against any design that writes from the
+  post-commit hook, which is why it is the one owed.
+- ★ *Corrected: M0's node said "write `task_outputs` from the terminal projection" and sized it
+  (S) — the exact design four review rounds removed. Built from this node, it would have thrown
+  `attempt_terminal` on every projection.*
+
+#### CLI-015 — Unit F link 6, the judge (M)
+
+- **Depends on:** CLI-011, CLI-012, CLI-017.
+- ★ *Corrected 2026-09-23 (ruling F7, `E7-D11`):* the `CLI-017` edge is added. The Codex correction
+  below says the emit-build prerequisite *"cannot be written in the machine-readable line above until
+  the ticket has an id"*; ruling F7 filed that ticket as `CLI-017`, so the edge is now expressible and
+  the prose fallback is discharged. **Superseded text:** *"**Depends on:** CLI-011, CLI-012."*
+- ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* the edge read `CLI-011` only, while the E7
+  implementation plan's `CLI-015` task depends on "`CLI-011`'s **ruling** and `CLI-012`". The
+  `CLI-012` edge is added.
+- ★ *Corrected 2026-09-21 (Codex, PR #526):* CLI-015 **also** requires the approved result of the **emit build**, which is TO FILE after the `CLI-011` ruling. That edge cannot be written in the machine-readable line above until the ticket has an id. Until then the prerequisite is this prose, and `scope-triage.md` lists the emit build in the `M1b` required set.
+- **Outcome:** A verifier that counts the right things. Owns **E7-F016** — clause 6's operator-facing
+  text misdescribes its own subject, blaming four links of which three flip neither counter. ★ The
+  obvious repair is REFUTED (§4.3): folding a clause 6 failure into `ok` would make E7-1 permanently
+  red and retroactively invalidate honest mechanism evidence, so `capabilityProven` stays a second
+  dimension.
+- **Acceptance:** The verifier distinguishes a run that produced something from one that did not, and
+  its operator text names only what it actually reads.
+- **Test:** The existing four-mutation corpus extended to the corrected clause, each mutation
+  reddening a named row.
+- ★ **Two counters, not one:** arm 1 counts **qualifying artifacts** (moved by link 3); arm 2 counts
+  **receipt-backed outputs** (moved by link 5). Both bind to the run's **attempt**, not its job
+  (`e7-distributed-run-verifier-store.ts`: *"BOTH ARMS BIND TO THE RUN'S ATTEMPT, NOT ITS JOB
+  (E7-F031)"*). The store's *"DO NOT MAKE THIS CONSISTENT"* warning is about the **secret scanner vs
+  the capability counter**, not the two arms.
+
+#### CLI-016 — Unit C slice 5: arm the tool surface (M)
+
+- **Depends on:** DAT-007.
+- **Outcome:** The distributed agent can actually call `mcp__aoa__*`. Unit C shipped the argv segment
+  behind a default-off flag; this slice arms it. `M1b`'s capability evidence depends on it, and it
+  cannot start before `DAT-007`'s `/mcp` run-currency gate is proven against real PostgreSQL.
+- **Acceptance:** A distributed run in which the agent invokes an AoA tool and the call is authorized
+  by the run's own identity. **Per Organization (founder ruling F10):** the tool surface is keyed on
+  the per-Organization rollout policy (`server/src/config/distributed-execution-rollout-source.ts`),
+  not only on the deployment-wide `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`, which today is read once
+  from `process.env` (`readDistributedToolSurfaceFlag`) — so enabling tools for one tenant would
+  enable them for all. A tenant not enabled for tools is denied even when another tenant is enabled.
+- **Interface:** an optional per-Organization **`tools`** field on `OrganizationRolloutPolicy`,
+  parsed from `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` by `parseDistributedExecutionRolloutMap`; **absent
+  means not enabled** (fail-closed per tenant). No database schema, route, or worker-protocol wire
+  change. ★ *Added at M1 Step 0 (S0-8), a planning-session decision under founder delegation (F2)
+  carrying F10; the E7 task's superseded "Interfaces: none new" and single-Organization commit title
+  are quoted there.*
+- **Test:** A keyed real-E2B case (inside the F8 envelope) asserting a tool call reaches AoA, with a
+  negative control on an unauthorized run id **and** on an expired lease, plus a two-Organization
+  case in which the tool-enabled tenant's call is admitted and the not-enabled tenant's is denied.
+- ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* this node required a keyed run while the E7 plan's
+  task did not; the task now carries the same keyed +/- controls. The per-Organization acceptance is
+  added by F10.
+- ★ **Currency is enforced at USE — MCP authorization and redemption — not at mint.**
+  `mintRunJwtHandleForPlacement` takes no lease or clock input, so an arming ticket cannot add a
+  mint-time check; the observable is denial at use.
+
+#### CLI-017 — Unit F link 2, the EMIT build: tell the agent where to write, and refuse secrets on the way out (M — two slices)
+
+- **Depends on:** CLI-011.
+- **Filed 2026-09-23 by ruling F7 (`epics/E7-coding-e2b/decisions.md`, `E7-D11`), which is the ticket
+  the `CLI-011` node reserves: *"The emit-half BUILD has no id yet, deliberately. It is filed after
+  this ruling, because what it builds depends on which mechanism is chosen."* The mechanism ruled is
+  **option 2, a conventional output root** `R = /home/user/aoa-output`; the placement is **SD-1b**, a
+  `claude_local`-only directive at the distributed caller.
+- **Outcome:** a distributed `claude_local` run is told, in its own task markdown, to write every
+  deliverable under `R`; `R` has **one** source of truth shared by the server-side directive and the
+  worker-side `outputRoot` (SD-4); and `E2bSandboxProvider.exportArtifact` refuses bytes carrying any
+  secret-classified value of the run's own `env`, with a classification (SD-5, ruled REQUIRED before
+  `M1b`'s campaign because the probe measured `noncePresent=true`).
+- **Acceptance:** (1) **PC-12** — a pin at the SD-1b site asserts the **exact** directive reaches the
+  agent, and deleting the directive reds it. This is not optional: the review's pin census recorded
+  SD-1b's "moves no pin" as *"a search result, not a proof"*, so an unpinned directive can be deleted
+  silently. (2) **PC-11** — a planted canary env value written into `R/x` makes the export refuse with
+  a classification, and a provider without the check exports it. (3) The two copies of `R` cannot
+  drift (a failing equality check, or one imported constant). (4) `codex_local` is untouched and a
+  codex run enumerates an empty `R`.
+- **Test:** a server-side unit pin at the heartbeat call site (`server/src/services/heartbeat.ts`, the
+  canary block that passes `currentTaskMarkdown` into `buildTaskRunBatchWorkload`), a provider unit
+  for the refusal plus its no-check mutant, and the SD-4 drift check.
+- ★ **Its real-run acceptance pairs with `CLI-012`.** A real run produces a file under `R` only once
+  this directive ships, and this directive is only observable once `CLI-012` enumerates `R` — so
+  neither ticket's real-run half is provable alone, and neither may claim the other's evidence.
+- ★ **Non-goals:** the enumeration port, the producer, the `kind` (all `CLI-012`); the announcement
+  (`CLI-013`); the projection (`CLI-014`); the counter (`CLI-015`); option 1b's stdout declaration,
+  which `E7-D11` records as a post-`M1b` refinement and does not build; any `codex_local` change
+  (`E7-D04`).
+- ★ **Two slices, each inside the Definition of Ready's three-day cap** (`CLI-017` is not on its
+  closed exemption list): **`CLI-017-A`** — the directive, `R`'s two constants and the SD-4 equality
+  check (≤2 agent-days); **`CLI-017-B`** — SD-5's sandbox-scoped secret handoff, lifecycle and export
+  refusal (≤1.5 agent-days). They are independent and may run in parallel; **both are required**.
+  ★ *Added 2026-09-23 (Codex P2, PR #575), which measured the undivided estimate at up to 3.5 days.*
+- ★ **SD-5 is a LITERAL-VALUE refusal and does not close exfiltration.** Encoded, reversed or
+  split-across-files credentials still export. Filed as **`E7-F038`** (MEDIUM, open, declared
+  `unowned`); it needs its own boundary ruling, out of `M1b`, and is **not closed by `CLI-017-B`
+  shipping**. The slice carries the encoded and split cases as characterisation tests asserting the
+  current pass-through.
+- ★ **Result files:** each slice writes `CLI-017-A-record.md` / `CLI-017-B-record.md` — deliberately
+  **not** `*-result.md`, which would resolve to `CLI-017` and mark the node shipped on slice A alone.
+  The aggregate `CLI-017-result.md` is written only after both slice records are approved.
+- ★ **It must not redirect or pipe the claude process's stdout** — that would silently remove
+  `WRK-018`'s usage parse (review §7.1, and the `E7-D06` amendment above it).
+
+#### CLI-018 — the founder-reachable artifact: make a distributed run's committed bytes retrievable (M)
+
+- **Depends on:** `JOB-017` (shipped — the in-transaction projection seam this rides).
+- **Filed 2026-09-24 by the M1 planning session** under founder delegation **F2**, on the measurement
+  recorded as `E7-F047` (HIGH), which this node's ticket **owns**. Its contract is the E7
+  implementation plan's `### CLI-018`.
+- **Outcome:** a founder looking at a task can **retrieve the bytes** of an artifact a distributed run
+  produced. Today they cannot by **any** founder-available route — seven were measured, negatives
+  included (`E7-F047`): `routes/task-outputs.ts` has no content/download/bytes/stream handler at all;
+  `OutputRefTabBody` renders *"No preview is available for this output."*; `routes/artifacts.ts`,
+  `routes/assets.ts`, `server/src/mcp/` and `ui/src` carry **zero** `jobArtifacts` references; and the
+  only route that reads `job_artifacts`, `POST /worker-control/artifact-transfer-grants`, is a
+  **worker credential surface** a board session cannot satisfy.
+- ★★★ **TWO OPTIONS, AND THIS TICKET CHOOSES NEITHER.** **(a) materialize** the committed
+  `job_artifacts` row into the product `artifacts`/`artifact_versions` (and, if the viewer path needs
+  it, `assets`) tables, so the existing routes and viewer work unchanged; **(b) a founder-facing read
+  route** that mints a download grant for a **board** actor, reusing `createArtifactTransferGrantService`.
+  The choice is a later ruling. It is not deferred for tidiness: **(b) changes who can reach
+  tenant-scoped bytes**, and that analysis has not been done.
+- **Acceptance:** an **end-to-end** arm — a founder-available route returns the bytes of an artifact a
+  distributed run produced, which is `M1b` exit criterion 4 itself — with a **positive control** proving
+  it reds when the route is removed; and, per ruling **F10**, a **cross-tenant denial** case with a
+  same-tenant positive control. Option (b) additionally requires its **authorization analysis** as a
+  **precondition**, not an afterthought.
+- ★ **The capability is BUILT; the caller is missing.** `createArtifactTransferGrantService`'s
+  `operation === "download"` branch is already recorded as *"fence-independent, but tenant-scoped +
+  object"*-checked and binds `expectedAttemptObjectPrefix` against the committed key. This is a
+  **wiring-and-authorization** gap, not an unbuilt mechanism — which is why (b) is on the table at all.
+- ★ **Non-goals:** the display **path**/filename (`E7-F046`, descoped for `M1` by `E7-D13` (b) and
+  needing its own protocol or object-key-convention decision); any `packages/worker-protocol` wire
+  change (everything needed is already durable on the committed row); re-opening `E7-D13`; **ruling
+  between (a) and (b)**.
+
+### E8 — Browser automation
+
+#### BRW-001 — Browser-session job and policy extensions (M)
+
+- **Depends on:** CLI-006, PRT-006, PRT-007.
+- **Outcome:** Add browser engine/template, viewport, locale, download, trace, session TTL, and interaction-approval capabilities as additive protocol fields.
+- **Acceptance:** Old workers reject browser jobs by capability without seeing sensitive inputs; bounded TTL and artifact retention are mandatory.
+- **Test:** N-1 compatibility plus validator fixtures.
+
+#### BRW-002 — Sandbox-local Playwright runtime (M)
+
+- **Depends on:** BRW-001, WRK-004.
+- **Outcome:** Launch Chromium/Playwright inside the sandbox without exposing CDP to other tenants or the public network.
+- **Acceptance:** Browser process shares only the job sandbox; downloads stay job scoped; browser and child processes die on cancellation.
+- **Test:** Deterministic local site navigation, download, popup, and kill tests.
+
+#### BRW-003 — Browser observation artifact pipeline (M)
+
+- **Depends on:** BRW-002, DAT-002.
+- **Outcome:** Stream metadata and store screenshots, DOM snapshots where allowed, trace, video, and downloads as sensitive artifacts.
+- **Acceptance:** Event payloads remain bounded; retention/redaction policy is explicit; artifact order is tied to event sequence.
+- **Test:** Screenshot/trace hash, large download, retention, and stale-fence cases.
+
+#### BRW-004 — Browser secrets, network, and human approval (M)
+
+- **Depends on:** BRW-002, DAT-004, DAT-005.
+- **Outcome:** Materialize scoped session or connector credentials through the control-plane broker and pause risky actions for approval without leaking cookies, access tokens, or refresh tokens.
+- **Acceptance:** OAuth refresh remains control-plane-owned and live-lease/fence-bound; denial/timeout fails closed; session state is destroyed at terminal state; allowed domains and download/upload policy are enforced.
+- **Test:** Login fixture, connector rotation/revocation, denied domain, metadata/private IP, approval allow/deny/timeout, and log-leak tests.
+
+#### BRW-005 — Browser golden journey (M)
+
+- **Depends on:** BRW-003, BRW-004, DEP-005.
+- **Outcome:** Complete a deterministic multi-step browser task with approval, download, screenshot, cancellation, and retry.
+- **Acceptance:** All durable evidence is viewable from the control plane; no browser/control socket is reachable outside the sandbox; cleanup leaves no session credential.
+- **Test:** D1 fake/site suite and D3 real-sandbox nightly.
+
+#### BRW-006 — Browser evidence and approval experience (M)
+
+- **Depends on:** BRW-003, BRW-004, JOB-008, E10-REALTIME-FOUNDATION.
+- **Outcome:** Add a tenant-scoped session view for live observations, screenshots, downloads, trace/video links, pending approvals, cancellation, and retention status.
+- **Acceptance:** The UI never receives browser control credentials or cookies; reconnect catches up from durable sequence; sensitive artifacts require normal Company authorization.
+- **Test:** Component/API tests plus a D3 reconnect-and-approval Playwright journey.
+
+### E9 — Long-running service agents
+
+#### SVC-001 — Desired-state service schema and API (M)
+
+- **Depends on:** CLI-006, TEN-004, PRT-002.
+- **Outcome:** Add service definition, generation, desired replicas initially limited to one, instance, restart policy, TTL, budget, checkpoint references, and an actor/context policy reference.
+- **Acceptance:** Updates create a new immutable generation; desired state and memory/context access are tenant and actor scoped; workers receive neither database credentials nor direct memory-table access; no public port/ingress configuration is accepted.
+- **Test:** Schema, authorization, generation, and invalid-ingress tests.
+
+#### SVC-002 — Service reconciler and placement (M)
+
+- **Depends on:** SVC-001, JOB-003, JOB-009.
+- **Outcome:** Reconcile desired state into one compatible service-instance job without duplicate placement.
+- **Acceptance:** Repeated reconciliation is idempotent; tenant quota and worker drain are respected; stopped services create no new instance.
+- **Test:** Concurrent reconcilers, quota, stopped state, and drained worker tests.
+
+#### SVC-003 — Long-session lease and health semantics (M)
+
+- **Depends on:** SVC-002, JOB-004, PRT-004.
+- **Outcome:** Add service health, liveness deadline, graceful stop, checkpoint request, and bounded lease renewal semantics.
+- **Acceptance:** Health events do not extend ownership without a successful lease renewal; memory/context callbacks and connector refresh/materialization require the current fence; unreachable workers are fenced and replaced by policy.
+- **Test:** Missed health, missed renewal, delayed event, stale-fence context/connector request, duplicate instance, and network partition tests.
+
+#### SVC-004 — Restart, backoff, and checkpoint recovery (M)
+
+- **Depends on:** SVC-003, DAT-002.
+- **Outcome:** Restart failed services with bounded exponential backoff and optionally restore an approved checkpoint.
+- **Acceptance:** Crash loops terminalize or pause by policy; checkpoint hash and generation must match; local disk alone cannot qualify as recovery state.
+- **Test:** Crash loop, corrupt checkpoint, old-generation checkpoint, provider outage, and successful restore.
+
+#### SVC-005 — Pause, drain, generation rollout, budget, and TTL (M)
+
+- **Depends on:** SVC-004, JOB-007.
+- **Outcome:** Support operator pause/resume, worker drain, replace-before/after-stop policy for a single replica, and hard runtime/spend limits.
+- **Acceptance:** No two generations may perform external effects simultaneously unless a later approved architecture decision explicitly permits overlap and defines its fencing and idempotency policy; budget/TTL stop is auditable and cannot be overridden by the worker.
+- **Test:** Rolling generation, denial of overlap without that later approved decision, drain, budget exhaustion, TTL, and stuck-stop force-kill tests.
+
+#### SVC-006 — Service golden canary (M)
+
+- **Depends on:** SVC-005, DEP-006, DEP-007.
+- **Outcome:** Run a deterministic queue-consuming service with brokered connector access and actor-authorized memory context for at least 72 wall-clock hours through control-plane/worker restart, partition, provider pause/resume or sandbox replacement, drain, generation update, checkpoint restore, and budget/TTL stop.
+- **Acceptance:** Desired state converges, OAuth refresh and memory visibility remain control-plane-owned, duplicate effects stay within documented at-least-once semantics, checkpoints recover, and telemetry explains every transition.
+- **Test:** D4 canary lane.
+
+#### SVC-007 — Service management and evidence experience (M)
+
+- **Depends on:** SVC-005, JOB-008, E10-REALTIME-FOUNDATION.
+- **Outcome:** Add tenant-scoped create/update/pause/resume/stop controls and a view of desired state, generation, active instance, health, checkpoint, budget, and restart history.
+- **Acceptance:** The UI cannot configure public ingress; stale generation actions fail clearly; every control action is audited and reflected through durable event catch-up.
+- **Test:** API authorization/contract tests and UI tests for rollout, pause, restart loop, budget stop, and stale generation.
+
+#### SVC-008 — Daemon service supervisor and the `workload.service` advertisement (M)
+
+- **Depends on:** WRK-004, WRK-005, WRK-010, DEP-011, PRT-004.
+- **Outcome:** Add a worker-daemon lifecycle for a workload that does not end — a supervise loop over the **SVC-008a process port (`startProcess`/`processStatus`/`signalProcess`), never over `execute`**, which is a completion oracle that resolves only after the command has exited and therefore records a hung launch as a started instance (SVC-008a §1.1). The loop emits the frozen service-instance events, honours `gracefulStopSeconds`, derives every liveness and stop claim from a `ProcessObservation` rather than from an assumption (an `unknown` observation escalates and never concludes, SVC-008a §2.3), derives its budget from the provider constraint profile rather than the absent `workload.maxRuntimeSeconds`, and only then widens `SUPERVISABLE_WORKLOAD_CAPABILITIES` so the advertisement is true when it is made. Sole owner of finding E9-F002. E9's only daemon-side ticket; SVC-002 through SVC-007 stay control-plane.
+- **Acceptance:** A service job is placed on and leased by a real daemon; a service run is distinguishable from a batch run by its emitted events; graceful stop precedes kill; nothing is emitted past a closed fence; and no service run reaches `destroy` with an expired effect authority.
+- **Test:** Placement reachability (re-pointing the negative pin at `u0-d1-placement-reachability.test.ts:324`), branch dispatch, non-exiting process, graceful stop ordering, unadvertised health, fence close, effect-authority expiry, and capacity class separation.
+- **★ Split (2026-09-09), and it is not stylistic — this node covers BOTH halves.** External review of `SVC-008-design.md` established that no implementation of the current `SandboxProvider` can witness that a process started, tell whether it is still running, or stop it, so the daemon half above cannot be built as written. **SVC-008a** (`epics/E9-service-agents/tickets/SVC-008a-design.md`) is the provider-port half — `startProcess`/`processStatus`/`signalProcess` behind a locally-defined `processSupervisionMode`, every implementer, a cross-implementer conformance test, and the verdict repair that resolves E7-F034; it emits no event and widens no capability, and the **work belongs to E4/CLI's port lane** even though the id keeps the SVC prefix. **SVC-008b** is everything else in `SVC-008-design.md`, and it depends on 008a for its clause-5 honesty condition. **No `#### SVC-008a` node is added:** `check-ticket-graph-coverage.mjs` resolves `SVC-008a-design.md` to the id `SVC-008` and its node regex (`/^####\s+([A-Z]{2,5}-\d{3})\s/`) would not match a suffixed heading, so this node is the one that covers it.
+
+#### SVC-009 — Re-mint the run's effect authority on lease renewal (E9-F002 option b) (M)
+
+- **Depends on:** SVC-008, DEP-011.
+- **Outcome:** Re-issue the run's Ed25519 `OwnedLabelsCapability` on the lease-renewal route (`POST /worker-control/leases/:leaseId/renew`), so a run that outlives the mint-once 5-minute cap TTL is not forced to tear down under an expired capability (E9-F002's never-re-minted 240-second ceiling). The capability rides the renew reply's `body.extensions[]` as a NON-critical extension (frozen-wire-clean — an older worker ignores it). Slice 1 (SHIPPED) is the server re-mint + delivery, INERT behind the control-plane signing key; slice 2 is the worker consumption + teardown-window recompute (the run-op deadline is a static constant today). A distinct id because SVC-003 (the charter home for bounded lease renewal) resolves into the ownership guard's COMPLETED set (SVC-003a/b results on disk), so it cannot be named E9-F002's `successor`.
+- **Acceptance:** With a signing key configured, a fresh renewal delivers exactly one signed capability extension whose `expiresAt` clamps to the new lease deadline and whose `ownedLabels` equal the renew fence tuple; absent a key the reply is byte-identical. E9-F002 stays open until a service run is OBSERVED past 240s, which also needs the E2B-sandbox-TTL walls (§9.2/§9.4) owned outside E9 (the ruling's accepted Rider).
+- **Test:** Re-mint present/absent (byte-identical when off), append-not-clobber over the control-command extension, lease-deadline clamp, and (slice 2) the worker recomputing its teardown deadline from the re-minted cap.
+
+### E10 — Desktop worker, realtime, and strangler migration
+
+#### DSK-001 — Desktop enrollment and OS key storage (M)
+
+- **Depends on:** JOB-002, JOB-009, WRK-002, DAT-004.
+- **Outcome:** Add user-visible enrollment, target status/revocation, owner binding, OS-keychain-backed worker identity, and the OS-protected device-local credential-handle adapter consumed by DAT-004.
+- **Acceptance:** Enrollment and every local credential grant are explicit; device loss, owner membership loss, target replacement, or handle revocation disables AoA use; credential values never leave the OS store or enter repository config, browser storage, protocol/evidence, or support bundles. Listing exposes only redacted handle metadata to the owning user.
+- **Test:** Per-OS key-store adapter, locked/unavailable store, wrong OS user, enrollment/revocation, owner removal, target replacement, handle grant/revoke, redaction, uninstall retain/delete choice, and zero-upload E2E.
+
+#### DSK-002 — Folder grants, local sandbox capability, and offline policy (M)
+
+- **Depends on:** DSK-001, DAT-005, DAT-006, WRK-005.
+- **Outcome:** Require explicit local folder grants, report nono/Docker/OS isolation capabilities, implement encrypted offline event buffering, and mediate device-local handles through the DAT-004 broker plus fence-aware egress path.
+- **Acceptance:** Expired offline work cannot auto-commit or use a local credential for governed remote effects; orphan patches require review; ungranted paths and symlink escapes fail closed; the sandbox cannot read OS credential storage or bypass the broker/proxy; local activation is destroyed at lease/session deadline even while the public Internet remains reachable.
+- **Test:** Folder-boundary, disconnect with Internet reachable, stale/replaced fence, owner/session revocation, direct-egress/broker bypass, activation expiry/destruction, secret-canary/log/support scan, orphan patch, and platform-capability tests on every advertised OS.
+
+#### DSK-003 — Desktop host, background worker, and signed installers (M)
+
+- **Depends on:** DSK-002, WRK-007, DEP-004.
+- **Outcome:** Package the worker as a least-privilege desktop background host with signed Windows/macOS installers, notarization where required, explicit enrollment, OS-key-store identity, autostart, diagnostics, repair, and uninstall.
+- **Acceptance:** No credential is embedded; the host runs without administrator privileges after install where possible; restart preserves encrypted outbox state; status/log/drain/revoke controls are available; uninstall stops work and explicitly retains or revokes identity by policy.
+- **Test:** Packaging/signature tamper, install/start/stop/restart, key-store isolation, crash recovery, repair, uninstall, and embedded-secret scans using CI test identities.
+
+#### DSK-004 — Desktop signed update, drain, rollback, and repair (M)
+
+- **Depends on:** DSK-003, JOB-007, PRT-006, PRT-007.
+- **Outcome:** Add signed update manifests/packages, compatibility checks, staged rollout, lease drain, atomic replacement, health confirmation, interrupted-update recovery, and rollback.
+- **Acceptance:** Only signed compatible builds install; update stops new leases before draining or policy-canceling/fencing active work; outbox/device identity survive; failed health confirmation rolls back; power loss recovers to one valid version; revoked versions cannot reconnect; source workspaces are untouched.
+- **Test:** N-1 update/rollback, incompatible/tampered manifest, active lease, forced cancel/fence, power loss at each replacement step, failed health, identity/outbox preservation, and revoked version.
+
+#### MIG-001 — Cut Decision #117 target and credential routing over (M)
+
+- **Depends on:** FND-002, CLI-006, JOB-009, DEP-009.
+- **Outcome:** Migrate Decision #117 execution-target registry/resolver and gVisor/dedicated/local-host route-by-credential seams to JOB-009 placement without a second scheduler or implicit fallback.
+- **Acceptance:** Every active legacy target maps to one supported new class or is explicitly blocked; owner/credential bindings persist; cutover/rollback are atomic per Organization/workload; shadow comparison causes no effects; active attempts retain their original owner; unmapped/unsafe fallback fails closed. Desktop mappings remain disabled unless their DSK closure and conditional release evidence pass.
+- **Test:** Legacy/new equivalence, mixed target/credential fixtures, idempotent migration, unmapped target, active-attempt cutover/rollback, revocation, and no-double-execution.
+
+#### MIG-002 — Tenant/domain cutover mechanism (M)
+
+- **Depends on:** CLI-006, MIG-001, MIG-005, MIG-006, MIG-007, MIG-008, FND-002.
+- **Outcome:** Route distributed execution by Organization and workload while retaining legacy self-hosted execution for non-migrated tenants.
+- **Acceptance:** Cutover is atomic and audited; every applicable row in [`current-main-crosswalk.md`](current-main-crosswalk.md) is closed. For CM-015, cutover consumes DEP-003's exact-candidate snapshot/isolated-restore/marker record, refuses a missing or mismatched record, and never writes the one-way marker as an implicit startup side effect. Dry-run/shadow writes no marker and transfers no ownership; active legacy work remains legacy-owned until the recorded drain succeeds. Rollback stops new jobs and handles active attempts, paused leases, provider resources, and the pre-cutover snapshot explicitly; marker deletion is not rollback and no permanent dual writer exists.
+- **Test:** Canary enable/disable, CM-015 no-opt-in/snapshot/marker/candidate-mismatch and idempotent-rerun cases, dry-run no-effect, active-run and warm-lease drain/rollback, mixed tenants, mixed workloads, closed-crosswalk validation, and no-double-executor/resource tests.
+
+#### MIG-003 — Durable realtime fan-out and catch-up (M)
+
+- **Depends on:** JOB-005, DEP-009.
+- **Outcome:** Project durable events to WebSockets through a cross-replica broker and support sequence-based reconnect/catch-up.
+- **Acceptance:** Two control-plane replicas deliver consistent invalidation; broker loss delays realtime but not correctness; presence remains explicitly ephemeral.
+- **Test:** Two-replica subscription, reconnect gap, duplicate fan-out, and broker outage tests.
+
+### E10-REALTIME-FOUNDATION — Durable realtime partial gate
+
+This is a named partial gate, not a ticket and not E10 completion. It requires JOB-005, DEP-009, MIG-003, and their dependency closure on one exact revision. Its immutable QA record and handoff prove durable event sequence/cursor authorization, two-replica delivery, disconnect/reconnect gap recovery, duplicate suppression, broker outage and recovery, redaction, backpressure, and bounded snapshot fallback. It unblocks reconnect-safe claims in CLI-006, BRW-006, and SVC-007. It does not certify desktop packaging, legacy execution cutover, mobility, D3, D4, or full E10.
+
+#### MIG-004 — Cross-target handoff and mobility (M)
+
+- **Depends on:** JOB-006, JOB-009, DAT-006, DEP-005, MIG-001, MIG-002, E10-REALTIME-FOUNDATION.
+- **Conditional feature join:** Desktop source or destination directions additionally require DSK-004 and its dependency closure; this is a release-matrix join, not an unconditional prerequisite for the managed↔dedicated core.
+- **Outcome:** Move eligible work between managed and dedicated targets through an immutable snapshot/checkpoint, a new attempt or service instance, and a new lease/fence. Add desktop source or destination directions only after the conditional DSK-004 closure passes.
+- **Acceptance:** The source attempt or service instance stops governed effects and is permanently fenced before the destination attempt or instance may perform any. Source and destination attempts for the same job, or source and destination instances for the same service generation, never perform governed external effects concurrently. Base, policy, actor/owner, locality, credential, capability, and provider limits are revalidated; stale source output is quarantined; unsupported browser/service handoff fails explicitly; audit links attempts and artifacts. Destination failure or rollback creates another new attempt/instance and fence or leaves work stopped; it never revives source effect authority. Managed↔dedicated mobility has no desktop artifact dependency, while any desktop direction fails closed until DSK-004 and the advertised desktop matrix pass.
+- **Test:** Managed→dedicated and dedicated→managed handoff without desktop artifacts; conditional desktop→managed and managed→desktop after DSK-004; partition and source/destination concurrent-effect races at every handoff step; duplicate request; stale source completion; incompatible target; changed base; desktop offline; destination failure/rollback with no source revival; browser clean retry; and service checkpoint generation.
+
+#### MIG-005 — Cut Commander and warm conversation leases over (M)
+
+- **Depends on:** CLI-005, JOB-010, JOB-011, JOB-012, JOB-013, JOB-014, MIG-008, E10-REALTIME-FOUNDATION.
+- **Outcome:** Convert Commander turns to `commander_turn` execution sources and transfer Decision #120's warm per-conversation E2B lifecycle to the distributed owner without losing continuity or reviving an old owner.
+- **Acceptance:** Warm and ephemeral-per-turn modes retain conversation, run-JWT, tool/approval, cost, audit, and output semantics; shadow mode does not execute; new-turn cutover is atomic; an in-flight turn finishes or is canceled under recorded policy; paused legacy leases are drained or mapped exactly once; the old path cannot resume after transfer; rollback selects one owner and never reuses a distributed fence.
+- **Test:** Warm resume, ephemeral mode, concurrent turn, shadow, paused/in-flight cutover, reaper/TTL/cap, cancellation, provider outage, stale legacy resume denial, rollback, and final zero-unmapped-resource cases.
+
+#### MIG-006 — Cut crew execution over (M)
+
+- **Depends on:** CLI-005, JOB-010, JOB-011, JOB-012, JOB-013, JOB-014, MIG-008.
+- **Outcome:** Convert crew dispatch to `crew_run` execution sources while preserving roster/team trigger, run, completion, activity, budget, cost, and output semantics.
+- **Acceptance:** One trigger creates one authoritative execution; shadow mode performs no model/provider effect; crew identity is not fabricated as an issue run; active legacy work drains or cancels explicitly; retries and rollback cannot double-dispatch; non-migrated self-hosted Companies retain the legacy path.
+- **Test:** Trigger/idempotency, provenance, roster changes, approvals/budgets, concurrent dispatch, active cutover, retry, rollback, output/cost/audit parity, and no-double-execution tests.
+
+#### MIG-007 — Cut one-shot CLI operations over (M)
+
+- **Depends on:** CLI-005, JOB-010, JOB-011, JOB-012, JOB-013, JOB-014, MIG-008.
+- **Outcome:** Convert extraction, compaction, and supported readiness probes to typed `one_shot` execution sources without inventing `runId` or `issueId`.
+- **Acceptance:** Each operation preserves its current claim/idempotency, actor/company scope, credential audience, timeout, result, cost, and audit contract; unsupported readiness adapters remain explicit fail-closed; shadow mode invokes no model/provider effect; active operations drain/cancel; `cloud_auth` has no host fallback; self-hosted modes retain their documented path.
+- **Test:** Per-operation provenance and result parity, extraction claim/replay, compaction hash, supported/unsupported readiness adapter matrix, credential/secret denial, timeout/cleanup, shadow, active cutover, rollback, and no-host-fallback tests.
+
+#### MIG-008 — Reconcile legacy E2B leases, resources, and provider authority (M)
+
+- **Depends on:** CLI-001, CLI-004, JOB-006, DEP-006, DEP-008.
+- **Outcome:** Inventory and reconcile PR #320 environment leases, warm/paused resources, provider labels, reapers, and E2B provider-control credentials before any current execution sink transfers ownership.
+- **Acceptance:** Every live or paused legacy lease/resource has one immutable mapping or terminal cleanup record; active effect authority is never translated into a distributed fence; warm agent and Commander leases, ephemeral one-shot/crew leases, workspace/preview references, and failed cleanup are covered. Provider credentials move from the current server-side runtime into the adapter-management boundary with rotation, old-key denial, kill, and cleanup continuity. No unmapped or unattributable resource remains at closure.
+- **Test:** Status/provider/owner inventory, active/paused/released/failed rows, warm reaper races, lost provider responses, workspace/preview mapping, credential rotation/revocation, old-key denial, current cleanup authority, cutover rollback before ownership transfer, and final zero-resource reconciliation.
+
+#### MIG-009 — Distributed-execution drain: rollback-safe teardown (S)
+
+- **Depends on:** JOB-014, MIG-002.
+- **Outcome:** Make `createDistributedExecutionDrain` correct so a rollback can cancel in-flight distributed attempts safely. Closes the sink-agnostic drain holes finding E10-F001 carves out as Sprint 6's one unblocked item: the `assertRollbackSafe` org/Company grain bug (currently a dead, cancel-nothing lever — it throws before the receipt query), the missing `listActiveAttempts` SQL, and unexercised drain statuses. Cuts over NO sink and needs no credential path.
+- **Acceptance:** Per-Company rollback-safety (an org with any pending authoritative-cost receipt on any of its Companies is skipped; a clean org is drained); `listActiveAttempts` returns the distinct in-flight `(company, job)` set over `job_attempts`; `cancelled`/`no_active_lease` counted, terminal/not-found excluded; the existing drain tests reworked for the new `DrainDeps` shape. Promotion of `E10-1-drain` either lands on an M-proven production caller OR stays `unwired` with a reason (kill-switch write path is REL-005) — the acceptance accepts either, never a vacuous wired.
+- **Test:** Unit rollback-safety matrix (clean org drains, receipt-bearing org skips) + embedded-PG `listActiveAttempts` over seeded attempts + the drain status coverage; positive control first, grain + SQL guards mutation-proven by deletion.
+
+#### MIG-011 — Make the pass verdict and the gate verdict agree by construction (S)
+
+- **Depends on:** MIG-010.
+- **Outcome:** Close **E7-F007**, the fail-OPEN divergence MIG-010 filed and deliberately did not
+  fix. `reconcileCompanyLegacyResources` computes closure over records it builds IN MEMORY;
+  `canary-preflight` recomputes it over records PERSISTED in the append-only crosswalk. Delete an
+  agent AFTER its lease was recorded `mapped` and the two disagree: `insertRecordIfAbsent` is
+  `onConflictDoNothing`, so the newly-unattributable record is never written — the pass refuses
+  forever while the gate OPENS. ★ This ticket exists so `MIG-010` can carry a result without
+  retiring itself as that finding's owner (founder decision **D-10**).
+- **Acceptance:** One chosen shape, implemented, with the two computations unable to disagree — or,
+  if the divergence is accepted, a pass whose verdict reads the same persisted records the gate
+  does. A permanently red operator command with no way to make it green is not an acceptable
+  end state; that is how this programme has historically taught people to stop reading a tool.
+- **Test:** The existing `mig-010-unit-2-5-unattributable.integration.test.ts` extended with the
+  post-pass-deletion ordering that produced the divergence — measured on a real database, which is
+  how the finding was made in the first place.
+
+#### MIG-010 — Legacy-resource reconciliation becomes runnable, and closure becomes decidable (M)
+
+- **Depends on:** MIG-008, CLI-006.
+- **Outcome:** Make MIG-008's reconciliation pass something that actually runs, and make the closure
+  CLI-006's canary gate asserts something a running system can satisfy. Owns E10-F002 (the pass and
+  its drizzle store both have ZERO production callers, so `legacy_resource_reconciliation` is never
+  written and the gate answers `reconciliation_incomplete` forever) and E7-F004 (the gate re-derives
+  its inventory from live `environment_leases` rows, so every lease created after a pass is an
+  unmapped key — a permanently-losing race on any box with traffic). Neither is fixed by adding a
+  caller: the pass cannot run as `aoa_operator` at all, and "reconciled as of when" is undefined.
+- **Acceptance:** The preflight returns `ok` for an organization whose reconciliation has been run,
+  **on a box taking legacy traffic**, and still refuses — with a policy reason, never
+  `preflight_error` — for: no pass, a stale pass, an unresolved `unattributable` record, and a
+  superseded provider-key generation. The pass performs no write to `environment_leases`, runs
+  organization-scoped through owner-owned `SECURITY DEFINER` functions granted to `aoa_operator`
+  alone, and its operator entrypoint asserts the role it connected as before its first read.
+- **Test:** Fail-first reproduction of BOTH findings against embedded PostgreSQL with real serving
+  roles (gate refuses with no pass; gate re-refuses after one lease is inserted post-pass), then the
+  same two scenarios green; watermark boundary cases mutation-proven, including a test that reds if
+  `acquireLease` reverts to stamping `created_at` from the application clock.
+
+### E11 — Hardening and beta release
+
+#### REL-FOUNDATION-GATE — E0 release-test gate stops accepting a bare string (S9 unit 1)
+
+- **Note (INERT node, human traceability only).** This id has no 3-digit segment, so it is
+  invisible to `check-ticket-graph-coverage` and to the foundation checker's own
+  `parseProgramTicketIds` — it is here so a reader browsing E11 sees the unit, and is **not** a
+  coverage-forced or enforced node. Its real enforcement is the CLI checker
+  `scripts/check-distributed-execution-foundation.mjs` at rest in the always-on `policy` job.
+- **Depends on:** nothing shipped; it depends on REL-001/002/003/005 *not* existing yet — the
+  state it makes honest. It is a prerequisite of, not blocked by, those tickets.
+- **Outcome:** Replace the checker's bare-string release-test acceptance with a trackable-strict
+  admissibility gate — every REL ticket a Critical/High crossing names must exist on disk **or**
+  be declared, with a reason, in `docs/architecture/distributed-execution-release-tests.json`.
+- **Acceptance:** ships 0-error at rest (6 crossings admit on written REL-004, 24 on manifest
+  deferral); a named-but-unwritten-and-undeclared ticket reds; the manifest self-cleans (a
+  deferral for a now-written ticket reds; an absent manifest fails closed). `ci-required` stays
+  green while E0 becomes honest.
+- **Test:** `scripts/check-distributed-execution-foundation.test.mjs` (M0–M8, every guard
+  mutation-killed by deletion).
+
+#### REL-001 — End-to-end cross-tenant and secret-exposure gate (M)
+
+- **Depends on:** BRW-006, SVC-007, TEN-005, DEP-008.
+- **Outcome:** Run hostile tenant identifiers, artifacts, worker events, browser state, checkpoints, and secret requests across mandatory coding, browser, and service workloads and every advertised target class.
+- **Acceptance:** No cross-tenant existence disclosure or data access; all denied sensitive operations are attributable in audit records.
+- **Test:** Weekly adversarial suite and release gate.
+
+#### REL-002 — Load, fairness, and SLO gate (M)
+
+- **Depends on:** JOB-007, JOB-009, DEP-009, SVC-006.
+- **Outcome:** Establish queue, lease, event, artifact, and service-reconciliation limits plus initial SLOs.
+- **Acceptance:** One noisy Organization cannot starve another; overload rejects or queues predictably; metrics identify the bottleneck.
+- **Test:** Multi-tenant load model with worker churn and object-store latency.
+
+#### REL-003 — Disaster recovery and migration rehearsal (M)
+
+- **Depends on:** DEP-006, MIG-002, E10-REALTIME-FOUNDATION.
+- **Outcome:** Prove database and required object-byte restore, object-manifest reconciliation, worker re-enrollment/revocation, schema rollout, and rollback procedure.
+- **Acceptance:** Restored state does not accept stale fences; database and versioned object-store RPO/RTO meet D5; every object referenced by the recovered authoritative manifest set restores with matching bytes/hash/size/scope; injected missing/corrupt objects fail the restore and are quarantined; missing required current objects prevent full-service recovery from passing; rollout order supports N-1 workers. Rehearse full post-cutover recovery from the CM-015 pre-0188 snapshot to the prior release and forward recovery to the candidate; marker deletion alone is never accepted as rollback. This rehearsal is downstream release evidence after MIG-002, not a CM-015 closure prerequisite. If desktop/dedicated mobility is enabled, MIG-004 evidence is an additional release prerequisite.
+- **Test:** Staging database plus object-store backup/restore, pre-0188 snapshot→prior-release restore and forward-recovery rehearsal, complete recovered-manifest byte/hash verification, injected missing/corrupt objects, stale-fence rejection, marker-deletion negative, and rollback exercise with measured recovery time.
+
+#### REL-004 — Signed images, SBOM, vulnerability and provider kill gates (M)
+
+- **Depends on:** DEP-001, DEP-008, CLI-004.
+- **Outcome:** Pin, scan, sign, and attest control-plane, worker, sandbox, and every enabled desktop installer/updater artifact and add provider/template/target kill switches.
+- **Acceptance:** Unapproved digest cannot run; critical vulnerability policy blocks promotion; kill switch stops new leases and reconciles active provider resources.
+- **Test:** Signature rejection, vulnerable-image fixture, and provider-kill rehearsal.
+
+#### REL-005 — Private beta rollout and evidence pack (M)
+
+- **Depends on:** REL-001, REL-002, REL-003, REL-004.
+- **Outcome:** Enable selected Organizations with dashboards, alerts, incident runbooks, rollback owner, known limitations, and retained gate evidence.
+- **Acceptance:** Coding, browser, and service have separate per-Organization exposure/incident/rollback flags but all three are mandatory for program completion and every D6 participant; disabling any one blocks or resets the campaign and never creates a coding-only pass. Desktop and cross-target mobility remain the only optional capability flags. Public ingress and cloud plugins remain disabled; every beta Organization has quotas and a named rollback path; E2B limits and the Firecracker exclusion are visible; D2, D3, D4, and all applicable D0–D6 evidence are current for the same candidate. The Release Owner records the immutable target/provider/OS/credential/locality/fallback/mobility matrix with stable row IDs, at least one coding/browser/service row per beta Organization, and directed handoff pairs. Every advertised row meets the D6 per-row SLI. Desktop-disabled beta requires negative flag/route/update evidence; mobility-disabled beta requires negative flag/API/UI/route evidence and no cross-target fallback; enabling desktop additionally requires DSK-003/004, MIG-001, DAT-006, desktop-covered REL-001/003/004 evidence, and the desktop beta gate. MIG-004 and its direction-specific tests are additional only when cross-target mobility is advertised. External design partners require approved beta terms, privacy/provider disclosure, prohibited-data and acceptable-use scope, retention/deletion/export procedure, security contact, and incident/breach process; billing remains out of scope.
+- **Test:** Production-like staging rehearsal with one internal Organization, followed by the full D6 campaign across at least three external design-partner Organizations for 14 consecutive days and every advertised matrix combination.
+
+Release dependencies above are the cloud-managed core, not permission to advertise every target. Before REL-005 starts, the Integration Gate Owner freezes a matrix manifest and applies these mandatory and conditional joins on the same candidate:
+
+| Advertised capability | Additional blocking closure |
+|---|---|
+| Coding, browser, and service | All three are mandatory: E7/D2, E8/D3, E9/D4, their REL-001/002 coverage, and their D6 floors/rows. A disabled flag blocks promotion rather than removing a join. |
+| Any provider/target profile | Its adapter passes DEP-008 and the applicable D1/D2 conformance suite with its signed profile/constraint digest. |
+| Dedicated/local-folder execution | DAT-006 and the relevant JOB/WRK/DAT integration evidence; MIG-004 if cross-target mobility is advertised. |
+| Installed desktop on an OS | DSK-003, DSK-004, MIG-001, DAT-006, the desktop beta gate on that OS, and REL-001/003/004 rerun with desktop included; MIG-004 if mobility is advertised. |
+| Desktop disabled | Desktop enrollment, leasing, update, and route flags remain hard off and their negative tests pass; desktop artifacts need not block the cloud-only candidate. |
+| Cross-target mobility advertised | MIG-004 plus every declared directed handoff's success, partition, destination-failure, permanent-source-fence, and no-concurrent-effects evidence; desktop directions also require the installed-desktop closure. |
+| Cross-target mobility disabled | Handoff flags, API/UI actions, and routes remain hard off; target loss follows immutable queue/fail/fallback policy without creating a cross-target attempt, and negative tests pass. |
+
+Removing a row from the manifest disables its flags and claims; it does not waive a failed invariant for a capability that remains advertised.
+
+#### DBR-001 — Operator database-restore entrypoint + live DR-restore rehearsal (E11-F002 successor) (scope)
+
+- **Depends on:** REL-003.
+- **Outcome:** Land a real operator restore entrypoint (an `aoa db:restore` command or an exercised, barrel-exported harness wrapper over `runDatabaseRestore`/`pg_restore`) and exercise it in a live staging DR rehearsal that records measured RPO/RTO. REL-003 shipped the DR verification core + runbook, but `runDatabaseRestore` (`packages/db/src/backup-lib.ts`) has ZERO production/CLI callers, is not barrel-exported, and no `aoa db:restore` exists — so the restore leg has no operator invocation. Filed at REL-003 completion so E11-F002 is owned by a ticket that exists and has not shipped (finding E4-F013), not left with a shipped owner and only prose. Owns finding E11-F002.
+- **Acceptance:** Written at sprint start; no result doc until the entrypoint lands and the live rehearsal exercises it. E11-F002 stays open (MED) until then.
+
+## Parallel execution waves
+
+### Wave 0 — Foundation lock
+
+Run FND-001 through FND-008 and the independent E0 gate. Runtime work is limited to rollout/build/evidence enforcement and the scoped Decision #103 plugin exclusion in FND-006/FND-008; no distributed scheduler, worker, provider, or schema is implemented. This locks the machine-readable lifecycle, execution sources/parity, current-main crosswalk, authority, threat/control, fixture, caveat, gate, and ownership contracts.
+
+### Wave 1 — Protocol and tenant kernel
+
+After E0, run two independent lanes:
+
+- Protocol Custodian: PRT-001 → PRT-002 → PRT-003/PRT-004 → PRT-005 → PRT-006 → PRT-007 → E1 gate.
+- Tenant Custodian: TEN-001 → TEN-002/TEN-004/TEN-006 → TEN-003 → TEN-005 → E2 gate; TEN-006 and every unmapped sentinel row block distributed admission.
+
+E3/E4/E6 planners may write dependency-accurate briefs in parallel, but no DEP fake-provider/topology implementation starts before its ticket dependencies.
+
+### Wave 2 — Core bootstrap and `E6-D1-FOUNDATION`
+
+- Start JOB-001, JOB-002, and WRK-001 in parallel.
+- JOB-001 + JOB-002 → JOB-009; JOB-001 + JOB-009 → JOB-003.
+- JOB-002 + WRK-001 → WRK-002; JOB-003 + WRK-002 → WRK-003 → WRK-004.
+- WRK-001 → DEP-001; WRK-004 → DEP-000; DEP-000 + DEP-001 + TEN-002 → DEP-002 → DEP-003/DEP-004.
+- DEP-000 through DEP-004 and their closure → independent `E6-D1-FOUNDATION` gate.
+
+### Wave 3 — Runtime, data, harness, realtime, and desktop foundation
+
+- Job lane: JOB-004 → JOB-005 → JOB-006 → JOB-007 → JOB-008. JOB-010 follows JOB-001/TEN-006; JOB-011 follows PRT-007/JOB-006/JOB-010; JOB-012 follows JOB-005/JOB-007/JOB-010; JOB-013 follows JOB-005/JOB-010/JOB-011/JOB-012; and JOB-014 follows JOB-005/JOB-006/JOB-010/JOB-011/JOB-012/JOB-013. E3 does not pass until all five parity tickets pass.
+- Worker lane: WRK-004 + JOB-004 + the foundation preflight → WRK-005; WRK-005 + JOB-005 → WRK-006; WRK-004 + WRK-006 + JOB-006 → WRK-007.
+- Data lane: DAT-001 + JOB-004 → DAT-002 → DAT-003; JOB-004 + JOB-009 → DAT-004 → DAT-005; DAT-006 after DAT-003/JOB-006/WRK-007.
+- Harness lane: DEP-005 after JOB-006; DEP-007 after JOB-005/WRK-006; DEP-008 after DAT-005; DEP-009 after JOB-007/JOB-009/DEP-005/DEP-007; DEP-006 after DEP-008/DEP-009.
+- Realtime lane: MIG-003 after JOB-005 and DEP-009, followed by the independent `E10-REALTIME-FOUNDATION` QA/handoff.
+- Desktop foundation: DSK-001 after JOB-002/JOB-009/WRK-002/DAT-004, then DSK-002 after DSK-001/DAT-005/DAT-006/WRK-005.
+
+Pass E3, E4, E5, and full E6 gates before E7. `E10-REALTIME-FOUNDATION` may finish within this wave; only its passing handoff lets customer-visible UIs claim durable catch-up.
+
+### Wave 4 — First customer-visible coding slice and desktop distribution
+
+- Coding lane: CLI-001 through CLI-005, then CLI-006 after `E10-REALTIME-FOUNDATION`.
+- Desktop lane: DSK-003 → DSK-004 after DSK-002/WRK-007/CI groundwork.
+
+Real-provider isolation/cleanup evidence runs against E2B in CLI-001 and D2; accepted E2B time limits do not weaken the gate.
+
+### Wave 5 — Workload and target expansion
+
+After CLI-006, the mandatory browser and service lanes proceed in parallel:
+
+- Browser: BRW-001 through BRW-006.
+- Service: SVC-001 through SVC-007 and the 72-hour D4 lane.
+- Current-path migration: MIG-008 establishes lease/resource/provider reconciliation, then MIG-005 Commander, MIG-006 crew, and MIG-007 one-shot cutovers may proceed with their parity dependencies. MIG-001 follows CLI-006/JOB-009/DEP-009; MIG-002 closes only after MIG-001 and MIG-005 through MIG-008. Desktop mappings remain disabled until DSK evidence passes. MIG-004 managed↔dedicated mobility follows MIG-001/MIG-002/`E10-REALTIME-FOUNDATION` and its data/failure dependencies; desktop handoff directions join only after DSK-004 and its dependency closure.
+
+### Wave 6 — Release gates
+
+REL-001 through REL-004 may overlap after their amended dependencies. REL-005 begins only when coding/D2, browser/D3, service/D4, and every applicable REQUIRED, HARD, and INITIAL condition have current evidence from the same release candidate and every OBSERVED value is recorded.
+
+## Program artifact workspace
+
+All re-platform planning and execution records live under `docs/replatform/`. The folder is committed source, not disposable agent scratch space.
+
+- `README.md` and `epics/README.md` are the navigation and status ledgers.
+- `program-design.md` is this approved cross-epic architecture and backlog.
+- `accepted-caveats.md` records approved scope/continuity limits without weakening invariants.
+- `test-gates.md` owns quantitative D0–D6 promotion criteria.
+- `agent-execution-guide.md` owns assignment and handoff instructions for agents.
+- `artifact-policy.md` defines status, naming, evidence, redaction, and promotion rules.
+- `epics/<epic>/implementation-plan.md` is the executable contract for that epic.
+- `epics/<epic>/tickets/<TICKET-ID>-result.md` is an append-only review ledger for one ticket's actual delivery and focused evidence until approved complete, then frozen.
+- `epics/<epic>/qa/<date>-<lane>-<scope>-<sha12>-a<attempt>.md` records an immutable autonomous or human QA campaign; correction/rerun creates a higher attempt with `Supersedes`.
+- `epics/<epic>/decisions.md` and `findings.md` preserve scoped reasoning and discoveries.
+- `epics/<epic>/handoffs/<date>-<gate>-<sha12>-a<attempt>.md` records immutable merge-train, named partial-gate, and completion decisions, pins ticket-result blobs/reviewed SHAs, and never overwrites a failed or earlier-revision review.
+
+Product-wide decisions are promoted to `docs/architecture/decisions.md` and linked from the epic-local record. Failed QA runs and resolved findings remain in history. Raw secrets, customer source, browser cookies, and unredacted provider logs are never committed.
+
+## Planning and implementation handoff
+
+This program must not be expanded into one enormous implementation plan. Produce plans in this order:
+
+1. E0 Foundation.
+2. E1 Worker protocol.
+3. E2 Tenant kernel.
+4. E3/E4 core through JOB-003 and WRK-004, coordinated with the E6 partial plan.
+5. E6 through `E6-D1-FOUNDATION`.
+6. E3/E4 remainder and E5 Workspaces/secrets.
+7. E6 remainder, MIG-003 plus `E10-REALTIME-FOUNDATION`, and desktop foundation tickets whose dependencies are green.
+8. E7 Coding/E2B and desktop distribution.
+9. E8 Browser automation and E9 Service agents.
+10. E10 target migration/handoff remainder.
+11. E11 Release hardening.
+
+Each plan is stored at `docs/replatform/epics/<epic>/implementation-plan.md` and must name exact files, interfaces, red/green commands, expected failures, evidence records, and commits. Agents may implement only plans whose dependency gates are already green on main.

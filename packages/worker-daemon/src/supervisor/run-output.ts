@@ -1,0 +1,251 @@
+/**
+ * WRK-018 — the per-run stdout capture behind the optional provider stream channel.
+ *
+ * A provider that implements the channel calls `ExecuteInput.onStdout(chunk)` while the tenant
+ * command runs. This module is what that callback feeds: a BOUNDED tail of the run's stdout,
+ * scrubbed by the run's OWN canaries (H-04, zero tolerance) before any of it can be read out.
+ *
+ * ★ Why a tail and not the whole stream. The one consumer today is the usage producer, and
+ * `claude --output-format stream-json` puts the usage it reports on its FINAL `type:"result"`
+ * line. A coding run's stream can be many megabytes of tool output; keeping all of it per run
+ * on a multi-tenant daemon would make memory proportional to the tenants' output. The tail is
+ * bounded by `maxChars`; a result line longer than the bound is lost and the run reports NO
+ * usage, which is honest (JOB-016's terminal-without-usage signal fires) rather than wrong.
+ *
+ * ★ Why scrub at READ time over whole lines, not per chunk. A canary can arrive split across
+ * two chunks, and a per-chunk scrub would miss both halves. The tail therefore only ever holds
+ * WHOLE lines — when it is trimmed, it is cut back to the next line boundary, and a line longer
+ * than the bound is dropped with its continuation — so a single-line canary is always either
+ * wholly inside the retained text (and scrubbed) or wholly outside it. A multi-line canary (a
+ * PEM-shaped secret) is scrubbed segment by segment, which over-redacts rather than leaks.
+ *
+ * ★ FAIL CLOSED. After scrubbing, the text is re-checked for every needle; if any survives
+ * (needle interplay can re-form one), the WHOLE tail is dropped and the drop is reported. A
+ * chunk that arrives after `close()` is dropped and reported, never buffered.
+ *
+ * The canary array is read LIVE (by reference), matching `run-canaries.ts`: the supervisor
+ * seeds the run's redeemed values into the same array before create, and every read sees them.
+ *
+ * Runtime imports: relative modules only — the E4-D01 boundary.
+ */
+
+import { REDACTION_MARKER, redactString } from "./redaction.js";
+
+/** The default bound on the retained stdout tail, in UTF-16 code units. */
+export const RUN_OUTPUT_TAIL_MAX_CHARS = 1_048_576;
+
+/** Counter: `run_output_dropped{reason}` — output the capture refused to hold or release.
+ * `reason` is one of {@link RunOutputDropReason}; a bounded token set, never content. */
+export const RUN_OUTPUT_DROPPED_METRIC = "run_output_dropped";
+
+export type RunOutputDropReason = "overflow" | "late_chunk" | "unscrubbable";
+
+export interface RunOutputCaptureOptions {
+  /** The run's canaries, read LIVE on every `close()` (never copied at construction). */
+  readonly canaries: readonly string[];
+  /** The tail bound; defaults to {@link RUN_OUTPUT_TAIL_MAX_CHARS}. */
+  readonly maxChars?: number;
+  /** Told once per drop event, with a bounded reason token. */
+  readonly onDrop?: (reason: RunOutputDropReason) => void;
+}
+
+export interface RunOutputCaptureResult {
+  /** The retained tail, scrubbed. Whole lines only (a trailing unterminated line is kept,
+   * because the stream has ended). Empty when nothing was streamed or it was dropped. */
+  readonly stdoutTail: string;
+}
+
+export interface RunOutputCapture {
+  /** The callback handed to the provider as `ExecuteInput.onStdout`. Never throws. */
+  readonly onStdout: (chunk: string) => void;
+  /** Stop capturing and return the scrubbed tail. Idempotent. */
+  close(): RunOutputCaptureResult;
+}
+
+/** Every string that must not survive: each canary, plus each non-empty line segment of a
+ * multi-line canary. Longest first, so a whole canary is replaced before its segments. */
+export function redactionNeedles(canaries: readonly string[]): string[] {
+  const needles = new Set<string>();
+  for (const canary of canaries) {
+    if (typeof canary !== "string" || canary.length === 0) continue;
+    needles.add(canary);
+    if (/[\r\n]/.test(canary)) {
+      for (const segment of canary.split(/\r?\n|\r/)) {
+        if (segment.length > 0) needles.add(segment);
+      }
+    }
+  }
+  return [...needles].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Scrub `text` with `canaries`. Returns `null` when a needle SURVIVES scrubbing — the caller
+ * must then drop the text (fail closed), never forward it.
+ */
+export function scrubOutputText(text: string, canaries: readonly string[]): string | null {
+  const needles = redactionNeedles(canaries);
+  if (needles.length === 0) return text;
+  const scrubbed = redactString(text, needles);
+  // ★ An occurrence lying WHOLLY inside a replacement marker is the marker, not a leak: a
+  // canary that is a substring of «redacted» (e.g. "red") would otherwise drop every tail
+  // (Codex P2, PR #546). An occurrence that overlaps text outside a marker - including one
+  // re-formed by marker + neighbours - is a residual, and the whole text is refused.
+  const markerSpans: Array<[number, number]> = [];
+  for (let at = scrubbed.indexOf(REDACTION_MARKER); at >= 0; at = scrubbed.indexOf(REDACTION_MARKER, at + 1)) {
+    markerSpans.push([at, at + REDACTION_MARKER.length]);
+  }
+  const insideMarker = (start: number, end: number): boolean =>
+    markerSpans.some(([s, e]) => start >= s && end <= e);
+  for (const needle of needles) {
+    // A needle that CONTAINS the marker (or equals it) is never excused: replacing it yields
+    // the marker, so "inside a marker" would be every occurrence of the secret itself (Codex
+    // P2, PR #546). Any occurrence of such a needle refuses the text.
+    const excusable = !needle.includes(REDACTION_MARKER);
+    for (let at = scrubbed.indexOf(needle); at >= 0; at = scrubbed.indexOf(needle, at + 1)) {
+      if (!excusable || !insideMarker(at, at + needle.length)) return null;
+    }
+  }
+  return scrubbed;
+}
+
+/**
+ * Scrub the STRING values of a bounded set of log bindings with the run's canaries, fail closed: a
+ * value that cannot be scrubbed refuses the WHOLE set (`null`), so the caller drops the line rather
+ * than printing a partially-scrubbed one. A NUMBER is never rewritten - that would mangle the count
+ * a consumer compares - but a number whose decimal text carries a canary refuses the set too
+ * (Codex P1, PR #571). Any other value type is refused, because this helper serves lines whose
+ * payload is bounded and known (WRK-018's parsed-counts line), not arbitrary structures.
+ */
+export function scrubLogFields<T extends Record<string, string | number>>(
+  fields: T,
+  canaries: readonly string[],
+): T | null {
+  const numericNeedles = redactionNeedles(canaries);
+  const out: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (typeof value === "number") {
+      // ★★★ A NUMBER CAN CARRY A SECRET (Codex P1, PR #571). A redeemed secret may be ANY
+      // non-empty string, so a digits-only canary equal to - or inside - a count's decimal
+      // rendering would print the secret bytes verbatim, and "numbers are safe" would be a
+      // silent H-04 breach. A number is never REWRITTEN (that would mangle the count the lane
+      // compares); the WHOLE set is refused instead, so the run simply contributes no
+      // parsed-counts line. Over-conservative by construction: a short all-digit needle can
+      // refuse a line that leaks nothing, which is the safe direction.
+      const text = String(value);
+      if (numericNeedles.some((needle) => text.includes(needle))) return null;
+      out[key] = value;
+      continue;
+    }
+    if (typeof value !== "string") return null;
+    const scrubbed = scrubOutputText(value, canaries);
+    if (scrubbed === null) return null;
+    out[key] = scrubbed;
+  }
+  return out as T;
+}
+
+/**
+ * Scrub a WHOLE log record - message, keys and values - with the run's canaries, or refuse it.
+ *
+ * ★ NO PRODUCTION CALLER TODAY, and that is stated rather than left to be discovered. Its caller
+ * was WRK-018's parsed-counts diagnostic, which the M1 planning session DROPPED (F2, 2026-09-23);
+ * the session kept this helper because the hardening is general and outlives that line. It is the
+ * caller-side half of one of the two closure routes named in E4-F019 (serialize-and-scrub at the
+ * transport boundary); on its own it CANNOT close that finding, because the logger adds `msg` /
+ * `time` / `level` after any caller-side scrub runs.
+ *
+ * ★★★ VALUES ARE NOT THE ONLY SURFACE (Codex P1, PR #571). A redeemed secret may be ANY non-empty
+ * string, so it can equal a substring of the fixed MESSAGE (`"worker"`, `"parsed agent"`) or of a
+ * KEY (`"leaseId"`), and `createWorkerLogger` canary-scrubs neither - it redacts by key NAME only.
+ * A value-only scrub therefore left a real path for a known canary to reach the log verbatim.
+ *
+ * The record is REFUSED rather than rewritten in those two cases: scrubbing the message would
+ * destroy the grep token a consumer keys on, and scrubbing a key would produce a field nothing can
+ * read. Values keep the existing behaviour ({@link scrubLogFields}).
+ */
+export function scrubLogRecord<T extends Record<string, string | number>>(
+  message: string,
+  fields: T,
+  canaries: readonly string[],
+): { message: string; fields: T } | null {
+  const needles = redactionNeedles(canaries);
+  if (needles.some((needle) => message.includes(needle))) return null;
+  if (Object.keys(fields).some((key) => needles.some((needle) => key.includes(needle)))) return null;
+  const scrubbed = scrubLogFields(fields, canaries);
+  return scrubbed === null ? null : { message, fields: scrubbed };
+}
+
+export function createRunOutputCapture(options: RunOutputCaptureOptions): RunOutputCapture {
+  const maxChars = options.maxChars ?? RUN_OUTPUT_TAIL_MAX_CHARS;
+  const report = (reason: RunOutputDropReason): void => {
+    try {
+      options.onDrop?.(reason);
+    } catch {
+      // Reporting a drop must never turn into a failure of the capture.
+    }
+  };
+
+  let buffer = "";
+  // True while the bytes arriving belong to a line whose START was already dropped: they are
+  // discarded up to and including the next newline, so no partial line is ever retained.
+  let skippingLine = false;
+  let closed = false;
+  let result: RunOutputCaptureResult | null = null;
+
+  function trim(): void {
+    // Keep the newest `maxChars`, then cut forward to a line boundary.
+    let tail = buffer.slice(buffer.length - maxChars);
+    const cutAtLineStart = buffer.length - maxChars === 0 || buffer[buffer.length - maxChars - 1] === "\n";
+    if (!cutAtLineStart) {
+      const nl = tail.indexOf("\n");
+      if (nl < 0) {
+        // The whole retained window is ONE line longer than the bound: drop it and its
+        // continuation.
+        tail = "";
+        skippingLine = true;
+      } else {
+        tail = tail.slice(nl + 1);
+      }
+    }
+    buffer = tail;
+    report("overflow");
+  }
+
+  return {
+    onStdout(chunk: string): void {
+      if (closed) {
+        report("late_chunk");
+        return;
+      }
+      if (typeof chunk !== "string" || chunk.length === 0) return;
+      let text = chunk;
+      if (skippingLine) {
+        const nl = text.indexOf("\n");
+        if (nl < 0) return; // still inside the dropped line
+        skippingLine = false;
+        text = text.slice(nl + 1);
+      }
+      buffer += text;
+      // Trim at 2x so trimming (an O(n) copy) is amortised, not paid per chunk.
+      if (buffer.length > maxChars * 2) trim();
+    },
+    close(): RunOutputCaptureResult {
+      if (result !== null) return result;
+      closed = true;
+      if (buffer.length > maxChars) trim();
+      const kept = skippingLine ? "" : buffer;
+      buffer = "";
+      const scrubbed = scrubOutputText(kept, options.canaries);
+      if (scrubbed === null) {
+        report("unscrubbable");
+        result = { stdoutTail: "" };
+      } else {
+        result = { stdoutTail: scrubbed };
+      }
+      return result;
+    },
+  };
+}
+
+/** Re-exported so a consumer asserting on scrubbed text needs no second import. */
+export { REDACTION_MARKER };

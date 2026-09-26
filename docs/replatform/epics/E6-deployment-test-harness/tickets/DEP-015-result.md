@@ -1,0 +1,1082 @@
+# DEP-015 Result — the shipped CI boot lane
+
+**Status:** `complete` (set by the distinct reviewer of attempt 2; the author left it at `gate_review`). ★ **Re-affirmed 2026-09-23** by the distinct reviewer of attempt 3, appended as a separate sentence so attempt 2's own wording stays byte-identical: §14 item 27 re-opened this record to `gate_review` by its own status line, and the withdrawal raised in PR #582 is discharged by that attempt. *Original line, kept as first written:* "`gate_review`. The **keyed acceptance is PENDING**: it needs one dispatched keyed run from the F8 named list, which is the planning session's to dispatch."
+**Date (UTC):** `2026-09-21`
+**Epic:** `E6-deployment-test-harness`
+**Plan task:** `E6 implementation-plan §4c DEP-015 — The shipped CI boot lane (M, ≤3 agent-days, M1a)`
+**Specification:** founder ruling **F3** (M1 plan §2), plus the S0-8 amendments (acceptance 6 and 7).
+**Implementer:** `M1 build agent (Claude Opus 5)`
+**Start SHA:** `28a2dd259ed7bdd8d64d68ad8a5999500d80b69e` (program tip `docs/replatform-program`)
+**Reviewed revision (code):** `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662` (§3 records exactly which revision each piece of evidence ran at; after the rehearsal, `c3c014bce..1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662` adds only the `seed` assertion that each created agent is `idle`, from Codex's first review)
+**PR:** #554 (base `docs/replatform-program`)
+
+The implementer leaves `Status` at `gate_review`. Only a DISTINCT reviewer may set `complete`.
+
+**Not dispatched.** No run of `m1-shipped-boot.yml` has been dispatched, keyed or keyless, and no `keyed-*` workflow was dispatched. The dispatch-registration blocker (§8) was ruled by the planning session as **E6-D001** (option (b)) and is implemented here. The lane registers when this PR merges.
+
+---
+
+## 1. What shipped
+
+| Acceptance clause (E6 plan §4c) | Where | State |
+|---|---|---|
+| 1. One dispatched run on a named candidate builds all three images from that candidate, boots them, runs the journey and records the verifier verdict. `capabilityProven=false` is acceptable. | `.github/workflows/m1-shipped-boot.yml`, driving `scripts/m1-shipped-boot/journey.mjs` | **Built, not run keyed. PENDING (F8).** The keyless half ran locally end to end (§3). |
+| 2. The keypair exists only inside the job and appears in no artifact or log | `journey.mjs` `prepare` (ed25519, `generateKeyPairSync`, written 0600 under `$RUNNER_TEMP`); `pnpm verify:cp-am-keypair` step; `teardown` deletes it; the upload path is `…/evidence/` only | **Met in design, and measured locally**: 0 of 25 job secrets (the private PEM included) appear in the retained evidence (§3). Keyed confirmation is pending. |
+| 3. The default-off invariant still reds on every manifest except the overlay. **Positive control:** the same env on the base staging manifest reds. | `scripts/lib/staging-manifest-invariants.mjs` `checkDispatchDefaultOff` + `evaluateShippedBootOverlayInvariants`; `scripts/check-staging-manifest.mjs` (`--rendered` for the lane) | **Met.** See §2 and §4. |
+| 4. The workflow-shape guard proves the lane cannot run on push, pull_request or schedule and refuses to start without a candidate. The guard has its own positive control. | `scripts/check-m1-shipped-boot-shape.mjs` + `scripts/lib/m1-shipped-boot-shape.mjs`; reds in `scripts/check-m1-shipped-boot-shape.test.mjs` | **Met** (27 cases). Per **E6-D001**, the one allowed push only REGISTERS the lane: branch `docs/replatform-program`, paths = the workflow file only, every job gated `if: github.event_name == 'workflow_dispatch'`. Positive controls: an unrestricted push reds; an ungated job reds. |
+| 5. Keyed spend happens only inside the F8 envelope, on a named candidate | `mode` input: a choice, **default `keyless`**. `E2B_API_KEY` / `ANTHROPIC_API_KEY` are readable only as `inputs.mode == 'keyed' && secrets.X \|\| ''` (enforced by the shape guard). The candidate must be 40-hex and an ancestor of `docs/replatform-program`. | **Met in design.** The spend itself happens only when the planning session dispatches. |
+| 6. F10: two enabled Organizations and one control; the journey runs for each enabled tenant; the control stays on the legacy path | `seed` (three Organizations through the API); `apply-rollout` (`AOA_DISTRIBUTED_EXECUTION_ROLLOUT` on **both** replicas, control absent); `assert-tenants`; `dispatch` + `classifyTenantOutcome` | **Tenant set and control refusal measured locally (§3).** The enabled tenants' journey is keyed and PENDING. |
+| 7. The crew switch is off on every control-plane service, and the assertion is recorded in the evidence | overlay pins `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED: "false"` on both replicas (static check); `assert-tenants` re-checks the render and each **running** replica (`evaluateMustBeOffFlags`, which also covers `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`) → `tenant-set-and-flags.json` | **Met.** Measured locally (§3). |
+
+**Files created:**
+- `.github/workflows/m1-shipped-boot.yml`
+- `docker/m1-boot/docker-compose.m1-boot.yml` (the worker provider-URL overlay)
+- `scripts/m1-shipped-boot/journey.mjs`
+- `scripts/lib/m1-shipped-boot.mjs`, with 26 cases in `scripts/lib/__tests__/m1-shipped-boot.test.mjs`
+- `scripts/check-m1-shipped-boot-shape.mjs` + `scripts/lib/m1-shipped-boot-shape.mjs`, with 27 cases
+- `docs/replatform/epics/E6-deployment-test-harness/decisions.md` (new), recording **E6-D001**
+
+**Files changed:**
+- `scripts/lib/staging-manifest-invariants.mjs`
+- `scripts/check-staging-manifest.mjs`
+- `scripts/check-staging-manifest.test.mjs` (16 new cases; 49 in total)
+
+**Registration:**
+- `pr.yml` `policy`: the DEP-006 staging step is renamed *"Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"* and gains 2 lines. Folding into an existing step keeps every register citation within its ±5 anchor; a separate step would have shifted 20+ `pr.yml:1118` citations.
+- `scripts/guard-inventory.json`: new entry, appended at the end so that `guard-inventory.json:201` does not move.
+- `scripts/test-execution-census.json`: two new `runs` entries, and the renamed step on the existing one.
+- `scripts/test-inventory.json`: the `scripts` pin moves from 66 to 68. Only that tree changed.
+- `scripts/workflow-verdict-manifest.json`: `m1-shipped-boot.yml@*` is `not-watched`, because the lane is dispatch-only with a required candidate.
+
+---
+
+## 2. The scoped amendment — why it is safe
+
+`checkDispatchDefaultOff` bans three switches on a worker: `AOA_WORKER_DISPATCH_ENABLED`, `AOA_WORKER_SANDBOX_PROVIDER` and `AOA_WORKER_PROVIDER_URL`.
+
+**What the amendment admits:** exactly `AOA_WORKER_PROVIDER_URL=http://adapter-manager:8090` and `AOA_WORKER_DISPATCH_ENABLED=1`, under all three of these conditions:
+- only on the services in `SHIPPED_BOOT_OVERLAY_WORKERS` (`m1-worker-a|b|c`);
+- only when the caller passes the module-private `SHIPPED_BOOT_ALLOWANCE` Symbol;
+- only when `evaluateShippedBootOverlayInvariants` is evaluating `SHIPPED_BOOT_OVERLAY_PATH`.
+
+`evaluateStagingManifestInvariants`, which every other manifest goes through, has no parameter that can carry the Symbol.
+
+**What is never admitted:**
+- `AOA_WORKER_SANDBOX_PROVIDER` (an in-worker provider);
+- any switch set inline in `command`/`entrypoint`;
+- any other value;
+- the four base staging workers;
+- a fourth, unlisted overlay worker.
+
+**One tightening beyond the ticket.** Workers are now enumerated by **image or name**, not by the fixed `WORKER_SERVICES` list. The fixed list is exactly how `docker/campaign/docker-compose.campaign.yml`'s `worker` sat outside the ban. The base staging manifest is unaffected: its service set is exactly the four named workers, and it still passes with 0 violations.
+
+**The lane repeats the check on the real merge.** The static check models `base ⊕ overlay` with `mergeComposeModel`. Before anything boots, the lane runs `node scripts/check-staging-manifest.mjs --rendered <docker compose config --format json>`, which asserts two things about the engine's own merge:
+- the scoped evaluation passes;
+- the **same render reds through the unscoped path** — a positive control at run time.
+
+---
+
+## 3. Keyless evidence — a full local rehearsal (Docker Desktop, 2026-09-21)
+
+**What ran:**
+- **Images:** built by `docker/images/build.sh` from `c31dccf876723c11ac046804025f77fd42165198` (the PR's second commit). `digests.env` records `*_REVISION=c31dccf87…` for all three images.
+- **Driver:** `scripts/m1-shipped-boot/journey.mjs` at `c3c014bce`. `git diff c31dccf87 c3c014bce` touches only `scripts/m1-shipped-boot/journey.mjs`, which runs on the host and is not in any image.
+- **Phases:** every phase, `prepare` through `collect`, in keyless mode.
+
+| Phase | Observed |
+|---|---|
+| `prepare` | keypair generated in-job; sign/verify probe passes. Separately, `pnpm verify:cp-am-keypair` over the generated pair printed `✓ CP↔AM keypair smoke: PASS`, and a mismatched public key made it exit 1 (positive control). |
+| `boot-core` | the render check printed `OK: rendered shipped boot satisfies DEP-015 (scoped), and the unscoped default-off check reds it (6 violation(s))`. postgres, minio and migrate (exit 0) came up, then `control-plane` and `control-plane-b` were healthy. |
+| `seed` | board identity seeded as an owner-role SQL fixture (no route mints the first one). Then **through the API**: 3 Organizations, 3 Companies (`companies.organization_id` verified), 3 org agents (`claude_local`), and the anthropic + e2b Company keys (keyless placeholders). |
+| `apply-rollout` / `assert-tenants` | both replicas recreated. `tenant-set-and-flags.json` shows `tenantSet: "exact"`, `crewRolloutEnabled: "false"` and `mustBeOff: "off"` for `control-plane:rendered`, `control-plane:running`, `control-plane-b:rendered` and `control-plane-b:running`. |
+| `provision-targets` | 3 `aoa-canary-e2b` `dedicated_worker` targets created and **ratified** through the API (each with its own `registeredProfileHash`); 3 enrolment codes issued through the API and encoded as `aoa_tkt_` tickets. |
+| `boot-workers` | 3 real worker containers running `networked-host.js`, all healthy. The **adapter-manager was never created** (`compose ps` has no such container). |
+| `await-workers` | each tenant has exactly 1 worker, `status=enrolled`, live, on **its own** Organization's target. Worker log: `worker-daemon dispatch COMPOSED; heartbeat seeded; leasing through the poll loop`. |
+| `reconcile` | `reconcile-legacy-resources` exits 0 for all three. The canary preflight returns `{ ok: true, credentialAuthority: "company_api_key" }` **for all three, including the control**, so the control differs from A and B only in the rollout. |
+| `dispatch` (keyless: control only) | control run `execution_owner=null`, no distributed ids, `jobs` for the control Organization = 0. The control plane logged `[CLI-006] rollout resolved` with `rolloutState: "off"` and `rolloutOrganizationId` equal to the control Organization. The run failed legacy with `Command not found in PATH: "claude"`, as expected: the control-plane image ships no agent CLI. **PASS.** |
+| `collect` / `teardown` | 17 evidence files; **0 of 25** job secrets appear in any of them. The stack and its volumes were removed, and the keys, tickets, env and state were deleted. |
+
+The rehearsal found three defects in the first version of the driver. All were fixed before this record:
+1. A target created without `capabilities.providerConstraints` ratifies, then gets a 503 on every enrolment.
+2. The container prefix in `docker compose logs` blocked extraction of the rollout record.
+3. The two-replica boot race (§7).
+
+---
+
+## 4. RED → GREEN, positive controls, mutations
+
+**RED.**
+- The new staging-manifest cases, run against the pre-change `staging-manifest-invariants.mjs` (`git show HEAD:…` swapped in), fail: the suite cannot load because the new exports do not exist. That is a trivial RED, so the mutation table below carries the evidence.
+- Two driver defects were RED live in the rehearsal before they were fixed (§3).
+
+**GREEN in CI.** PR run `35591595055`, job **`policy`** (`106306988724`), step *"Staging manifest config contract (DEP-006) + shipped CI boot lane (DEP-015)"*:
+- `OK: docker/m1-boot/docker-compose.m1-boot.yml satisfies the DEP-015 shipped-boot contract`;
+- `check-staging-manifest.test.mjs`: **49 tests, 49 pass**;
+- `OK: .github/workflows/m1-shipped-boot.yml is the F3 shipped CI boot…`;
+- shape + lib suites: **46 tests, 46 pass**.
+
+**Local.** All 46 pure `pr.yml` guards, run with the M1 guard loop, are green, and `check-evidence-immutability --base origin/docs/replatform-program` is green.
+
+**Positive controls, each asserted by a test:**
+- The overlay's worker env grafted onto BASE `worker-a1` reds with `DISPATCH-DEFAULT` for `AOA_WORKER_PROVIDER_URL` and `AOA_WORKER_DISPATCH_ENABLED`.
+- `base ⊕ overlay` through the unscoped path reds on all three overlay workers.
+- A push trigger without the paths restriction reds the shape guard, and so does a job without the dispatch-only `if` (E6-D001). (Superseded wording, kept as first written: "A re-added `push:` trigger reds the shape guard.")
+- A control tenant present in the rollout reds.
+- A control run that went distributed reds.
+
+**Mutations.** Code was mutated in place, the owning suite was run, and the mutation was reverted. **15 of 15 were killed** (M13 to M15 were added with E6-D001).
+
+| # | Mutation | Killed by |
+|---|---|---|
+| M1 | admission ignores the Symbol (unscoped) | 2 cases |
+| M2 | admission not bound to the overlay path | 1 |
+| M3 | admission ignores the value | 1 |
+| M4 | workers enumerated by the fixed list only | 7 |
+| M5 | crew switch not checked | 2 |
+| M6 | rollout checked on one replica only | 2 |
+| M7 | shape guard tolerates `push` | 1 |
+| M8 | shape guard ignores ungated secrets | 1 |
+| M9 | tenant set tolerates the control in the rollout | 1 |
+| M10 | control outcome ignores its jobs | 1 |
+| M11 | control outcome ignores the rollout resolution | 1 |
+| M12 | flag parser reads `true` as off | 2 |
+| M13 | registration push: paths restriction not checked | 2 |
+| M14 | job-level dispatch gate not checked | 3 |
+| M15 | registration push body ignored entirely | 3 |
+
+M7 ("shape guard tolerates `push`") was run before E6-D001, against the dispatch-only guard.
+
+---
+
+## 5. What the keyed run must show (the pending acceptance)
+
+It is dispatched on a named candidate in `mode=keyed`, and it must retain `journey.json` showing both of the following.
+
+**For each enabled tenant (A, B):**
+- `execution_owner="distributed"`, with both distributed ids set;
+- `rolloutState: "canary"` logged;
+- `verify-e7-1-distributed-run` exit 0 with `ok:true`;
+- at least one worker log line naming a provider `sandboxId`, because runbook §11 notes the verifier cannot tell a real provider from a fake;
+- `capabilityProven` recorded; `false` is acceptable.
+
+**For the control tenant (C):** as in §3.
+
+**Signals recorded per tenant:**
+- **audit:** `activity_log` `job.submitted` and `security.denied.*` rows, plus the `heartbeat_run_events` `distributed_execution_*` rows;
+- **cost:** the `cost_events` count for the run, plus `heartbeat_runs.usage_json`. A distributed run writes no `cost_events` today (E3-F037 / JOB-016), so this is **recorded, not judged**;
+- **failure classification:** run status/error, `usage_json.terminalErrorCode`, `job_events` terminal payload (status, errorCode, exitCode), and `job_attempts` placement.
+
+---
+
+## 6. Deltas against the task section
+
+**The planning session ACCEPTED the three deviations below (authenticated, the board-key SQL fixture, keyless dispatching only the control tenant) on 2026-09-21.** The keypair-check `pnpm install` is a cost, not a deviation.
+
+- **`authenticated`, not `cloud_auth`.** The overlay runs both control-plane replicas as `authenticated`, overriding the staging manifest's `cloud_auth`. That matches the only deployment in which the distributed journey has been proven (the campaign overlay, run `8dc34e90`, 2026-09-18). Proving `cloud_auth` is not in the ticket; a reviewer may want it named as a residual.
+- **The keypair check needs `pnpm install`.** `pnpm verify:cp-am-keypair` cannot run inside the control-plane image, because it imports the adapter-manager package, a server devDependency that `pnpm deploy --prod` strips out. The lane therefore installs dependencies on the runner, roughly 2 minutes.
+- **The board identity is a SQL fixture.** No route mints the first board API key in `authenticated` mode without an OAuth session. So the first key (user, `instance_admin` and `board_api_keys`) is seeded with the owner role, and every tenant object after it is created through the API as that user.
+- **Keyless mode dispatches only the control tenant, deliberately.** An enabled tenant's run with no adapter-manager would be leased and then fail at the provider hop. The verifier's terminal-agnostic clause 3 could then print a mechanism PASS with no provider ever involved. That is a misleading artifact, so keyless never produces it.
+
+---
+
+## 7. Findings — FILED 2026-09-21 at the planning session's instruction
+
+Both are `unowned`, with reasons in `scripts/finding-ownership.json`. Each id is the true maximum per epic plus one, checked repo-wide and against the open PRs; the `E2-F900` in `check-distributed-execution-foundation.test.mjs` is a fixture.
+
+- **E2-F017** (MEDIUM), E2 `findings.md`: item 1 below. `maybeProvisionDistributedExecutionRoles` is documented in source as the "corrective successor to E2-D03".
+- **E3-F040** (MEDIUM), E3 `findings.md`: item 2 below. Both the enrolment service (`1d590ea47`, `feat(job-control): enroll device-bound workers`) and the ratify route are E3 job-control. MEDIUM rather than LOW: it fails closed and leaks nothing, but it blocks every worker on the target, and the documented runbook path reaches it with an unnamed 503.
+
+As first recorded:
+
+
+1. **Two control-plane replicas booting together crash one of them.** `maybeProvisionDistributedExecutionRoles` runs `ALTER ROLE … LOGIN PASSWORD` on every replica at boot. Run concurrently, the loser dies with `PostgresError: tuple concurrently updated` (XX000, `heapam.c` `simple_heap_update`). This was measured in the rehearsal on the first recreate of both replicas with `--force-recreate`. `docker-compose.staging.yml` declares two replicas with no ordering, so a real staging boot can hit this. The lane works around it by booting the replicas one at a time (`bootCore`, `applyRollout`). The product fix — an advisory lock or an idempotent guard around the provisioning — is not in this ticket.
+2. **An execution target created without `capabilities.providerConstraints` ratifies cleanly, then every enrolment returns 503** (`worker_enrollment_internal_unavailable`). The enrolment response is built from `providerConstraints(target.capabilities)` (`server/src/services/worker-enrollment.ts`), while ratification writes only `provider_constraint_profile`. Runbook §7(a) does not mention the field. A founder following the runbook through the API would hit this failure, and the log would not name the cause.
+
+---
+
+## 8. Dispatch registration — RULED: E6-D001, option (b)
+
+The planning session ruled **option (b)** under F2 and recorded it as **E6-D001** (E6 `decisions.md`). Option (a) was rejected because the locked integration strategy forbids any change to `main` before M5. As implemented:
+
+- `on:` = `workflow_dispatch` + `push: { branches: [docs/replatform-program], paths: [".github/workflows/m1-shipped-boot.yml"] }`;
+- the one job carries `if: github.event_name == 'workflow_dispatch'`, so a push-created run executes zero steps and touches zero secrets;
+- the shape guard enforces exactly this (§1, clause 4);
+- the verdict manifest declares `m1-shipped-boot.yml@docs/replatform-program` `not-watched`, because a verdict on a skipped job would be a check that nothing runs.
+
+**Registration.** The lane registers when this PR merges: the merge pushes the file onto `docs/replatform-program`, which matches the push path, so GitHub records one run with the job `skipped`. That run, with all its jobs shown `skipped`, is to be cited here after the merge. The merge is the planning session's, so the citation is a post-merge addendum and is not in this revision.
+
+The original blocker text follows, kept as first written:
+
+### 8 (as first written). BLOCKER for the first dispatch — needs a decision (Codex raised the same on `1ec5533`; its thread was left OPEN for this ruling)
+
+GitHub dispatches a `workflow_dispatch` workflow only in two cases: the file exists on the **default branch**, or the workflow **has already run at least once**. Per the GitHub docs, "This event will only trigger a workflow run if the workflow file exists on the default branch"; the API/CLI can target another ref once the workflow has run.
+
+This file is on `docs/replatform-program` only and has never run. Measured after the push: `gh api repos/MeteoriteLabs/AoA/actions/workflows/m1-shipped-boot.yml` returns **404**, and the workflow is absent from the 20 registered workflows.
+
+Every `keyed-*` lane that was dispatched from this branch has a `push:` trigger on a bump file; that trigger is what registered it. F3 forbids a push trigger for this lane, and the M1 rules forbid targeting `main`. The options, none of which I took:
+- **(a)** Land `.github/workflows/m1-shipped-boot.yml` alone on `main`. It registers the workflow; `--ref docs/replatform-program` then runs the branch's own copy.
+- **(b)** Rule that a registration-only trigger satisfies F3: a `push` on a never-bumped trigger file, with the job gated `if: github.event_name == 'workflow_dispatch'`. The shape guard would need the matching amendment.
+- **(c)** Something else the planning session prefers.
+
+**The dispatch command, once the registration run exists:**
+
+```
+gh workflow run m1-shipped-boot.yml --ref docs/replatform-program \
+  -f candidate=<40-hex frozen candidate on docs/replatform-program> -f mode=keyed -f e2b_template=aoa-base
+```
+
+`mode=keyless` with the same candidate is a free rehearsal of §3 on the Linux runner.
+
+## Independent review
+
+**Reviewer:** M1 review-batch-2A independent reviewer (Claude Opus 5). I did not author DEP-015, and I am not the planning session.
+**Reviewed revision:** dbe6f5da2a9316ac3f9762294d87991d7ec6f885 (the final PR #554 head, merged as `947b684d8a5bf1fcdacb20c5ff077668db54c517`). This is not the record's stated `1ec5533b5`; see below.
+**Disposition:** `changes_requested`. The request is about the record only; the code needs no change.
+**Attempt:** 1 (see *Independent review — attempt 1* and the attempt history)
+
+### Independent review — attempt 1
+
+**Disposition: `changes_requested`.** The lane, the guards and the overlay hold up at source and in CI. The record, however, pins the wrong revision and cites CI that does not cover the code it describes. That is the "record disagreeing with code" class, and it lives in the two fields a later reader relies on. `Status` stays `gate_review`.
+
+**What is wrong in the record (blocking):**
+
+1. **The `Reviewed revision (code)` field is false.** The header names `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662`. The last PR commit, `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` (`ci(m1): E6-D001 registration-only push…`), changes code after that revision:
+   - `.github/workflows/m1-shipped-boot.yml` (+22/−);
+   - `scripts/lib/m1-shipped-boot-shape.mjs` (+52/−);
+   - `scripts/check-m1-shipped-boot-shape.mjs`;
+   - `scripts/check-m1-shipped-boot-shape.test.mjs` (+61/−);
+   - `scripts/workflow-verdict-manifest.json`;
+   - `scripts/finding-ownership.json`.
+
+   The record's body already describes that later code: §1 clause 4 "27 cases", the E6-D001 push shape, mutations M13–M15, and §8 "As implemented". So the header pins a revision that does **not** contain what the record says was built. Both SHAs are ancestors of the tip. Only one of them is the right one.
+2. **The CI evidence in §4 does not cover the reviewed code.**
+   - "GREEN in CI. PR run `35591595055`, job `policy` (`106306988724`)" is a run on headSha `c31dccf87…`, the PR's **second** commit. That run concluded **`cancelled`**: all four `verify` shards, `e2e` and `ci-required` were `cancelled`, and only `policy` and a few other jobs completed.
+   - Its `policy` log shows the pre-E6-D001 guard: "dispatch-only, candidate-bound" and **46** shape+lib tests.
+   - The run that covers the final code is **`35596651522`** (headSha `dbe6f5da2a…`, conclusion `success`, `ci-required` `106327999223`), and the record never cites it. Its `policy` job **`106322893461`** executed the DEP-015 step:
+     - `OK: docker/m1-boot/docker-compose.m1-boot.yml satisfies the DEP-015 shipped-boot contract`;
+     - `check-staging-manifest.test.mjs` **49/49**;
+     - `OK: .github/workflows/m1-shipped-boot.yml is the F3 shipped CI boot: runs only on dispatch (push = registration only, E6-D001), candidate-bound, …`;
+     - shape + lib **53/53** (27 + 26).
+3. **The §8 promise is not kept yet.** §8 says the registration run "is to be cited here after the merge", in a post-merge addendum. No addendum exists.
+
+**Required changes.** Append a dated addendum, keeping the existing text as written, that does the following:
+- **(a)** Re-points the reviewed revision to `dbe6f5da2a9316ac3f9762294d87991d7ec6f885`, with `1ec5533b5…` kept as superseded.
+- **(b)** Cites run `35596651522` by job with the counts above, and records that `35591595055` was a cancelled run on `c31dccf87`.
+- **(c)** Cites the registration run and the keyless rehearsal:
+  - Registration run **`35598343418`**: `push` on `docs/replatform-program`, headSha `947b684d8a5b…`, conclusion `skipped`, job `shipped-boot` **`106328314759`** `skipped` with **0 steps**. This shows that the E6-D001 push executes nothing.
+  - Keyless rehearsal **`35600507289`**: `workflow_dispatch`, candidate `fc2eb7dde6325803c77950ac4adb1d190db0bd9a`, `MODE: keyless`, conclusion `success`, job **`106335219133`** with 28 steps. Its logs show:
+    - `prepare` generated the keypair in the job; `✓ CP↔AM keypair smoke: PASS`;
+    - both control-plane replicas were healthy;
+    - three Organizations were seeded, with distinct org ids;
+    - `assert-tenants` "both replicas (rendered AND running) hold exactly {A, B} canary, control … absent; crew + tool surface OFF";
+    - three workers were enrolled, each on its own Organization's target, and the adapter-manager was **not** started;
+    - `dispatch: tenant c (control) … owner=null … → PASS`;
+    - 17 evidence files were uploaded (`m1-shipped-boot-keyless-35600507289`);
+    - `teardown` reported "keys dir gone".
+
+    This is the §3 rehearsal repeated on the Linux runner, at a candidate that contains this code.
+
+Once the addendum lands, a re-review should be short. Nothing else I checked needs to change.
+
+**What I verified and found sound (for the next attempt to reuse):**
+- **Ancestry.** Start SHA `28a2dd259…`, `c31dccf87…`, `c3c014bce`, `1ec5533b5…` and `dbe6f5da2…` are all ancestors of `fc2eb7dde`.
+- **Guards, rerun locally at the tip.**
+  - `node scripts/check-m1-shipped-boot-shape.mjs` passes.
+  - `node scripts/check-staging-manifest.mjs` passes, including the overlay.
+  - `node --test` shows shape + lib **53/53** and `check-staging-manifest.test.mjs` **49/49**.
+- **Mutation M13, reproduced by me.** Disabling the registration-push `paths` check in `m1-shipped-boot-shape.mjs` gives **2 failed / 25 passed**, exactly the "2 cases" the record gives. Reverted; the tree was clean.
+- **The workflow shape.** `on:` has `workflow_dispatch` plus a push restricted to `docs/replatform-program` / the workflow file. The job is gated `if: github.event_name == 'workflow_dispatch'`. The candidate must be 40-hex, and the mode must be `keyless|keyed` (the "Validate the named candidate" step). E6-D001 is recorded in E6 `decisions.md`.
+- **Keypair and evidence.** `journey.mjs` `writeEvidence` passes every retained file through `redactSecrets(text, state.redact)`. `state.redact` includes the generated secrets, the board token, the private PEM and both provider keys. `teardown` deletes `keys/`, the env file and the state file. The "0 of 25 secrets" measurement is the author's local scan. The lane itself has no leak **assertion**: it redacts, but it does not fail on a residual. I did not download the rehearsal artifact, so I have not re-measured it. Acceptance 2 is therefore "met in design", with keyed confirmation pending, as the record says.
+- **Codex.** "Didn't find any major issues" on `78f9d85912` and on the final head `dbe6f5da2a`. Both P1 threads (seeded agents idle; workflow registration) are resolved.
+- **Multi-tenant (F10): real where it has run.** Three Organizations are seeded through the API. The rollout on **both** replicas is asserted rendered **and** running. The control run stays legacy, with `rolloutState: "off"` for the control org. The **enabled tenants' journey has not run.** That is keyed and pending, and the record says so.
+
+**Acceptance status (E6 plan `DEP-015`).**
+
+| # | Status |
+|---|---|
+| 1 | **OPEN**: the keyed run is pending (F8), and the record says so. |
+| 2 | Met in design; keyed confirmation pending. |
+| 3 | **Evidenced**. |
+| 4 | **Evidenced** as amended by E6-D001, and the registration run proves the push is inert. |
+| 5 | Met in design. The `mode` default is `keyless`, and the keys are gated to `inputs.mode == 'keyed'`. |
+| 6 | Control half evidenced (keyless, CI); enabled-tenant half **OPEN** (keyed). |
+| 7 | **Evidenced**. |
+
+## Review attempt history
+
+| Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
+|---:|---|---|---|---|
+| 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` | `changes_requested` | Record only. The header's reviewed revision `1ec5533b5` predates the E6-D001 code (`dbe6f5da2`) that the record describes. §4's CI run `35591595055` was `cancelled`, on `c31dccf87`, with the pre-E6-D001 guard (46 tests). The covering run `35596651522` (policy `106322893461`: 49/49, 53/53) is uncited, and §8's post-merge citation is missing: registration `35598343418` (job `106328314759` skipped, 0 steps) and keyless rehearsal `35600507289` (job `106335219133` success). Code sound: guards green locally, M13 reproduced (2 failed), Codex clean on `dbe6f5da2a`. Acceptance 1 and the enabled half of 6 are OPEN (keyed). |
+| 2 | M1 review-batch-3A independent reviewer (Claude Opus 5) | `60aafb32ec6f8316f92079789cf8814f981f3ed3` | `approved` | §12 verified at source against keyed run `35619555883` (job `106398898162`, 30 steps, `success`) and its artifact `10649025333`: `journey.json` `passed: true`, candidate `dd839129bf…`, `MODE: keyed` / `aoa-base`; tenants a and b `execution_owner="distributed"`, `succeeded`, `verifierExit 0`, usage 8/734 and 8/730, `costUsd: null`; sandbox ids `iofom0nu25ztf3kc5tte1` and `isqx7nvhgf40txm5vc4b6`, 1 line each, on that tenant's own lease and in that tenant's own worker log, `rejected {shape:0, foreignLease:0}`; control c `execution_owner=null`, `failed`, `rolloutState "off"`, 0 jobs. Three distinct Organizations in `tenants.json` (F10 real). Acceptance 2 is now MEASURED: the hard leak scan reported `clean` over 20 files for 28 named secrets including the ed25519 private PEM, and I found no PRIVATE KEY in the downloaded bundle. Attempt 1's (a), (b) and (c) are all delivered by §10. Local rerun of the three pure-node suites: 140/140. All seven acceptance items MET; `Status` flipped to `complete` in a separate commit. **Codex P1 on this review, accepted as real in mechanism and then MEASURED:** the leak scan walks only `$M1_OUT/evidence` and `trackSecret` emits no `::add-mask::`, so the Actions job log is an unprotected surface — but the COMPLETE job log for `106398898162` (2 347 lines) has 0 PEM markers and every base64-shaped run of 60+ chars is a 64-hex docker digest, so acceptance 2 holds on both surfaces for this run. A second P1 — the public half is never registered with the scanner (`prepare` tracks only `privatePem` and its body) — is also real and also measured: `BEGIN PUBLIC KEY` and the ed25519 DER prefixes `MCowBQYDK2VwAyEA` / `MC4CAQAwBQYDK2VwBCIEI` have **0** hits in the job log AND in all 20 artifact files, so acceptance 2 holds for the WHOLE keypair on both surfaces. The two-part standing gap (no log-side control; the public half unregistered) is recommended to the planning session as one change to `trackSecret` — emit `::add-mask::` and register `publicPem` — not fixed in a review commit. |
+| 3 | M1 independent reviewer (Claude Opus 5) | `ae73bcc2a3adf59e17f49699386ecaa4005b2061` | `approved` | §14 item 27 (the deferred absent-log refusal) only — see *Independent review — attempt 3* at the end of this record. Carries one non-blocking finding on the TRUNCATED-log arm. |
+
+---
+
+## 9. Follow-up — the first keyed run failed at `stage_files` (2026-09-21)
+
+The planning session dispatched the first keyed run: **`35601445269`**, on candidate `fc2eb7dde`. Before it, the keyless rehearsal `35600507289` passed. Every step through "Reconcile and preflight every Organization" succeeded. Then "Run the journey" failed for **both enabled tenants**. The control tenant correctly stayed legacy.
+
+**The evidence**, all from the retained bundle:
+- **Worker:** the supervisor logged "staging the control plane's input failed", with `stagedCount` 2 and the error `WireProtocolError … (adapter-manager provider operation failed)`.
+- **Verifier:** `leases=1`, `attempt_started=0`.
+- **adapter-manager:** its log recorded nothing about the operation.
+
+**Root cause, measured at source by the planning session.** The E2B provider redeems the download grant *inside the adapter-manager process* (`fetchGrantBytes`, `packages/sandbox-e2b-provider/src/e2b-provider.ts`). The overlay's presign endpoint is `https://minio:9000`. The adapter-manager had neither of the two things that fetch needs:
+- **the network:** it had no `store-egress-net`; the base manifest gives it only `control-net` + `provider-ctl-net`;
+- **the CA:** it had no `NODE_EXTRA_CA_CERTS` and no mounted CA.
+
+**Why the rehearsals missed it.** On the Hetzner campaign the adapter-manager fetched real S3 over the internet, so this never surfaced there. The keyless mode never starts the adapter-manager, so it could not see it either. And §3's rehearsal was keyless.
+
+**Fixed in the follow-up PR:**
+1. **The overlay.** In `docker/m1-boot/docker-compose.m1-boot.yml` only, the adapter-manager joins `store-egress-net` and gets `NODE_EXTRA_CA_CERTS=/certs/ca.crt` plus the same CA mount as the workers and the control plane. The base staging manifest is untouched; a test asserts that.
+2. **A static invariant.** `checkGrantRedeemersReachPresignStore`, inside `evaluateShippedBootOverlayInvariants`, checks that every grant-redeeming service (`GRANT_REDEEMING_SERVICES`, the adapter-manager):
+   - shares a network with the presign store;
+   - trusts the store's CA through a mounted `NODE_EXTRA_CA_CERTS`, and that CA is the same one the signing control plane trusts.
+
+   It runs statically in `policy` and again on the lane's real render. Run against the unfixed overlay it reports exactly the two defects of run `35601445269`. Positive controls:
+   - dropping the network reds it;
+   - dropping the CA env reds it;
+   - dropping the mount reds it;
+   - a different CA reds it;
+   - replicas that disagree on the store red it.
+
+   In mutation testing, disabling either arm, or unwiring the check, kills two to six cases.
+3. **A keyless runtime probe.** The new phase `probe-presign`, in the workflow step "Probe the presign store from the adapter-manager's seat" before "Run the journey", is a throwaway `docker compose run --no-deps --entrypoint node` of the **adapter-manager service**. It gets the service's networks, env and mounts, but the bin never starts, so no E2B call is possible. It sends an HTTPS `HEAD` to the presign endpoint. Local rehearsal on Docker Desktop:
+   - the fixed overlay gives `PRESIGN_PROBE_OK status=200`;
+   - **positive control A**, the adapter-manager without `store-egress-net`, gives `PRESIGN_PROBE_FAIL … codes=ENOTFOUND`;
+   - **positive control B**, the adapter-manager without `NODE_EXTRA_CA_CERTS`, gives `PRESIGN_PROBE_FAIL … codes=DEPTH_ZERO_SELF_SIGNED_CERT`.
+4. **E6-F024, filed and resolved.** A provider-op failure is now classified, logged and relayed from a closed vocabulary. Neither the log nor the wire carries the URL, host, grant or key. See E6 `findings.md`.
+
+---
+
+## 10. Addendum, 2026-09-21: corrections after the distinct review
+
+Independent review attempt 1 (above) requested changes to this record. The sections above are left exactly as written; this addendum makes the required changes (a)–(c).
+
+- **Reviewed revision.** The header names `1ec5533b5b2c80cf2bcbd7e228efa4d11c7b3662`, but that commit predates the E6-D001 code: the registration-only push, the dispatch-only job gate and the matching shape guard. The revision that contains it is **`dbe6f5da2a9316ac3f9762294d87991d7ec6f885`**, the final head of PR #554, which merged as `947b684d8a5bf1fcdacb20c5ff077668db54c517`. It is the reviewed revision. `1ec5533b5…` is kept as superseded.
+- **CI run.** §4 cites PR run `35591595055` as the green `policy` evidence. That run is on `c31dccf87` and concluded **`cancelled`**: `e2e` and `verify (4)` were cancelled. It covers neither the code nor the final head. The run that covers the reviewed revision is **`35596651522`** (`pull_request` on `dbe6f5da2`, conclusion `success`). Its jobs `policy`, `verify (1–4)`, `e2e`, `migrations` and `ci-required` (`106327999223`) all concluded `success`. The `policy` job **`106322893461`** executed the DEP-015 step, which printed:
+  - `OK: docker/m1-boot/docker-compose.m1-boot.yml satisfies the DEP-015 shipped-boot contract`;
+  - `check-staging-manifest.test.mjs` **49/49**;
+  - `OK: .github/workflows/m1-shipped-boot.yml is the F3 shipped CI boot: runs only on dispatch (push = registration only, E6-D001), …`;
+  - shape + lib **53/53** (27 + 26).
+
+  The cancelled run's `policy` log shows the pre-E6-D001 guard (46 tests).
+- **Registration run (E6-D001).** Merging #554 pushed the workflow file to `docs/replatform-program` and fired the registration-only trigger. That run is **`35598343418`** (`push` on `947b684d8`, run conclusion `skipped`): its only job, `shipped-boot` **`106328314759`**, concluded **`skipped` with 0 steps**. This is the post-merge citation §8 promised: nothing ran and no secret was read.
+- **Keyless rehearsal on CI.** Run **`35600507289`** (`workflow_dispatch`, candidate `fc2eb7dde`) concluded **`success`**, with job `shipped-boot` **`106335219133`** = `success` over 28 steps. It is the Linux-runner counterpart of §3's local rehearsal, at a candidate that contains the E6-D001 code. Its logs show:
+  - the keypair generated in the job, and `✓ CP↔AM keypair smoke: PASS`;
+  - both replicas healthy;
+  - three Organizations seeded, each with a distinct id;
+  - `assert-tenants` holding exactly {A, B} canary, with the control absent and crew + tool surface OFF;
+  - three workers enrolled, each on its own Organization's target, and the adapter-manager **not** started;
+  - the control dispatch passed, with `owner=null`;
+  - 17 evidence files uploaded (`m1-shipped-boot-keyless-35600507289`);
+  - `teardown` reported "keys dir gone".
+- **First keyed run.** Run **`35601445269`** (`workflow_dispatch`, `mode=keyed`, candidate `fc2eb7dde`) concluded **`failure`**. Every step through "Reconcile and preflight every Organization" passed. The failing step was "Run the journey", for both enabled tenants; the control tenant correctly stayed legacy.
+  - **Root cause:** the E2B provider redeems grants inside the adapter-manager (`fetchGrantBytes`). In the m1-boot overlay the adapter-manager had neither the presign store's network (`store-egress-net`) nor its CA.
+  - **The fix:** the DEP-015 follow-up PR (§9), which covers the overlay, the GRANT-REACH/TRUST invariant, the keyless `probe-presign` phase and E6-F024.
+  - **The keyed acceptance therefore remains PENDING.** It needs a keyed re-run after that PR merges.
+- **Ruled in under F2 after this review: a hard pre-upload leak scan.** The lane now has a `leak-scan` phase: the step "Scan the evidence for job secrets (fails the run on any match)", placed after collect and before upload. The upload is gated `if: always() && steps.leak-scan.outcome == 'success'`, and the shape guard enforces both the step and the gate.
+  - **What it does.** Every job secret (26 named secrets in a full keyless run) is searched for in every evidence file, in raw, base64 and base64url form. A match fails the run and deletes the bundle. The report names the file and the secret NAME, never the value.
+  - **Positive controls.** A planted canary turns the pure check red and turns the phase run end to end red (exit 1, the file and name reported, no value printed, the bundle deleted). Base64 and base64url plantings are found. Mutations that disable the scan, drop the encoded forms or ungate the upload are each killed.
+  - **A real bundle stays green.** Over the 13 files of a local keyless bundle it reported `clean`.
+
+---
+
+## 11. Addendum, 2026-09-21: keyed re-run 35613849443 — the mechanism is corroborated; the lane failed on a driver defect
+
+The planning session dispatched keyed run **`35613849443`** on candidate `d0f065b13`, after the
+§9 follow-up (#561) merged. It got through every phase the first keyed run failed at.
+
+**What the run showed:**
+- **Both enabled tenants reached `verifierExit=0`**, so `verify-e7-1-distributed-run` corroborated the mechanism.
+  - Tenant a: run `599e1fd6-86c0-4656-b91a-816598cee0f4`, attempt `a7450882-b475-4c98-ad42-b824313b046b`.
+  - Tenant b: run `4e36f912-3da4-4bef-8a29-588e091d4016`, attempt `4fde4236-e1c3-4ec0-9b8a-71175b6394e1`.
+- **The control tenant passed, on the legacy path.** Run `04c09414-4d63-40d7-9cad-46192643fedc`.
+- **Real provider-sandbox evidence is in the retained worker logs.** Each enabled tenant's worker logged exactly one `supervisor: run complete` line, with `cleanupStatus: "success"`, naming a real E2B sandbox on that tenant's own lease:
+  - `logs-m1-worker-a.txt`: `sandboxId: "ir2yj6bc4zh81x258k47b"`, lease `84b237c8-0228-427c-8bf4-08e68e7e04f8`. That lease was acked on `control-plane`, the replica worker A talks to.
+  - `logs-m1-worker-b.txt`: `sandboxId: "i1pbzfz6n7y4wb3q5k616"`, lease `2d3d4984-cb59-43ef-bb5b-22e1db4282a6`. That lease was acked on `control-plane-b`.
+  - `logs-m1-worker-c.txt`: no sandbox line. The control never leased.
+
+**The lane still failed, and on its own driver's check.** The check reported "no worker log line names a provider sandbox for this tenant", for a and b.
+
+**The defect.** `dispatch` in `scripts/m1-shipped-boot/journey.mjs` filtered worker log lines with `/sandboxId=/`. The worker logs pino JSON (`"sandboxId":"…"`), so that filter could never match a real line. This was a driver bug, not a product failure: the evidence the check wanted was present.
+
+**The fix, in the follow-up PR:**
+- **`parseSandboxLogLine`** (`scripts/lib/m1-shipped-boot.mjs`) reads the JSON record through the compose prefix and timestamp. It still accepts a `sandboxId=` text form, in case a logger emits one.
+- **`E2B_SANDBOX_ID_SHAPE`, `/^[a-z0-9]{16,32}$/`.** An id counts only if it matches.
+  - **Measured at source.** The e2b SDK passes the server's `sandboxID` through opaquely, then embeds it in the DNS label `${port}-${sandboxId}.${domain}`. The two observed ids are 21 characters of `[a-z0-9]`.
+  - **Every test double's id has a hyphen, so none can match.** The D1 fake provider's is `${providerId}-res-${n}`, and the mock transport's is `sbx-000001`. A fake provider can therefore never satisfy §11.
+- **`extractSandboxEvidence` scopes each id to THIS run.** If a line carries a `leaseId`, it must be one of the run attempt's leases (`leases.attempt_id`). The worker's line does carry one, as measured above. A line without a lease id is scoped by the worker alone: one worker per tenant, on that tenant's own target.
+- **Tests** (`scripts/lib/__tests__/m1-shipped-boot.test.mjs`):
+  - A redacted minimal replay of this run's three worker logs gives 1 id for a, 1 for b and 0 for c.
+  - The original filter finds 0 in the same logs, which pins the defect.
+  - The fake-provider and mock-transport ids are rejected on shape.
+  - A line with no `sandboxId` does not count.
+  - B's real sandbox line replayed against A's leases is rejected as a foreign lease.
+- **Mutations:** disabling the shape check, the lease check or the JSON parse each kills at least one case.
+- **Polled, not one-shot** (Codex on PR #563, verified at source). The worker emits `terminal` before it destroys the sandbox (`supervisor.ts`: `events.terminal` then `finishRun`), and the lease-and-sandbox line is logged only after `destroy` returns. The worker log is therefore re-read every 5 s, up to 180 s, until the attempt-bound record appears. `providerEvidence.polls` records how many reads it took.
+
+**The keyed acceptance remains PENDING.** It needs one keyed re-run in which the lane's own verdict is green. From this run's evidence, the only thing that stood between it and green was the driver defect.
+
+## 12. Keyed acceptance — MET (added 2026-09-23 by the M1 planning session)
+
+**The keyed acceptance is no longer pending.** Dispatched under founder ruling F8 by the planning
+session, on the named candidate `dd839129bf82347867180133029f242a0b4c9ed5` (the program tip that
+carries #563's driver fix):
+
+| | |
+|---|---|
+| Keyless rehearsal | run `35618468241` — **success** |
+| Keyed journey | run **`35619555883`** — **success** (the lane's own verdict is green) |
+| Mode / template | `keyed`, `aoa-base` |
+| `journey.json` | `"passed": true` |
+
+Per tenant, from the run's evidence bundle (`journey.json`, and the worker logs):
+
+| Tenant | Role | Routed | Run status | Verifier exit | Usage tokens (in/out) | Sandbox lines | Real E2B sandbox id |
+|---|---|---|---|---:|---|---:|---|
+| a | enabled | `distributed` | `succeeded` | **0** | 8 / 734 | 1 | `iofom0nu25ztf3kc5tte1` |
+| b | enabled | `distributed` | `succeeded` | **0** | 8 / 730 | 1 | `isqx7nvhgf40txm5vc4b6` |
+| c | control | **not distributed** (`execution_owner = null`) | `failed` | — | — | 0 | — |
+
+Steps of record in that run: "Probe the presign store from the adapter-manager's seat" **success**
+(the #561 keyless probe, in the keyed run too), "Run the journey" **success**, "Collect the evidence
+(redacted)" **success**. The leak scan did not fail the run.
+
+★ **What this establishes, stated narrowly.** One control plane, three Organizations, three
+separately deployed workers and the adapter-manager, all built from the candidate and booted by CI;
+two enabled tenants each dispatched through the distributed path onto a **real E2B sandbox** whose
+id appears in that tenant's own worker log on that tenant's own lease; the mechanism verifier exits
+`0` for both. `capabilityProven=false` throughout, **which is a PASS for `M1a` by the triage's own
+terms** and says nothing about capability.
+
+★ **What it does NOT establish, and must not be read as:**
+- **The control tenant's own run FAILED** (`status: failed`). What tenant c proves is that it was
+  **refused the distributed path** (`execution_owner = null`), which is the F10 control. It is **not**
+  evidence that the legacy path is healthy, and no record may cite it that way.
+- **No `cost_events` row is proven here.** `usage_json.costUsd` is `null` on both enabled tenants.
+  The usage **producer** is proven live (real tokens, below); pricing end-to-end is `DEP-016`'s
+  assertion and `E3-F037`'s remaining half.
+- Nothing about tools (`CLI-016`'s surface is off here) or output (`M1b`).
+- **Not `usage` CARDINALITY.** The bundle shows the STORED per-run usage, not a count of accepted
+  `usage` events. `WRK-018`'s acceptance 1 therefore stays PENDING on this run (Codex P1 on PR #564);
+  the count-per-attempt assertion is `DEP-016`'s.
+
+**Status:** this record's acceptance items are now met. `Status` stays `gate_review` until a
+**distinct reviewer** re-reviews (attempt 2) — attempt 1 was `changes_requested` on the citation
+defects, which §10 fixed.
+
+---
+
+## 13. Addendum, 2026-09-23: the keyed lane now carries WRK-018's acceptance 1
+
+DEP-016 (#566) proves, on the D1 spine with the reference provider, exactly one accepted `usage`
+event and exactly one `cost_events` row per enabled tenant. **WRK-018 acceptance 1 — "exactly one
+`usage` equal to the result line" — was still open on a REAL keyed run**, because this lane
+recorded the stored `usage_json` but never counted the accepted events. A stored row cannot rule
+out a duplicate. That gap is why WRK-018 stayed `gate_review` and why `E3-F037` sits `unowned`
+with this as its written residual.
+
+**What the keyed lane now asserts,** per enabled tenant, in `dispatch`:
+- **exactly one** accepted `usage` event in `job_events` **for this attempt** (`attempt_id`, never
+  the job: a retry attempt has its own);
+- that event belongs to **this tenant's** Organization and Company (F10);
+- the run's stored `heartbeat_runs.usage_json` **equals that event's numbers**: `inputTokens`,
+  `outputTokens`, and `durationMs` against the event's `runtimeMillis`.
+
+A violation fails the tenant, and so the lane.
+
+**One implementation, not two.** The verdict is DEP-016's own, `evaluateUsageCardinality` in
+`scripts/lib/m1-spine-assertions.mjs`. It was extracted in place from `evaluateEnabledTenantSpine`,
+which now calls it, and extended with a `storedUsage` input for this lane. The spine passes
+`expectedUnits` (the reference provider's canned units); the keyed lane passes `storedUsage`. A
+test asserts the keyed driver calls it and re-implements none of its codes, so the two lanes
+cannot drift apart while both claim the same acceptance.
+
+**The duration comparison is deliberately conditional.** `canary-terminal-projection.ts` falls
+back to the run's wall clock when the usage event reports no `runtimeMillis`, so `durationMs` is
+compared only when the event actually carries one. Requiring it unconditionally would red a
+correct projection.
+
+**Positive controls, all keyless** (`scripts/lib/__tests__/m1-spine-assertions.test.mjs`, 77 cases):
+- a **duplicate** usage event (a second event id) and a **replay** (the same event id twice) each
+  red with `usage:not_exactly_one`;
+- zero events reds distinctly, with `usage:no_usage_event`;
+- **F10:** a second Organization's event reds as `usage:wrong_tenant`, and cannot satisfy the first
+  tenant's cardinality — its own event plus the foreign one is two;
+- stored usage that differs from the event in any compared field reds;
+- an event with no `runtimeMillis` passes on the wall-clock fallback;
+- an accepted event with no stored `usage_json` reds.
+- **Mutations:** disabling the cardinality check, the tenant scope or the stored-vs-event
+  comparison kills 5, 2 and 1 cases respectively.
+
+**What this closes, and what it does NOT** (Codex P1 on PR #567, and it is right). The
+cardinality half of acceptance 1 — *exactly one* accepted `usage` event per attempt, owned by this
+tenant — is closed by this assertion. The second half, *"equal to the result line"*, is **not**:
+`createCanaryRunProjector` derives `usage_json` from the same accepted event, so the stored-vs-event
+comparison proves the run's PROJECTION carries the ingested event faithfully (a real defect class —
+a projection that dropped or swapped a field would make every run summary lie) but cannot detect a
+producer that parsed the CLI result line wrongly.
+
+**Why no independent capture exists on this lane, measured at source.** The result line is parsed
+inside the worker (`parseClaudeStreamJsonUsage`, `packages/worker-daemon/src/supervisor/usage-observer.ts`)
+from the sandbox's scrubbed stdout tail. `createUsageObserver` returns usage ONLY; `observeRun`
+deliberately never re-emits stdout as log events, and the worker logs neither the line nor the parsed
+counts. So no line, and no second copy of the counts, reaches the control plane or the worker's log
+for the lane to read. Closing that half needs one of two things, both **E4 / WRK-018's** to decide:
+- the worker logging its parsed counts — same parser, so it would catch a projection or transport
+  fault but not a parse fault; or
+- the worker emitting the scrubbed result line itself, which the lane could re-parse with the
+  daemon's own exported pure function. That is a data-minimisation decision about tenant model
+  output, not a decision this ticket may take.
+
+`cachedInputTokens` is likewise not compared on this lane: the projector does not store it
+(`canary-run-projector.ts` writes `inputTokens` / `outputTokens` / `costUsd` / `durationMs`). The
+spine's `expectedUnits` arm does compare it.
+
+**What closes when.** §12 records that DEP-015's own keyed acceptance is MET, on run
+`35619555883` — and states, correctly, that the run establishes **no usage cardinality**: its
+bundle carries the stored per-run usage, not a count of accepted events. That is exactly the gap
+this addendum closes for the NEXT run. WRK-018 acceptance 1's CARDINALITY half therefore **closes on the next keyed
+run that passes this assertion**, and is not closed by this record: no keyed run has yet carried
+it. Nothing here re-opens §12.
+
+---
+
+## Independent review — attempt 2 (2026-09-23)
+
+**Reviewer:** M1 review-batch-3A independent reviewer (Claude Opus 5). I did not author DEP-015, I am not the planning session, and I am not the attempt-1 reviewer.
+**Reviewed revision:** 60aafb32ec6f8316f92079789cf8814f981f3ed3 (the program tip). The keyed candidate `dd839129bf82347867180133029f242a0b4c9ed5`, the attempt-1 revision `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` and the follow-up merges `d0f065b13` and `9f9cdaf55` are all ancestors of it.
+**Disposition:** `approved`
+**Attempt:** 2 (attempt 1, above, was `changes_requested` on citation defects; §10 fixed them and §12 records the keyed acceptance)
+
+**Disposition: `approved`.** Attempt 1 asked for three record corrections and left acceptance 1 and
+the enabled half of acceptance 6 open on the keyed run. §10 makes all three corrections, and §12
+records the keyed run as MET. **I verified §12's claims at source against the run and its retained
+artifact, not against the record's summary of them.** Every acceptance item is now met, so I set
+`Status` to `complete` in a separate commit.
+
+**§12, checked claim by claim against run `35619555883`.**
+
+| §12 claim | What the run says |
+|---|---|
+| Dispatched on candidate `dd839129bf82347867180133029f242a0b4c9ed5` | `workflow_dispatch`, headSha `dd839129bf82347867180133029f242a0b4c9ed5`, conclusion **`success`**, single job `shipped-boot` **`106398898162`**, 30 steps, all `success`. The checkout step logs `HEAD is now at dd839129b Merge pull request #563`. |
+| Mode / template `keyed`, `aoa-base` | Step *Validate the named candidate* and step *Prepare*: `MODE: keyed`, `E2B_TEMPLATE: aoa-base`. |
+| Keyless rehearsal `35618468241` — success | `workflow_dispatch` on the same candidate, conclusion `success`. |
+| `journey.json` `"passed": true` | Artifact `10649025333` (`m1-shipped-boot-keyed-35619555883`, 20 files, not expired): `journey.json` `passed: true`, `mode: "keyed"`, `candidate: dd839129bf…`. |
+| Tenants a and b: routed `distributed`, `succeeded`, verifier exit **0** | `outcomes.a.run.execution_owner = "distributed"`, `status: "succeeded"`, both distributed ids set, `verifierExit: 0`, `verdict.ok: true`; same for b. The job log's own lines: `dispatch: tenant a (enabled) … owner=distributed verifierExit=0 capabilityProven=false → PASS`, and the same for b. |
+| Usage tokens 8/734 and 8/730 | `usage_json` `inputTokens: 8, outputTokens: 734` for a; `8 / 730` for b. |
+| Real E2B sandbox ids `iofom0nu25ztf3kc5tte1` / `isqx7nvhgf40txm5vc4b6`, one line each, on that tenant's own lease | `providerEvidence` for a: `sandboxIds: ["iofom0nu25ztf3kc5tte1"]`, `sandboxLogLines: 1`, `leaseIds: ["9830f917-…"]`, `rejected: {shape: 0, foreignLease: 0}`, `polls: 1`; for b: `isqx7nvhgf40txm5vc4b6`, lease `20ebf335-…`. Each id also appears in **that tenant's own** worker log (`logs-m1-worker-a.txt`, `logs-m1-worker-b.txt`) as `"sandboxId":"…"`; `logs-m1-worker-c.txt` has none. Both ids are 21 characters of `[a-z0-9]`, so they satisfy `E2B_SANDBOX_ID_SHAPE` and no test double's hyphenated id could. |
+| Control tenant c: **not** distributed, run `failed` | `outcomes.c.run.execution_owner = null`, `status: "failed"`, `error: "Command not found in PATH: \"claude\""`, `rolloutResolution.rolloutState = "off"` for its own Organization, `signals.jobsForOrganization: 0`. The log line is `owner=null verifierExit=null → PASS` — the lane's check passed **because** the control was refused, which is exactly the distinction §12 draws. |
+| `capabilityProven = false` throughout | `capabilityProven: false` for a and b, with the `clause 6` reason naming CLI-008 Unit F's unbuilt output capture. A PASS for `M1a` by the triage's terms, and it says nothing about capability — as §12 states. |
+| No `cost_events` row proven here | `usage_json.costUsd` is `null` on both; `signals.cost.costEventsForRun: 0` with the note naming E3-F037/JOB-016. §12's "must not be read as" list is accurate. |
+| The three named steps succeeded; the leak scan did not fail the run | *Probe the presign store from the adapter-manager's seat* → `PRESIGN_PROBE_OK status=200`; *Run the journey* `success`; *Collect the evidence (redacted)* `success`; *Scan the evidence for job secrets* → `leak-scan: 20 evidence file(s) scanned for 28 named job secret(s) in raw/base64/base64url form: clean`. |
+
+**Acceptance 2 is now measured on the keyed run, not only "met in design".** Attempt 1 noted that
+the lane redacted but did not ASSERT. It does now: `leakScan` (`journey.mjs`) walks the evidence
+directory, runs `scanEvidenceForSecrets` over every file in raw/base64/base64url form, and on any
+match **deletes the bundle** and fails; the upload step is gated on it. `trackSecret` registers the
+generated ed25519 private PEM twice — whole and body-only — among the 28 named secrets, and the run
+reported `clean` over 20 files. I also grepped the downloaded artifact myself: no
+`BEGIN … PRIVATE KEY` in any retained file.
+
+**★★★ Acceptance 2's LOG half — a Codex P1 on this review, verified at source, ACCEPTED as real in
+mechanism, and then measured (added 2026-09-23).** Codex objected that acceptance 2 says the keypair
+appears in no artifact **or log**, while the evidence above covers only the artifact: the hard leak
+scan walks `$M1_OUT/evidence` and nothing else, and the GitHub Actions job log is a separate surface.
+The mechanism half of that is **true**, and I checked it at source rather than reasoning about it:
+
+- `leakScan` (`journey.mjs`) walks exactly `path.join(state.out, "evidence")`. Nothing outside that
+  directory is scanned.
+- **`trackSecret` does not emit `::add-mask::`.** There is no `add-mask` anywhere in
+  `scripts/m1-shipped-boot/journey.mjs`. The generated private PEM is minted in-job, so it is not a
+  repository secret and GitHub does not mask it automatically. A step that printed it would print it
+  in the clear, and both the leak scan and the job would still pass.
+
+**So I measured the log half instead of assuming it.** I pulled the **complete** job log for
+`shipped-boot` job **`106398898162`** of keyed run `35619555883` — 2 347 lines, the whole job, every
+step — and scanned it:
+
+- **0** occurrences of `BEGIN … PRIVATE KEY`, `END … PRIVATE KEY` or `BEGIN PUBLIC KEY`.
+- Every base64-shaped run of 60 characters or more — 27 distinct values — is a 64-character
+  **hex** docker image digest (`^[0-9a-f]{64}$`). An ed25519 PKCS#8 PEM body is base64, not hex, and
+  would have been caught by that scan. The only non-hex hits at a 40-character threshold are
+  filesystem paths and the artifact URL.
+
+**Verdict on acceptance 2: MET, on both surfaces, for this run.** The artifact half is asserted by
+the lane (`clean` over 20 files for 28 named secrets, with the upload gated on it); the log half is
+measured here, by me, over the whole job log. `complete` stands.
+
+**What is NOT true, and is worth a follow-up rather than a status change.** The log half has **no
+standing control** — it is a measurement of one run, not a check. A future change that printed the
+key would red nothing, which is precisely the *"a check that evaluates nothing is not a check"* class
+this programme tracks; here it is weaker still, because there is no check at all on that surface.
+**Recommended to the planning session, as a one-line fix on the right seam:** have `trackSecret`
+also write `::add-mask::<value>` for every secret it registers. That is the same list the leak scan
+already uses (28 values on the keyed run, including the PEM whole and body-only), it covers **every**
+log line rather than the ones the driver happens to route through `redactSecrets`, and it needs no
+new inventory. I am not making that change inside a review commit; it is `DEP-015` follow-up work,
+and the run under review is measurably clean without it.
+
+**★★ And the PUBLIC half — a second Codex P1, likewise verified at source and then measured.** Codex
+objected that acceptance 2 covers *"the keypair"*, not the private half alone, and that the scanner
+never searches for the public one. At source: `prepare` derives `publicPem` and writes it to
+`keys/adapter-manager-cp-pubkey.pem`, but only `privatePem` and its armour-stripped body are handed
+to `trackSecret`, so `leakScan` has no public-half entry — and my own first scan above searched for
+`PRIVATE KEY`. **The mechanism claim is true.**
+
+Measured, over the same two surfaces, using the DER prefixes rather than a value I do not have — an
+ed25519 SPKI body always begins `MCowBQYDK2VwAyEA` and a PKCS#8 body always begins
+`MC4CAQAwBQYDK2VwBCIEI`, so these identify **any** such key regardless of its bytes:
+
+| Surface | `BEGIN PUBLIC KEY` | `MCowBQYDK2VwAyEA` | `MC4CAQAwBQYDK2VwBCIEI` | base64 runs of 40–48 chars ending `=` |
+|---|---:|---:|---:|---:|
+| The complete job log `106398898162` (2 347 lines) | **0** | **0** | **0** | **0** |
+| The retained artifact `10649025333` (20 files) | **0** | **0** | **0** | **0** |
+
+No artifact file contains `PRIVATE KEY` either. **So acceptance 2 holds for the WHOLE keypair, on
+both surfaces, for this run**, and `complete` stands on measurement rather than on the scanner's
+coverage.
+
+**The standing-control gap is now two-part, and both parts go to the planning session together:**
+the log surface has no control at all, and the public half is registered with no scanner on either
+surface. One change covers both — have `trackSecret` emit `::add-mask::` **and** register
+`publicPem` (whole and body-only) alongside the private one. Neither is a review-commit change, and
+neither changes what this run measurably did.
+
+**Multi-tenant (F10) is real in the keyed run.** `tenants.json` carries three distinct Organizations
+with three distinct Companies and agents, and `companiesToOrganizations` pins each Company to its own
+Organization. Two were enabled and each reached its own E2B sandbox on its own lease; the third was
+refused the distributed path. That is a three-Organization proof, not an assertion.
+
+**What attempt 1 asked for, and whether §10 delivered it.**
+
+- **(a) Re-point the reviewed revision.** §10 names `dbe6f5da2a9316ac3f9762294d87991d7ec6f885` as the
+  reviewed revision and keeps `1ec5533b5…` as superseded. Done, and the header's original text is
+  left as written, which is the right way to record a correction.
+- **(b) Cite the covering run.** §10 cites `35596651522` with `policy` `106322893461` and the
+  49/49 and 53/53 counts, and records that `35591595055` was `cancelled` on `c31dccf87` with the
+  pre-E6-D001 guard at 46 tests. Done.
+- **(c) Cite the registration and keyless runs.** §10 cites registration `35598343418` (job
+  `106328314759`, `skipped`, 0 steps) and keyless `35600507289` (job `106335219133`, 28 steps).
+  Done.
+
+**Re-run locally at the tip.** `node --test scripts/check-staging-manifest.test.mjs
+scripts/lib/__tests__/m1-shipped-boot.test.mjs scripts/check-m1-shipped-boot-shape.test.mjs` →
+**140 tests, 140 pass, 0 fail** (the three suites have grown since attempt 1's 49 + 53, because
+`DEP-017` and the #561/#563 follow-ups added cases to the same files). `node
+scripts/check-finding-ownership.mjs` is OK.
+
+**Acceptance items (E6 plan `### DEP-015`) — final.**
+
+| # | Attempt 1 | Now |
+|---|---|---|
+| 1 | OPEN (keyed pending) | **MET** — run `35619555883`, verified above. |
+| 2 | Met in design | **MET and measured on BOTH surfaces** — artifact: the hard leak scan reported `clean` over 20 files for 28 secrets, including the private PEM, on the keyed run itself. Log: the complete job log for `106398898162` (2 347 lines) has 0 PEM markers and no base64 run that is not a docker sha256 digest. **Both halves** of the keypair checked on both surfaces by DER prefix (`MCowBQYDK2VwAyEA`, `MC4CAQAwBQYDK2VwBCIEI`): 0 hits everywhere. See the two Codex-P1 blocks above, including the two-part standing-control gap (no log-side control; the public half unregistered). |
+| 3 | Evidenced | **MET**, unchanged. |
+| 4 | Evidenced (E6-D001) | **MET**, unchanged. |
+| 5 | Met in design | **MET** — the keyed spend happened on a named candidate, dispatched by the planning session under F8. |
+| 6 | Control half only | **MET** — both enabled tenants ran the distributed journey; the control stayed legacy with `rolloutState: "off"`. |
+| 7 | Evidenced | **MET**, unchanged. |
+
+**One thing a later reader must not lose, carried forward from §12 rather than softened.** The
+control tenant's own run FAILED (`adapter_failed`, no `claude` on the control-plane image's PATH).
+What tenant c proves is refusal of the distributed path, and nothing about the health of the legacy
+path. §12 says so; no gate record may cite it otherwise. The other two exclusions §12 names — no
+`cost_events` proof here (that is `DEP-016`'s, and it is now proven there on the `m1-spine` lane),
+and no `usage` CARDINALITY (also `DEP-016`'s, and likewise now proven) — are accurate as written for
+this lane.
+
+**★ Note added after merging the program tip (2026-09-23): §13 postdates this review, and does not
+change it.** §13 (from #567) adds a usage-cardinality assertion to this lane's `dispatch` phase. It
+is an assertion for the NEXT keyed run, and §13 says so itself: *"no keyed run has yet carried it …
+Nothing here re-opens §12."* I re-read it against what I approved and confirm that reading — it
+touches neither the acceptance items above nor run `35619555883`'s evidence, which I verified
+unchanged after the merge. Two consequences worth pinning so no later reader has to re-derive them:
+
+- **DEP-015's own acceptance items stay MET**, so `complete` stands. §13 carries `WRK-018`
+  acceptance 1, which is a different ticket's item and was never DEP-015's.
+- **My sentence above — "no `usage` CARDINALITY (also `DEP-016`'s, and likewise now proven)" —
+  means the keyless D1 spine lane, where I verified it on run `35825332876`.** It does **not** mean
+  a real keyed run: `WRK-018` acceptance 1 needs the `claude_local` parser proven live, and §13's
+  assertion has not yet run keyed. That is the same residual `E3-F037` carries and that my DEP-016
+  review names.
+
+Nothing is pending, so I set `Status` to `complete` in a separate commit.
+
+---
+
+## 14. Addendum, 2026-09-23: the ACTIONS LOG gets a scanner and a mask (review batch 3A, PR #569)
+
+**What review batch 3A measured, and it is the reason this is a control gap and not an incident.**
+Across the complete job log of keyed run `35619555883` (job `106398898162`, 2347 lines) and the
+whole evidence artifact (`10649025333`, 20 files), the reviewer found **zero** hits for
+`BEGIN PUBLIC KEY`, the ed25519 SPKI prefix `MCowBQYDK2VwAyEA`, the PKCS#8 prefix
+`MC4CAQAwBQYDK2VwBCIEI`, and no 40–48-character base64 runs; no artifact file contains
+`PRIVATE KEY`. **Acceptance 2 held for the whole keypair on both surfaces for that run. Nothing
+leaked.**
+
+**What was missing was the standing control,** verified at source by that reviewer:
+- `leakScan` walked only `$M1_OUT/evidence`, so the **Actions log surface had no scanner at all**;
+- there was no `::add-mask::` anywhere in `journey.mjs`, so the in-job PEM was **unmasked** in the log;
+- `prepare` registered only `privatePem` and its body — **never `publicPem`**.
+
+A clean measurement of one run is not a control. Ruled in under F2:
+
+1. **`trackSecret` masks.** Every registered secret is emitted as `::add-mask::` — once per value
+   and, for a multi-line secret such as a PEM, once per line, so a value that appears only
+   line-wrapped is masked too. The directive is emitted **only inside Actions**
+   (`GITHUB_ACTIONS === "true"`), because the directive itself carries the value; that is GitHub's
+   mechanism, and the rendered log shows `***`.
+2. **Both halves of the keypair are registered:** `CONTROL_PLANE_PUBLIC_KEY_PEM` and
+   `…_BODY` join the private pair. The public half is not a credential, but acceptance 2 is a claim
+   about the **keypair**, and a log carrying the public half says which key the job minted.
+3. **The leak scan now covers TWO surfaces.** The evidence-directory scan is unchanged. The job log
+   — what every phase prints, teed to `$M1_OUT/job-log.txt` by the workflow — is scanned for the
+   same named secrets **and for key material by SHAPE** (`KEY_MATERIAL_MARKERS`: PEM private, PEM
+   public, and the two ed25519 DER prefixes the reviewer measured). Shape-matching also catches a
+   key whose exact bytes the scanner was never told — a re-run's, or an operator's. A match fails
+   the run and deletes **both** surfaces, so the gated upload has nothing to publish. Findings name
+   the surface, the file, and the secret NAME or the marker — never a value.
+   - The one exception is counted, not hidden: `::add-mask::` lines are skipped, and the pass line
+     reports how many were skipped.
+4. **The shape guard keeps the surface collected.** Every phase, and the keypair check, must tee
+   into the job log, or `policy` reds. A phase the scan cannot see is a phase outside the control.
+
+**Positive controls** (`scripts/lib/__tests__/m1-shipped-boot.test.mjs`, `check-m1-shipped-boot-shape.test.mjs`):
+- a PEM planted in the **job log** reds the phase end to end (exit 1), names the marker and line,
+  prints no material, and deletes both surfaces;
+- a **registered secret** planted in the job log reds it, by name;
+- the **public half** planted in the job log reds it;
+- a clean job log passes and both surfaces survive; with no job log at all, the evidence scan still
+  runs and says so (no silent skip);
+- the DER prefixes are found with no PEM armour, and an `::add-mask::` line is skipped **and**
+  counted — with the exception off, the same line is found, so the skip is an excuse, not blindness;
+- **mutations, all killed:** the mask directive not emitted (1), the public half not registered (1),
+  the log surface not scanned (4), key-material shapes not scanned (4), the tee invariant not
+  checked (1).
+
+**Four defects in the first cut of this control, found by Codex on PR #574 and fixed before merge.**
+They are recorded because each would have made the control worse than none:
+1. **The mask could PUBLISH the key.** A workflow command ends at the first newline, so one
+   `::add-mask::` carrying a whole PEM would register the header and PRINT the body and footer.
+   `maskDirectivesFor` now emits a multi-line value ONLY per line, never whole, and a test asserts
+   no directive contains a newline.
+2. **The scan would have failed every run.** `tee` writes this driver's own directives into the
+   captured log verbatim, and the named-secret scan did not skip them — a guaranteed match on every
+   registered single-line secret. `stripMaskDirectives` removes whole directive lines before either
+   scan, counts them, and a test proves the same secret on an ORDINARY line in the same log still reds.
+3. **The first tee would have failed ENOENT.** `M1_OUT` is written to `$GITHUB_ENV`, which creates no
+   directory, and `prepare` mkdirs only after node starts. The validate step now creates it, and the
+   shape guard requires that to happen before the first teed step.
+4. **A failed phase could have passed.** The unspecified default shell is `bash -e`, WITHOUT
+   pipefail, so a phase failing into a successful `tee` would report success. The job now declares
+   `defaults: run: shell: bash`, and the shape guard requires it.
+
+5. **An older candidate would have been judged by its own pre-control driver.** Checkout replaces
+   the workspace with the candidate, so a candidate that predates these controls would tee phase
+   output into the new job log and then report clean with the evidence-only scanner that never
+   reads it — green, with the control absent. The "Bind the run to the candidate" step now REFUSES
+   a candidate whose own `journey.mjs` / `m1-shipped-boot.mjs` lacks the four control markers
+   (`CONTROL_PLANE_PUBLIC_KEY_PEM`, `maskDirectivesFor`, `stripMaskDirectives`,
+   `KEY_MATERIAL_MARKERS`), each with an error that names what is missing. The shape guard requires
+   each gate line, and a second test asserts those markers are present in THIS tree — a gate that
+   refused every candidate, including the one it ships with, would be the same defect one level up.
+
+6. **An UNREGISTERED key would still have been published.** Masking covers only registered values;
+   a phase printing a key this job did not generate (a re-run's, an operator's — the very case the
+   shape scan exists for) reached the runner's log raw, and no later scan can retract a published
+   log. Every phase now pipes through `scripts/m1-shipped-boot/log-filter.mjs`, which CAPTURES the
+   raw line into the file the scan judges and PUBLISHES a shape-redacted line
+   (`redactKeyMaterialLine`); an `::add-mask::` line passes through, since that is the mechanism.
+   A `tee` no longer appears in the lane, and the shape guard requires the filter.
+7. **The directive exception must not travel to the evidence bundle.** An uploaded artifact does
+   not interpret `::add-mask::`, so a key on such a line in an evidence file would ship raw. The
+   evidence scan now runs with `skipMaskDirectives: false`; only the captured job log keeps the
+   exception, because only that surface is rendered by GitHub.
+
+8. **The capture must fail closed.** A swallowed write error would leave the pipeline green while
+   the scan read an absent or truncated job log as clean — coverage claimed, not had. The filter
+   now exits non-zero on either arm (the startup mkdir and the per-line append), which `pipefail`
+   turns into a failed step. Both arms have their own control: a mutation that swallowed the
+   per-line failure survived until the second one was added.
+9. **The candidate gate covers the FILTER too.** A candidate carrying the four symbols but not
+   `scripts/m1-shipped-boot/log-filter.mjs` passed the greps and would then die at the first phase
+   on the missing module. The gate greps that file as well, and a test pins the whole marker SET —
+   iterating the list cannot notice a list that lost an entry, which a surviving mutation showed.
+
+10. **`|| true` on the collect step swallowed the filter's fail-closed exit.** Collection itself
+    stays best-effort — a failed journey must still upload what it has — but the FILTER's status is
+    now read from `PIPESTATUS` and fails the run, so a capture that broke during `collect` can no
+    longer leave the scan judging a truncated log and calling it clean.
+11. **The candidate gate now names the FAIL-CLOSED filter,** not merely a filter: an ancestor that
+    carries `redactKeyMaterialLine` but swallows a capture failure would restore exactly the
+    failure mode item 8 fixed. The gate greps the fail-closed arm's own message.
+
+12. **A RE-WRAPPED PEM defeated per-line redaction.** Node accepts a PEM wrapped at any width,
+    and re-wrapping splits the ed25519 DER prefix across lines, so no continuation line matched a
+    marker: the filter would have redacted only the `BEGIN` armour and published the key body. The
+    filter now uses `createLineRedactor()`, which is STATEFUL: once a `BEGIN ... KEY` line is seen
+    it redacts every line as `pem_block` until the matching `END`, and an unterminated block stays
+    closed. Controls: a re-wrapped PEM through the filter publishes no fragment while the capture
+    keeps it raw, and a mutation back to a per-line redactor reds four tests. The candidate gate and
+    its pinned marker set name `createLineRedactor` in both files.
+
+13. **An UNARMOURED DER value wrapped across lines defeated the block redactor too.** With no
+    `BEGIN` line there is nothing to latch, and a wrap such as `MC4CAQAwBQYD` / `K2VwBCIEI…`
+    leaves neither fragment matching the whole prefix, on the published surface AND in the scan.
+    Both now test each line JOINED to the tail of the one before (32 characters, enough for the
+    longest marker), and the scan reports the finding at the line that COMPLETES it. The published
+    log additionally drops any unbroken base64 run of 40 characters or more — the shape a wrapped
+    key's BODY has once its prefix is on the line before. Over-redaction there is free: review
+    batch 3A found no such run in 2347 lines of a real run, and ordinary lines are kept by a
+    control. Four mutations (either joined arm, the base64 rule, both surfaces) each red a test.
+14. **A failed capture could still ship a bundle.** The filter's non-zero exit fails the step it
+    runs in — which, during collection, is the best-effort one — while the leak scan runs
+    `if: always()` and the upload was gated on the SCAN alone. A truncated job log therefore read
+    clean and uploaded. The filter now leaves a durable `job-log.txt.capture-failed` marker beside
+    the capture and the scan REFUSES on it (deleting the bundle it could not judge), and the upload
+    gate additionally requires `steps.collect.outcome != 'failure'`. Two independent arms: the
+    marker covers a failure in a later step, the gate covers a marker that could not be written.
+15. **A DER prefix must LATCH, the way a PEM `BEGIN` does.** Redacting only the line that
+    completes a wrapped prefix leaves the key BODY on the lines after it — and at a narrow wrap
+    (12 characters, say) no continuation line is long enough for item 13's 40-character rule. The
+    redactor now opens a DER block on any DER hit, own-line or joined, and redacts every following
+    line that is nothing but base64; the first line carrying prose ends it. The lane's first
+    fragment (12 characters of the FIXED algorithm header, before anything has matched) is
+    unavoidable and carries no key bytes — a control asserts exactly that, and that no line of the
+    seed follows it into the log.
+
+    Writing that control found a defect in item 13 itself: the joined-window CARRY kept the
+    matched marker, so the very next line matched it again and ordinary output was redacted as a
+    phantom key. The carry is now cleared on every hit, in the redactor and in the scan. Three
+    more mutations (the latch, the joined arm's latch, the carry clear) each red a test.
+16. **The wrap can be narrower than the prefix, and its last line shorter than any floor.** Two
+    residual holes in items 13 and 15, both found by the reviewer:
+
+    - the joined window kept only the PREVIOUS line, so at an 8-character wrap the 21-character
+      prefix spans three lines and was never seen whole. The carry is now the tail of the JOINED
+      text, so it accumulates and a prefix may span any number of lines, on both surfaces.
+    - the latch required a continuation line of 8 characters or more, but a 64-character body
+      wrapped at 12 ends in a 4-character line — key bytes like any other. Inside a latched block
+      there is now no length floor at all; only prose (a line with whitespace in it) ends it.
+
+    Three more mutations (either carry, the restored floor) each red a test, and the controls are
+    the two wraps themselves: 8 characters across three lines, and a real 64-character export's
+    4-character tail.
+17. **A SYMBOL is not a BEHAVIOUR.** Every candidate-control grep above named a symbol, and an
+    ancestor of this branch (`aa884b517`) carries all of them while still holding the one-line
+    joined window and the latch's length floor. Dispatching that candidate would have restored
+    both holes under a green gate. Three of the greps are now BEHAVIOURAL — the accumulating
+    carry in the redactor and in the scan, and the floorless latch — and each was verified to be
+    absent from `aa884b517` and `d6460dc24` and present at this head. Measured, not assumed.
+18. **A per-line LOG PREFIX broke every join.** This lane collects with `docker compose logs`, so
+    a worker line arrives as `m1-worker-a  | …`. Stripping only whitespace left those repeated
+    tokens inside the joined window, so a wrapped DER prefix never matched on either surface — and
+    at a narrow wrap nothing else fired either. `stripLogPrefix` now removes a service prefix (and
+    an optional leading timestamp) before a line is judged, in the redactor and in the scan.
+
+    A pipe in ORDINARY prose is over-stripped by that rule, which is safe by construction: the
+    stripped form is only what a line is JUDGED by, and what the filter publishes is the line
+    itself — a control asserts both halves. Two mutations (the strip removed, the scan keeping the
+    prefix) each red a test, and the gate grows a seventh behavioural marker, verified absent from
+    `aa884b517` and `3889924c6`.
+19. **…and the timestamp comes AFTER that prefix, not before.** Item 18 stripped a timestamp only
+    ahead of the service name, but `docker compose logs --timestamps` — which this lane runs —
+    emits `svc | <ts> payload`, as the captured fixture from run 35613849443 shows. A different
+    timestamp therefore sat between every wrapped fragment and no marker ever formed.
+    `stripLogPrefix` now removes a leading timestamp, then the service prefix, then a timestamp
+    that followed it, so both producers reduce to the payload. The wrap control gains the real
+    collected shape as a third prefix, and two mutations (either timestamp strip) each red a test.
+20. **JSON FRAMING is not payload either — and one case stays open, on the record.** The worker
+    logs pino JSON, so a key can arrive framed. `base64Payload` now reduces a line to its base64
+    characters for the JOINED window only — escaped whitespace first, since the `n` of a `
+`
+    would otherwise be kept and injected between fragments — so a key wrapped inside ONE record is
+    caught on both surfaces. What a clean line PUBLISHES is still the line itself, and a control
+    pins that on a real worker log line carrying a sandbox id.
+
+    A key split ONE FRAGMENT PER RECORD is **not** caught: each record contributes its own field
+    names between the fragments, so the prefix is never contiguous. Filed as **`E6-F026`**
+    (`unowned`, with the reason) and pinned by a KNOWN LIMIT test that asserts today's behaviour
+    exactly — the fragments publish and the scan finds nothing — so it cannot be read as coverage.
+    Both obvious closures were rejected with a measurement, not a preference: a per-line JSON parse
+    that fails open is the same gap with more code, and a run-length rule inside the DER latch
+    would have to fire below 21 characters, which is the length of the E2B sandbox id on the very
+    line the lane's own sandbox-evidence assertion reads (run 35613849443's captured logs).
+
+21. **The gate keeps pace with each of those.** `LOG_TIMESTAMP` and `base64Payload` join the
+    behavioural markers, both verified absent from `22b500fb2` and the second absent from
+    `274f055a8` — so every earlier candidate on this branch is now refused rather than silently
+    run with a weaker control. Seven behavioural markers in all.
+22. **An ABSENT job log was read as an empty surface.** Reaching the scan means `prepare` wrote
+    `state.json`, so at least that phase was teed; a missing capture means the file was removed
+    after the last filter ran, or the filter died before it could leave its marker — and the scan
+    then reported zero log files and PASSED, so the upload gate published a bundle whose
+    Actions-log coverage was never had. In CI the scan now fails closed on an absent log and
+    deletes the bundle. Outside CI (a phase run by hand) nothing tees, so an absent log is simply
+    nothing to scan; both halves have a control, and a mutation tolerating the absence reds.
+23. **Standing rule, learned the hard way: a new control needs a new GATE MARKER in the same
+    commit.** Three separate rounds of this review ended the same way — the fix landed, and the
+    candidate gate still admitted the ancestor that lacked it, because the gate named SYMBOLS that
+    the ancestor already had. The lane is candidate-bound, so an admitted ancestor runs its own
+    driver and the hole comes back under a green gate. Every behavioural control on this surface
+    therefore carries a grep that is false on the revision before it, verified by `git show` on
+    that exact ancestor rather than assumed. Eight behavioural markers now: the accumulating carry
+    (both surfaces), the floorless latch, `stripLogPrefix`, `LOG_TIMESTAMP`, `base64Payload`, the
+    fail-closed filter and its durable marker, and the absent-log refusal.
+24. **A filter KILLED outright leaves no marker at all — so the log proves its own intactness.** A
+    filter that dies without reaching its fail-closed arm (OOM, SIGKILL, an uncaught throw) fails
+    its own phase through `pipefail`, but writes no `capture-failed` marker, and the NEXT phase+s
+    filter appends after the hole. Neither the step outcomes the upload is gated on nor the content
+    of the log reveals the missing stretch.
+
+    Gating on twelve step ids would have been the weak fix — it enumerates what to watch, and the
+    next phase added silently escapes it. Instead every filter invocation BRACKETS itself, writing
+    `[log-filter] opened` on start and `[log-filter] closed` on a clean end of input, into the
+    capture only (never the published log), and the scan requires the two counts to match. That is
+    a property of the LOG, so it covers every piped phase without naming any of them. Controls:
+    an unmatched open reds and the bundle is deleted; a balanced log passes, so it is not an
+    always-deny; and two mutations (the scan ignoring the imbalance, the filter not closing) red.
+
+    Residual, stated rather than implied: a filter killed BEFORE its open sentinel lands leaves the
+    counts balanced and that phase absent entirely. Its step still fails through `pipefail`, so the
+    run is red and the lane is not claiming a pass; the bundle it retains is the failure evidence.
+25. **A PEM masked THROUGH the directive escaped the block, and the sentinels were forgeable.**
+
+    - The directive exception returned early, so a phase masking an unregistered multi-line key —
+      `::add-mask::-----BEGIN PRIVATE KEY-----` and then the body as ordinary lines — left the
+      redactor outside the PEM block: GitHub masked the armour, the short body lines published,
+      and the scan then stripped the only generic marker. The directive is still published
+      verbatim, but its PAYLOAD now moves the block state.
+    - The intactness sentinels shared the capture with producer output, so a phase that printed a
+      bare `[log-filter] closed` could balance a killed filter. Each invocation now mints an
+      unpredictable id — never written to stdout, so no producer can guess it — and the scan pairs
+      open to close BY ID rather than counting.
+
+    Controls: a directive-masked PEM redacts its body and the block still ends at `END`; a forged
+    close with the wrong id reds although the COUNTS balance; the ids are unique per invocation and
+    never publish. Three mutations (the early return, a fixed seal, counting instead of pairing)
+    each red, and all three markers join the gate, verified absent from `4fcf4e4ce`.
+26. **…and the same directive hole for an UNARMOURED key.** A `::add-mask::` command ends at the
+    first newline, so a phase masking a wrapped DER value masks only its FIRST fragment and prints
+    the rest as ordinary lines — while the scan strips that first line, so the prefix can never be
+    reassembled there either. The directive payload now goes through the same joined window and
+    the same DER latch as any other line, while the directive itself is still forwarded verbatim.
+
+    Controls: with an 8-character wrap the marker completes on fragment 3 and every line from there
+    is redacted; fragment 2 is asserted to lie inside the FIXED 21-character header, so what still
+    publishes is header and not seed; a directive carrying the whole prefix latches at once; and an
+    ordinary masked secret opens no block. Two mutations (the latch, the carry) each red, and the
+    marker joins the gate, verified absent from `44b6c94a5`.
+27. **The absent-log arm red four of this file's OWN tests, IN CI ONLY — and the fix is a
+    PRECEDENCE ruling, not a fixture patch.** Item 22 keyed its refusal on `GITHUB_ACTIONS`, and
+    Actions sets that variable for the TEST process too. Four pre-existing phase cases build an
+    evidence-only fixture (no `job-log.txt`), so in Actions every one of them tripped the
+    absent-log arm before reaching the behaviour it means to prove, while every local run stayed
+    green. Measured at source on `2f213ea97`: `GITHUB_ACTIONS=true node --test
+    scripts/lib/__tests__/m1-shipped-boot.test.mjs` → `fail 4`; the same command without the
+    variable → `fail 0`. The four are the planted-canary phase control, the clean-evidence
+    baseline, the no-job-log case, and the P2 mask-directive-in-evidence control. The
+    planted-canary control received the absent-log refusal in place of its finding — i.e. **a
+    refusal to judge was swallowing a finding the scan already had in hand.**
+
+    **Ruling (question 1, precedence).** The absent-log refusal is now DEFERRED, never
+    short-circuiting (`leakScan` in `scripts/m1-shipped-boot/journey.mjs`: `jobLogAbsent` /
+    `absentLogError` are computed, the scans run, and the refusal fails at the end). Both outcomes
+    delete the bundle, so the order cannot change what is PUBLISHED — it changes only what the
+    operator is TOLD. "I cannot judge the log surface" and "a named secret is sitting in an
+    evidence file" are different verdicts, and only the second says ROTATE THIS NOW. A refusal
+    first loses that signal for no gain, so findings are always named and the absent log is
+    reported ALONGSIDE them (both `::error::` lines, one combined summary). The reverse order is
+    never acceptable.
+
+    **Finding (question 2, vacuity).** *"with no job log at all, the evidence scan still runs (no
+    silent skip)"* was not vacuous, but its PREMISE had been inverted by item 22: the property it
+    names holds only OUTSIDE CI, because inside CI an absent log is now a refusal by design. It is
+    retitled to say so (`leak scan (phase): OUTSIDE CI, …`) and pinned to a non-CI environment
+    explicitly. Its CI counterpart already exists and was never in doubt — *"POSITIVE CONTROL: an
+    ABSENT job log fails the scan IN CI, and is merely nothing to scan outside it"* asserts both
+    arms of the same switch. So this was a record/fixture defect, not a product defect: the
+    product arm is correct and stays.
+
+    **Fixtures say which environment they assert.** `leakScanIn(out, { ci })` sets or deletes
+    `GITHUB_ACTIONS` explicitly for every phase case; none of them inherits the runner's. The
+    lesson for this lane: a control keyed on an environment variable the runner also sets must be
+    exercised BOTH ways locally — `GITHUB_ACTIONS=true node --test …` — or local green means
+    nothing.
+
+    **Controls.** Two new cases pin the ruling: a planted canary with an ABSENT log IN CI is still
+    named by file and secret AND reports the absent log, never printing the value, bundle deleted;
+    and — the positive control the fixture change owes — a planted canary with a job log PRESENT
+    IN CI still reds, with the absent-log line asserted NOT to appear. GREEN after the change:
+    93/93 with `GITHUB_ACTIONS=true` and 93/93 without it. Three mutations, each reverted:
+    restoring the short-circuit reds the PRECEDENCE case only; deleting the deferred refusal reds
+    the item-22 absent-log control only; blinding `scanEvidenceForSecrets` over the evidence
+    surface reds all three canary controls.
+
+    **Status of this addendum:** `gate_review`. Only a DISTINCT reviewer may set `complete`; §12's
+    keyed acceptance is neither re-opened nor re-decided, and the `Status` line at the top of this
+    record — set by attempt 2's distinct reviewer — is left exactly as written.
+**Status unchanged.** This is a control added after the fact to a run that was already clean; it
+neither re-opens nor re-decides §12's keyed acceptance.
+
+## Independent review — attempt 3 (2026-09-23): §14 item 27, the deferred absent-log refusal
+
+**Reviewer:** M1 independent reviewer (Claude Opus 5), distinct from the author of item 27.
+**Reviewed revision:** `ae73bcc2a3adf59e17f49699386ecaa4005b2061` (PR #574; this branch's HEAD, so
+nothing has moved under it). **Scope:** item 27 only. §12's keyed acceptance is neither re-opened
+nor re-decided, and the `Status` line at the top of this record is not rewritten.
+
+**The precedence change, at source.** Met. In `leakScan` (`scripts/m1-shipped-boot/journey.mjs`)
+`jobLogAbsent` and `absentLogError` are computed but not acted on; the evidence and job-log scans
+run unconditionally; the findings block prints every named secret and key-material hit, appends the
+absent-log `::error::` line alongside them and folds it into the combined summary; only after that
+does the standalone `if (jobLogAbsent)` refusal fire. A refusal to judge the log surface can no
+longer swallow a finding the evidence scan already holds.
+
+**The retitle is a fix, not a rename around the problem.** Met. The case is now `leak scan (phase):
+OUTSIDE CI, with no job log at all, the evidence scan still runs (no silent skip)`, and it runs
+through `leakScanIn(out)` whose default `ci = false` **deletes** `GITHUB_ACTIONS` from the child
+environment rather than inheriting the runner's. The premise the title states is therefore the
+premise the test establishes — which is exactly what was inverted before. Every phase case now goes
+through `leakScanIn`, so none of them inherits the runner's variable.
+
+**The CI counterpart asserts both arms.** Met. `POSITIVE CONTROL: an ABSENT job log fails the scan
+IN CI, and is merely nothing to scan outside it` builds the same fixture twice, spawns once with
+`GITHUB_ACTIONS: 'true'` (asserting exit 1, `job log is ABSENT`, bundle deleted) and once with the
+variable deleted, so the switch is pinned in both directions by one test.
+
+**The positive control the fixture change owed.** Met. `POSITIVE CONTROL: with a job log PRESENT in
+CI, a planted canary still reds and the absent-log line does NOT appear` plants the canary, writes a
+well-formed bracketed `job-log.txt`, and asserts both that the secret is named and that
+`job log is ABSENT` is *absent* — so the new control cannot be satisfied by the refusal it replaced.
+
+**Reproduced on this revision.** `node --test scripts/lib/__tests__/m1-shipped-boot.test.mjs` →
+93/93 with `GITHUB_ACTIONS` unset **and** 93/93 with `GITHUB_ACTIONS=true`, matching §14 item 27.
+The mutation that matters was applied alone and reverted: restoring the short-circuit (moving the
+`jobLogAbsent` refusal above the scans) reds **exactly one** test, `PRECEDENCE: a planted canary is
+still named IN CI when the job log is ABSENT, and both are reported` (92 pass / 1 fail), on the
+assertion that the evidence finding is named. That is the claimed red, and it is specific.
+
+**Finding (non-blocking, filed rather than waived): the TRUNCATED-log refusal still
+short-circuits — the same class item 27 ruled against, one arm over.** In the same `leakScan`, the
+intactness check (item 24, added in this same PR) `rmSync`s the bundle and `fail()`s on an unmatched
+`[log-filter] opened` sentinel **before** `findings` and `keyMaterial` are computed. A run whose job
+log is truncated *and* whose evidence carries a planted secret is told only "the job log is
+TRUNCATED"; the secret is never named, so the operator is not told to rotate it. That is precisely
+the shape item 27's ruling calls never acceptable, and the comment block immediately above it now
+asserts as a general property that "a refusal to judge never suppresses a finding" — which is not
+true of the lines ten below it.
+
+I do not treat this as blocking item 27: item 27's acceptance is scoped to the absent-log arm and
+that arm is met; and because both outcomes delete the bundle, the gap costs operator *messaging*,
+never publication. But the invariant as written in the code overclaims, and the fix is the same
+shape as item 27's — compute the truncation refusal, run the scans, report it alongside. Recommend a
+follow-up that extends the deferral to the truncation arm and narrows the comment to the arm it
+actually describes.
+
+**Disposition: `approved`** for item 27. Every acceptance clause it states is met and re-measured at
+source, its retitle corrects rather than conceals the inverted premise, its positive control is
+real, and the mutation reds a distinct control. The withdrawal of the top-level `Status` raised in
+PR #582 is discharged by this attempt, and `Status: complete` is restored in a separate commit.

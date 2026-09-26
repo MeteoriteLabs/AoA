@@ -37,6 +37,102 @@ export { userEntityFollows } from "./user_entity_follows.js";
 export { userNotes } from "./user_notes.js";
 export { goals } from "./goals.js";
 export { goalParents } from "./goal_parents.js";
+// E2 tenant kernel (TEN-001a): new-path distributed-execution tables.
+export { jobs, type Job, type NewJob } from "./jobs.js";
+export { jobAttempts, type JobAttempt, type NewJobAttempt } from "./job_attempts.js";
+export { jobOutbox, type JobOutbox, type NewJobOutbox } from "./job_outbox.js";
+export { leases, type Lease, type NewLease } from "./leases.js";
+export {
+  workerOperationReceipts,
+  type WorkerOperationReceipt,
+  type NewWorkerOperationReceipt,
+} from "./worker_operation_receipts.js";
+export * from "./worker_lease_rejections.js";
+// E2 tenant kernel (TEN-001b): worker/service/artifact/secret-handle ownership tables.
+export { workers, type Worker, type NewWorker } from "./workers.js";
+export {
+  workerEnrollmentCodeRoutes,
+  type WorkerEnrollmentCodeRoute,
+  type NewWorkerEnrollmentCodeRoute,
+} from "./worker_enrollment_code_routes.js";
+export {
+  workerEnrollmentCodes,
+  type WorkerEnrollmentCode,
+  type NewWorkerEnrollmentCode,
+} from "./worker_enrollment_codes.js";
+export {
+  workerProofReplays,
+  type WorkerProofReplay,
+  type NewWorkerProofReplay,
+} from "./worker_proof_replays.js";
+export { services, type Service, type NewService } from "./services.js";
+// SVC-001: the immutable service definition. This export line is LOAD-BEARING - the
+// relation-ACL manifest walks the schema barrel and throws for any serving relation
+// without a checked-in Drizzle table, and drizzle-kit emits nothing for an unexported one.
+export {
+  serviceGenerations,
+  type ServiceGeneration,
+  type NewServiceGeneration,
+} from "./service_generations.js";
+export {
+  serviceInstances,
+  type ServiceInstance,
+  type NewServiceInstance,
+} from "./service_instances.js";
+export { jobArtifacts, type JobArtifact, type NewJobArtifact } from "./job_artifacts.js";
+// DAT-006 (E5 workspaces): explicit local-folder grant admission (TEN-006 per-table RLS).
+export { folderGrants, type FolderGrant, type NewFolderGrant } from "./folder_grants.js";
+export {
+  jobSecretHandles,
+  type JobSecretHandle,
+  type NewJobSecretHandle,
+} from "./job_secret_handles.js";
+// JOB-005 (E3 job control): immutable accepted-event ledger + projection idempotency ledger.
+export { jobEvents, type JobEvent, type NewJobEvent } from "./job_events.js";
+// MIG-003 (E10 realtime foundation): durable company-scoped realtime event log +
+// per-company atomic sequence source for cross-replica fan-out and sinceSeq catch-up.
+export {
+  liveEventLog,
+  liveEventSequences,
+  type LiveEventLogRow,
+  type NewLiveEventLogRow,
+  type LiveEventSequenceRow,
+} from "./live_event_log.js";
+export {
+  jobProjectionReceipts,
+  type JobProjectionReceipt,
+  type NewJobProjectionReceipt,
+} from "./job_projection_receipts.js";
+// JOB-006 (E3 job control): durable, monotonically-sequenced control-command channel
+// (cancel / drain / graceful_stop) + worker ACK, per fenced lease.
+export {
+  jobControlCommands,
+  type JobControlCommand,
+  type NewJobControlCommand,
+} from "./job_control_commands.js";
+// DEP-003 (E6 deployment harness): operator-gated 0188 cutover marker (platform infra,
+// no organization_id; aoa_operator write / aoa_app read-only / tenants invisible).
+export {
+  distributedCutoverMarkers,
+  type DistributedCutoverMarker,
+  type NewDistributedCutoverMarker,
+} from "./distributed_cutover_markers.js";
+// DEP-009 (E6 deployment harness): PG-backed SHARED admission rate limiter — per-org
+// fixed-window counter both control-plane replicas increment (aoa_app tenant-scoped
+// read+write under FORCE RLS; the atomic upsert-increment is the shared-authority seam).
+export {
+  workerAdmissionRateLimits,
+  type WorkerAdmissionRateLimit,
+  type NewWorkerAdmissionRateLimit,
+} from "./worker_admission_rate_limits.js";
+// JOB-007: durable operator-metadata fanout record for a committed target
+// generation cutoff (worker/target revocation). Operator write / app read-only
+// outside a tenant transaction / tenants invisible — mirrors the marker shape.
+export {
+  executionTargetRevocations,
+  type ExecutionTargetRevocation,
+  type NewExecutionTargetRevocation,
+} from "./execution_target_revocations.js";
 export { issues } from "./issues.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
@@ -144,6 +240,22 @@ export { environments } from "./environments.js";
 export { onboardingProgress } from "./onboarding_progress.js";
 export { userProfiles, type UserProfileSocialLink } from "./user_profiles.js";
 export { environmentLeases } from "./environment_leases.js";
+// MIG-008 (E10 desktop-migration): append-only legacy-lease/resource reconciliation
+// crosswalk (operator-metadata infra; aoa_operator write / aoa_app read-only /
+// tenants invisible — mirrors the DEP-003 cutover marker RLS shape).
+export {
+  legacyResourceReconciliation,
+  type LegacyResourceReconciliation,
+  type NewLegacyResourceReconciliation,
+} from "./legacy_resource_reconciliation.js";
+// MIG-010 Unit 2.4 (BLOCKER E-2/E-3): the durable marker of a COMPLETED reconciliation
+// pass (operator-metadata infra; aoa_operator write-only / aoa_app NONE / tenants
+// invisible). The gate narrows its lease inventory to this marker's snapshot instant.
+export {
+  legacyReconciliationPasses,
+  type LegacyReconciliationPass,
+  type NewLegacyReconciliationPass,
+} from "./legacy_reconciliation_passes.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { feedbackVotes } from "./feedback_votes.js";

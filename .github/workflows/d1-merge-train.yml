@@ -1,0 +1,915 @@
+name: D1 Merge Train
+
+# DEP-004 — the distributed (D1) merge-train lane. It brings up the isolated
+# docker-compose.d1.yml topology (PostgreSQL, MinIO, Toxiproxy, split control-
+# plane + worker images, the fixture-driven fake provider), runs a BOUNDED E6F
+# subset against the live stack, and — on ANY failure — RETAINS the distributed
+# evidence bundle (per-service logs, worker events, DB-state dump, MinIO object
+# manifests) via actions/upload-artifact so a merge-train failure is never lost.
+#
+# It runs on the merge queue (`merge_group`) and on push to main — NOT on every
+# PR (the fast per-PR contract lane is pr.yml's `distributed-contract` job). The
+# live docker/compose bring-up has no Windows-local substitute; this workflow is
+# the Linux/CI authority. Its static shape (evidence-upload-on-failure) is
+# validated on every PR by the pr.yml `policy` job's "CI lane routing invariants
+# (DEP-004)" step (scripts/check-ci-lanes.mjs), and re-checked here belt-and-
+# suspenders in the "Static topology preflight" step below.
+
+permissions:
+  contents: read
+  # E6-F021 (2026-09-24 amendment). The MinIO service now comes from this
+  # organisation's OWN GHCR mirror (ghcr.io/<owner>/aoa-d1-minio, built and pushed by
+  # .github/workflows/d1-image-mirror.yml from docker/d1/minio.Dockerfile), because BOTH
+  # documented upstream sources are now closed to anonymous pulls: Docker Hub deleted
+  # `minio/minio`, and `quay.io/minio/minio` -- the repair that replaced it, and which
+  # served a 200 when E6-F021 was filed -- now returns 401 for a pull-scoped token. A
+  # repo-scoped GHCR package is not anonymously pullable either, so every job that brings
+  # the stack up needs read access plus a `docker login ghcr.io` step. That credential is
+  # one we issue to ourselves on every run, which is the entire point: it cannot be
+  # revoked by a third party's registry policy.
+  packages: read
+
+on:
+  merge_group:
+  # ★ ADDED 2026-09-24 (M1a harness gaps, ruled by the planning session under F2).
+  #
+  # SUPERSEDED TEXT, kept verbatim because this programme does not rewrite history in a
+  # quote — the `push:` block below used to say: *"workflow_dispatch is omitted
+  # deliberately: it requires the workflow on the default branch (main), and this program
+  # keeps everything on the one integration branch."*
+  #
+  # THAT REASON IS DISPROVEN in this repository. `m1-shipped-boot.yml` is NOT on
+  # `origin/main` (`git cat-file -e origin/main:.github/workflows/m1-shipped-boot.yml`
+  # fails) and was nevertheless dispatched twice with `--ref docs/replatform-program`:
+  # runs **`35919374111`** (keyless rehearsal, 30 steps) and **`35920425288`** (the keyed
+  # campaign, 30 steps). Those two run ids are the positive control for this trigger.
+  #
+  # WHAT IS ACTUALLY TRUE is `E6-D001`'s registration-push pattern: a workflow becomes
+  # dispatchable on a ref once a `push` on its OWN file path has registered it. This file
+  # already lists `.github/workflows/d1-merge-train.yml` in its `push.paths`, so the
+  # registration has held for as long as the lane has existed; only the trigger was missing.
+  #
+  # WHY IT MATTERS. Without it the live `m1-spine` and `m1-fault-matrix` jobs — the only
+  # things that fire a `d1.*` campaign case — could not run on a feature branch at all, so a
+  # newly declared case's FIRST execution was the push that merged it. That is "a declared
+  # case that nothing runs", relocated to where it is harder to see.
+  #
+  # `pull_request` is deliberately still NOT here: this lane is not a required check
+  # (`scripts/lib/ci-lanes.mjs`), and a `pull_request` trigger would entangle it with branch
+  # protection. `workflow_dispatch` gives pre-merge proof without touching the gate topology.
+  workflow_dispatch:
+    inputs:
+      lanes:
+        description: Which job(s) to run
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - d1-merge-train
+          - m1-spine
+          - m1-fault-matrix
+      campaign:
+        description: E6F scope for d1-merge-train; committed keeps docker/d1/campaign.env
+        required: false
+        default: committed
+        type: choice
+        options:
+          - committed
+          - bounded
+          - foundation
+  push:
+    # On `main` this is the merge-train lane (its trigger paths should broaden to
+    # the distributed code the live stack exercises when this workflow lands on
+    # main). On the long-lived integration branch `docs/replatform-program` it is
+    # the E6-D1-FOUNDATION gate-campaign lane: it fires whenever the D1 campaign
+    # machinery changes — which is exactly how the campaign is iterated to green —
+    # and on demand by bumping `docker/d1/campaign.env` (which also selects the
+    # E6F scope: AOA_D1_CAMPAIGN=bounded|foundation).
+    #
+    # ★ 2026-09-24: the sentence that stood here — *"workflow_dispatch is omitted
+    # deliberately: it requires the workflow on the default branch (main), and this program
+    # keeps everything on the one integration branch"* — is SUPERSEDED and was false. It is
+    # quoted in full, with the measurement that disproves it, in the `workflow_dispatch:`
+    # block above.
+    branches:
+      - main
+      - docs/replatform-program
+    paths:
+      - ".github/workflows/d1-merge-train.yml"
+      - "docker-compose.d1.yml"
+      # DEP-006 staging render + its config-contract validator: the live e6f-12
+      # compose-engine render/parity proof runs ONLY in this lane, so a staging-only
+      # edit must re-trigger it (mirrors docker-compose.d1.yml being listed).
+      - "docker-compose.staging.yml"
+      - "scripts/check-staging-manifest.mjs"
+      - "scripts/lib/staging-manifest-invariants.mjs"
+      - "docker/**"
+      # WRK-009/F7: `.dockerignore` decides what enters EVERY image build context.
+      # It was not previously a trigger, so a change to it could alter the contents
+      # of both shipped images without the image-building lane ever running.
+      - ".dockerignore"
+      # E6-F012 — THE SAME LESSON, FOR THE MANIFESTS. The workspace manifests and the
+      # lockfile decide what each image INSTALLS (`--filter-prod "X..."` in the deps
+      # stage) and what each image BUILDS (`--filter "X..."`, which traverses
+      # devDependencies too). A single workspace devDependency added to `server`
+      # widened the build selection by five packages at `c3d26657d`, `tsc` died, and
+      # this lane went red for three merges.
+      #
+      # ★ AND THAT COMMIT COULD NOT FIRE THIS LANE. Until this entry existed, the list
+      # above contained NOTHING matching `package.json`, `pnpm-lock.yaml` or
+      # `pnpm-workspace.yaml` — so the exact commit class that re-widens the build
+      # selection could not trigger even the POST-merge consumer, let alone a PR-time
+      # one. It went red only because `c3d26657d` happened to touch `docker/**` too.
+      #
+      # ★★ DO NOT TRIM THESE ENTRIES ON THE GROUNDS THAT A STATIC GUARD COVERS THEM.
+      # `scripts/check-image-deps-stages.mjs` does run on every PR, and it is SILENT ON
+      # THE CLASS NAMED IN THE PARAGRAPH ABOVE. What it checks is the SHAPE of the three
+      # Dockerfiles, conditionally: that a diverging image's `build` stage re-installs
+      # non-prod; that what its build line SELECTS is covered by what its install
+      # selects; and that the divergent packages' manifests are present in that stage.
+      # Against "a workspace devDependency added to `server`" it stays GREEN — correctly,
+      # because the control-plane and adapter-manager build stages `COPY . .` and
+      # re-install non-prod, so a wider dev selection is absorbed by construction. It
+      # never PRINTS a divergence at all; its only passing output is the single line
+      # "split-image deps-stage parity: PASS". Treating it as coverage for a manifest
+      # edit is the mistake this comment exists to prevent.
+      #
+      # What it makes impossible is narrower: removing or `--prod`-ing an absorber that
+      # is load-bearing, narrowing a re-install below what the build line compiles, and
+      # a widening on an image whose build stage copies selectively (the worker). It
+      # builds NO image and reads NO lockfile. The only thing that can observe a
+      # manifest or lockfile change actually breaking an image build is a lane that
+      # builds one — this lane. Hence the entries below.
+      #
+      # Cost, stated rather than hidden: this fires the 45-minute lane on any manifest
+      # or lockfile edit, and `cancel-in-progress: false` means those queue. That is
+      # the deliberate trade — the alternative is the state above, where the one class
+      # of commit that breaks these builds is the one class the lane cannot observe.
+      - "package.json"
+      - "**/package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tests/d1/**"
+      - "scripts/check-d1-compose.mjs"
+      - "scripts/collect-d1-evidence.mjs"
+      - "scripts/check-ci-lanes.mjs"
+      - "scripts/lib/d1-compose-invariants.mjs"
+      # DEP-016 — the m1-spine profile's verdict functions and the reference provider's
+      # canned-usage code. Both decide what the `m1-spine` job below asserts, and neither is
+      # matched by an entry above (`docker/**` covers the override and the provider entry, but
+      # not `packages/sandbox-fake-provider/src`, and the `scripts/lib` entries are per file).
+      - "scripts/lib/m1-spine-assertions.mjs"
+      # DEP-018 — the campaign fault matrix's declaration and its pure verdicts. An edit to
+      # either decides what the live `m1-fault-matrix` job must fire and classify, so it must
+      # re-run the lane that produces the evidence.
+      - "tests/d1/fault-matrix.json"
+      - "scripts/lib/campaign-fault-matrix.mjs"
+      - "scripts/check-campaign-fault-matrix.mjs"
+      - "packages/sandbox-fake-provider/**"
+      # ★ DEP-016 — THE PRODUCTION CODE THE m1-spine PROFILE ASSERTS, AS A CLASS, NOT A LIST.
+      # This started as a named list of the ~20 files the profile's verdicts read (ingest, the three
+      # seam registrations, the pricing cores, placement, the rollout source, the MIG-009 drain, the
+      # rate table). Codex then found four more, one round at a time — the delegated drain, its
+      # store, the audit writer, the rate table — which is the shape of an enumeration that cannot
+      # be complete: the profile asserts END-TO-END behaviour, so almost any server or db change can
+      # decide its verdict. The enumeration is therefore replaced by the two trees it kept reaching
+      # into. Codex's own first framing of this offered exactly that alternative ("include the
+      # production source paths that determine this profile's result, or move the spine into an
+      # unfiltered workflow").
+      #
+      # COST, STATED RATHER THAN HIDDEN: this fires a ~45-minute lane (with `cancel-in-progress:
+      # false`, so runs queue) on any `server/src` or `packages/db/src` edit. That is a deliberate
+      # reversal, FOR THIS LANE, of the older practice recorded in `docker/d1/campaign.env` — where
+      # `server/src` was off the filter and a change that needed the lane bumped a nonce by hand.
+      # A nonce bump is a human remembering; this is not. The planning session may narrow it back if
+      # the queue cost outweighs that.
+      - "server/src/**"
+      - "packages/db/src/**"
+      # The FROZEN wire protocol the ingest validates against and the profile's events are built
+      # with (digests, the usage payload schema, the canonicalizers). Codex, PR #566.
+      - "packages/worker-protocol/src/**"
+      # DEP-019 (Codex P2, PR #572) — the runtime trees the WORKER-DRIVEN path executes and
+      # traverses. Without them a push changing only one of these skips this live profile, although
+      # it can break the exact boot root and wire the m1-spine topology introduced. A lane that
+      # cannot see a change to the code it exercises is not a gate; the extra queue cost is the
+      # correct trade, and it is stated rather than hidden — a change to any of these now fires the
+      # ~45-minute lane, as a `server/src` edit already does.
+      - "packages/worker-daemon/src/**"
+      - "packages/worker-networked-host/src/**"
+      - "packages/provider-wire/src/**"
+      - "packages/adapter-manager/src/**"
+      - "packages/provider-capability/src/**"
+      # The shared contracts the server and the profile both read (submit-source schemas, job-control
+      # validators, constants). Same reasoning as the two trees above: this lane asserts end-to-end
+      # behaviour, so a contract change can decide its verdict. Codex, PR #566.
+      - "packages/shared/src/**"
+      - "scripts/lib/d1-evidence-bundle.mjs"
+      - "scripts/lib/image-admission.mjs"
+      # DEP-014: the lane now RUNS the admission verifier on every image it builds.
+      - "scripts/verify-image-admission.mjs"
+      - "scripts/lib/ci-lanes.mjs"
+
+concurrency:
+  group: d1-merge-train-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  d1-merge-train:
+    # Dispatch selector (see the `workflow_dispatch:` block). On every non-dispatch
+    # event `inputs.lanes` is empty, so the first disjunct runs the job exactly as before.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.lanes == 'all' || inputs.lanes == 'd1-merge-train' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE_FILE_PATH: docker-compose.d1.yml
+      EVIDENCE_DIR: ${{ github.workspace }}/d1-evidence
+      # DEP-001 admission: the compose stack pins images by digest via these vars.
+      # The build step below populates docker/d1/.env.
+      #
+      # ★ Corrected by DEP-014. This comment used to say "This lane does NOT verify
+      # admission". It now does: the "Sign, SBOM and admit" step below runs
+      # docker/images/{sbom,sign,admit}.sh over all three split images, and admit.sh
+      # calls scripts/verify-image-admission.mjs per image. What that proves is
+      # CHAIN INTEGRITY — every image this run built was recorded, signed and admitted,
+      # and none was swapped in between. It still proves NOTHING about approval: the
+      # lane signs with an ephemeral TEST root it generated itself. Approval stays
+      # REL-004's scripts/check-release-admission.mjs (every PR), which this lane does
+      # not call and whose frozen artifact set the adapter-manager is not in.
+      AOA_D1_FAKE_PROVIDER_IMAGE: aoa-d1-fake-provider:merge-train
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # E6-F021 (2026-09-24 amendment) -- the MinIO service image is now this
+      # organisation's own GHCR mirror, pinned by digest in docker-compose.d1.yml. A
+      # repo-scoped GHCR package is not anonymously pullable, so the bring-up below needs
+      # this login. It uses the run's own GITHUB_TOKEN with `packages: read`; no secret is
+      # configured for it and no third party can revoke it.
+      - name: Login to GitHub Container Registry (D1 MinIO mirror)
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Static topology preflight (fail fast before bring-up)
+        run: |
+          node scripts/check-d1-compose.mjs
+          node scripts/check-ci-lanes.mjs
+
+      - name: Enable Docker containerd image store (attestation + --load)
+        run: |
+          # docker/images/build.sh (DEP-001) builds with `--provenance --sbom --load`.
+          # The runner's default docker image store rejects that ("Attestation is not
+          # supported for the docker driver") and cannot --load an attestation-carrying
+          # OCI index. Enabling the containerd snapshotter lets the default builder both
+          # PRODUCE the provenance/SBOM attestations (E6F-06 evidence) AND load the
+          # result locally for docker-compose.d1.yml. No image contract is weakened.
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+          docker info --format 'image store driver: {{ .DriverStatus }}'
+
+      - name: Build split D1 images
+        run: |
+          set -euo pipefail
+          # Least-privilege split images (DEP-001) + the fixture-driven fake provider.
+          # build.sh builds control-plane, worker AND (DEP-014) adapter-manager into the
+          # local image store and records their exact tags in docker/images/digests.env.
+          # The adapter-manager is BUILT here, never booted: docker-compose.d1.yml has no
+          # adapter-manager service, and booting one needs a provider key (DEP-015).
+          bash docker/images/build.sh
+          docker build -f docker/d1/fake-provider.Dockerfile -t "$AOA_D1_FAKE_PROVIDER_IMAGE" .
+          # Point the compose services at the just-built LOCAL tags. Without this, compose
+          # falls back to the :d1-local-unbuilt defaults for control-plane/worker and tries
+          # to PULL images that were never pushed ("pull access denied for aoa-worker").
+          CP_TAG="$(grep -E '^CONTROL-PLANE_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          AM_TAG="$(grep -E '^ADAPTER-MANAGER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          test -n "$CP_TAG" && test -n "$WK_TAG" && test -n "$AM_TAG"
+          {
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } >> "$GITHUB_ENV"
+          echo "control-plane image: ${CP_TAG}"
+          echo "worker image:        ${WK_TAG}"
+          echo "adapter-manager image (built, not booted): ${AM_TAG}"
+          mkdir -p docker/d1
+          {
+            echo "AOA_D1_FAKE_PROVIDER_IMAGE=${AOA_D1_FAKE_PROVIDER_IMAGE}"
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } > docker/d1/.env
+
+      - name: Sign, SBOM and admit the split images (DEP-014)
+        run: |
+          set -euo pipefail
+          # DEP-014 — the supply-chain half of DEP-001, run for the FIRST time. sbom.sh and
+          # sign.sh had never executed: both `source`d digests.env, whose hyphenated keys
+          # (`CONTROL-PLANE_IMAGE=…`) are not assignments, so they aborted with exit 127
+          # on build.sh's own output. They now parse it, and cover all three images.
+          bash docker/images/sbom.sh
+          bash docker/images/sign.sh
+          bash docker/images/admit.sh
+
+          # In-run POSITIVE CONTROLS against the real, just-built images: each mutates one
+          # input for the adapter-manager in a scratch copy and admit.sh MUST refuse it. A
+          # control that admits fails the lane — an admission step nobody has watched
+          # refuse is not an admission step.
+          ctl="${RUNNER_TEMP}/dep014-controls"
+          mkdir -p "$ctl"
+          must_refuse() {
+            local label="$1"; shift
+            if env "$@" bash docker/images/admit.sh > "$ctl/out.txt" 2>&1; then
+              cat "$ctl/out.txt"
+              echo "::error::DEP-014 positive control ADMITTED: ${label}"
+              exit 1
+            fi
+            grep -E 'adapter-manager: REFUSED' "$ctl/out.txt"               || { cat "$ctl/out.txt"; echo "::error::DEP-014 control '${label}' refused for the wrong image"; exit 1; }
+          }
+          WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          # (1) no admission entry for the adapter-manager — the pre-DEP-014 state.
+          node -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync(process.argv[1]));a.entries=a.entries.filter(e=>e.image!=="adapter-manager");fs.writeFileSync(process.argv[2],JSON.stringify(a))'             docker/images/allowlist.json "$ctl/no-am-entry.json"
+          must_refuse "no admission entry" AOA_IMAGES_ALLOWLIST="$ctl/no-am-entry.json"
+          # (2) a retagged image: the recorded adapter-manager tag now names another image,
+          #     so its live digest no longer matches the signed one.
+          sed "s#^ADAPTER-MANAGER_IMAGE=.*#ADAPTER-MANAGER_IMAGE=${WK_TAG}#" docker/images/digests.env > "$ctl/retagged.env"
+          must_refuse "retagged image" AOA_IMAGES_DIGESTS="$ctl/retagged.env"
+          # (3) a real signature over a DIFFERENT payload (the worker's) on the AM entry.
+          node -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync(process.argv[1]));const w=a.entries.find(e=>e.image==="worker");a.entries.find(e=>e.image==="adapter-manager").signature=w.signature;fs.writeFileSync(process.argv[2],JSON.stringify(a))'             docker/images/allowlist.json "$ctl/bad-sig.json"
+          must_refuse "corrupted signature" AOA_IMAGES_ALLOWLIST="$ctl/bad-sig.json"
+          echo "DEP-014: 3/3 in-run positive controls refused"
+
+      - name: Upload the image-chain record (DEP-014)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: d1-image-chain-${{ github.run_id }}
+          # digests, buildx metadata, SBOMs, provenance, the admission allowlist and the
+          # TEST public key. The TEST private key sign.sh generates is never uploaded.
+          path: |
+            docker/images/digests.env
+            docker/images/*.metadata.json
+            docker/images/sbom/
+            docker/images/provenance.*.json
+            docker/images/allowlist.json
+            docker/images/trust-root.pub.pem
+            !docker/images/trust-root.key
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Least-privilege assertions on the BUILT images (DEP-001 / WRK-009)
+        run: |
+          set -euo pipefail
+          # WRK-009 — this file asserts, against the images just built above, that the
+          # worker ships NO fabricating test-double provider and no test tree of our own.
+          #
+          # It had NO CI INVOCATION ANYWHERE until this step. `pr.yml` runs only the
+          # STATIC `dockerfile-static.test.mjs` and says the built-image lane "is wired
+          # by DEP-004's image lane" — which does not exist. This job is the only place
+          # in the repo that has a Docker daemon AND both images built, so the
+          # assertions belong here.
+          #
+          # Proof they had never run: the control-plane half read `CONTROL_PLANE_IMAGE`
+          # while build.sh emits `CONTROL-PLANE_IMAGE`, so it would have crashed on
+          # `docker inspect undefined` the very first time it executed. A latent
+          # never-triggered crash IS the evidence of non-execution.
+          # NOT wired here: image-startup-smoke.test.mjs. It has never run either and
+          # carries two defects of its own (the same key-parser bug, plus a `--tmpfs
+          # /worker` that lands root-owned over the Dockerfile's `chown node:node`, so a
+          # non-root worker cannot write its state dir). D1 itself is unaffected — it
+          # mounts the NAMED VOLUME `d1-worker-a-state:/worker`, which Docker initialises
+          # from the image and which therefore keeps that ownership. Fixing the test's
+          # mount semantics is its own ticket; wiring it red here would say the worker
+          # image is broken when it is not.
+          AOA_DEP001_IMAGE_TEST=1 node --test docker/images/__tests__/image-contents.test.mjs
+
+      - name: Bring up the D1 stack
+        run: docker compose -f "$COMPOSE_FILE_PATH" up -d --wait --wait-timeout 300
+
+      - name: Run the E6F campaign (live)
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_D1_CAMPAIGN_INPUT: ${{ (github.event_name == 'workflow_dispatch' && inputs.campaign != 'committed') && inputs.campaign || '' }}
+        run: |
+          set -euo pipefail
+          # Scope selector (committed + path-triggered): `bounded` = the smoke +
+          # network-denial subset; `foundation` = the full E6F-01..07 gate campaign
+          # (bounded subset + every authored tests/d1/e6f-*.test.mjs). Bump
+          # docker/d1/campaign.env to switch scope and re-trigger this lane.
+          CAMPAIGN="bounded"
+          if [ -f docker/d1/campaign.env ]; then
+            # shellcheck disable=SC1091
+            . docker/d1/campaign.env
+          fi
+          CAMPAIGN="${AOA_D1_CAMPAIGN:-$CAMPAIGN}"
+          # A dispatch may override the committed scope for THIS run only; empty keeps the
+          # committed selector, so the push/merge_group path is byte-identical to before.
+          CAMPAIGN="${AOA_D1_CAMPAIGN_INPUT:-$CAMPAIGN}"
+          echo "E6F campaign scope: ${CAMPAIGN}"
+          # BOUNDED: the topology network-denial proofs (E6F-05) + one fixture-driven
+          # fake-provider job (E6F-03) — the full submit -> placement -> lease ->
+          # execute -> event path end to end.
+          # WRK-017 adds container-enrol to BOUNDED, not to the e6f-* set, deliberately: it
+          # must run in EVERY scope (a scope selector is exactly the kind of thing that
+          # quietly stops running a check), and an `e6f-` name would run it twice under
+          # `foundation`. Note the bring-up above is already the primary gate — a failed
+          # first enrol is proc.exit(1) with no restart policy, so `up --wait` dies before
+          # this line. These assertions add what a dead container cannot report.
+          BOUNDED="tests/d1/network-denial.test.mjs tests/d1/fake-provider-job.test.mjs tests/d1/container-enrol.test.mjs"
+          # --test-concurrency=1: the E6F files all drive the SAME live control-plane +
+          # DB, so running them in parallel (node --test's default) makes them compete
+          # for the shared stack. E6F-01's 100-race drain asserts "never 5xx", but a
+          # concurrent file's load can push the control-plane into a retryable 503
+          # (internal_unavailable) backpressure response — a cross-test contention flake,
+          # not a lease-race defect. Serial execution makes the live campaign deterministic
+          # (each scenario gets the stack to itself); the per-file docker-exec cost already
+          # dominates, so the wall-clock impact is small.
+          # ★ ENUMERATED, not globbed (Codex, PR #566). The execution census verifies a `runs`
+          # declaration by looking for the file's path in this step's run block, and a glob names
+          # none of them — so every E6F file was declared-but-unverifiable. Listing them makes the
+          # census's verdict real; a NEW e6f file is then undeclared and the census says so, which
+          # is the failure mode worth having.
+          FOUNDATION="tests/d1/e6f-01-lease-races.test.mjs \
+              tests/d1/e6f-03-networked-smoke.test.mjs \
+              tests/d1/e6f-04-tenancy.test.mjs \
+              tests/d1/e6f-05-live-minio.test.mjs \
+              tests/d1/e6f-08-egress-isolation.test.mjs \
+              tests/d1/e6f-08-stale-fence.test.mjs \
+              tests/d1/e6f-09-lease-faults.test.mjs \
+              tests/d1/e6f-10-telemetry.test.mjs \
+              tests/d1/e6f-11-two-replica.test.mjs \
+              tests/d1/e6f-12-staging-render.test.mjs \
+              tests/d1/e6f-13-realtime-fanout.test.mjs \
+              tests/d1/e6f-14-orphan-sweep.test.mjs"
+          if [ "${CAMPAIGN}" = "foundation" ]; then
+            node --test --test-concurrency=1 ${BOUNDED} ${FOUNDATION}
+          else
+            node --test --test-concurrency=1 ${BOUNDED}
+          fi
+
+      - name: Collect distributed evidence (on failure)
+        if: failure()
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR"
+          --run-id "${{ github.run_id }}"
+          --reason "d1-merge-train failure on ${{ github.sha }}"
+
+      - name: Upload retained evidence bundle (on failure)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: d1-merge-train-evidence-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Tear down the D1 stack
+        if: always()
+        run: docker compose -f "$COMPOSE_FILE_PATH" down -v --remove-orphans || true
+
+  # ---------------------------------------------------------------------------
+  # DEP-016 — the `m1-spine` campaign profile. A SECOND job in this workflow, not a
+  # scope of the one above, because the two differ in TOPOLOGY: the merge train runs
+  # the two-worker stack (`bounded`/`foundation` via docker/d1/campaign.env) and this
+  # profile runs the ONE-worker override. A scope selector is single-valued, so making
+  # `m1-spine` a third value of AOA_D1_CAMPAIGN would DISPLACE the foundation campaign
+  # on every run that selected it — and a profile that runs only when someone edits a
+  # committed file is the class of check that quietly stops running (the WRK-017 note
+  # in the campaign scope block above records the same lesson).
+  #
+  # It differs from the train in the other direction too: the evidence bundle is
+  # retained ON PASS (`if: always()`), because the M1-D1-SPINE gate record is made FROM
+  # a passing run, and a passing run whose evidence was discarded cannot be a record.
+  # ---------------------------------------------------------------------------
+  m1-spine:
+    # Dispatch selector (see the `workflow_dispatch:` block). On every non-dispatch
+    # event `inputs.lanes` is empty, so the first disjunct runs the job exactly as before.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.lanes == 'all' || inputs.lanes == 'm1-spine' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE_FILE_PATH: docker-compose.d1.yml
+      SPINE_OVERRIDE_PATH: docker/d1/m1-spine.override.yml
+      EVIDENCE_DIR: ${{ github.workspace }}/m1-spine-evidence
+      AOA_D1_FAKE_PROVIDER_IMAGE: aoa-d1-fake-provider:m1-spine
+      AOA_D1_CAMPAIGN: m1-spine
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # E6-F021 (2026-09-24 amendment) -- the MinIO service image is now this
+      # organisation's own GHCR mirror, pinned by digest in docker-compose.d1.yml. A
+      # repo-scoped GHCR package is not anonymously pullable, so the bring-up below needs
+      # this login. It uses the run's own GITHUB_TOKEN with `packages: read`; no secret is
+      # configured for it and no third party can revoke it.
+      - name: Login to GitHub Container Registry (D1 MinIO mirror)
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Static preflight (the profile's own verdict self-test + the compose invariants)
+        run: |
+          node scripts/check-d1-compose.mjs
+          node --test scripts/lib/__tests__/m1-spine-assertions.test.mjs
+
+      - name: Enable Docker containerd image store (attestation + --load)
+        run: |
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+
+      - name: Build the split D1 images + the reference provider
+        run: |
+          set -euo pipefail
+          bash docker/images/build.sh
+          docker build -f docker/d1/fake-provider.Dockerfile -t "$AOA_D1_FAKE_PROVIDER_IMAGE" .
+          CP_TAG="$(grep -E '^CONTROL-PLANE_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          test -n "$CP_TAG" && test -n "$WK_TAG"
+          {
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } >> "$GITHUB_ENV"
+          mkdir -p docker/d1
+          {
+            echo "AOA_D1_FAKE_PROVIDER_IMAGE=${AOA_D1_FAKE_PROVIDER_IMAGE}"
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } > docker/d1/.env
+
+      # DEP-019 — the two per-run secrets, GENERATED HERE and never committed:
+      #   * the control-plane ed25519 SIGNING key, whose PUBLIC half gates the reference
+      #     provider's wire. Without it the mint is inert and every distributed run terminates
+      #     `no_run_capability` before it creates a sandbox.
+      #   * the secrets MASTER key, under which the profile's one Company secret is written and
+      #     read. The override takes it as a REQUIRED `${…:?}` variable, so a missing value fails
+      #     the compose render instead of silently minting a fresh key inside the container.
+      # Neither is echoed, and `docker/d1/runtime-keys/` is git-ignored. `GITHUB_ENV` is masked in
+      # logs but is still an environment file, so the master key is registered with `::add-mask::`
+      # first — a value that reaches a log is a value that reaches the evidence bundle.
+      - name: Generate the per-run control-plane keypair and secrets master key
+        run: node scripts/generate-d1-spine-keys.mjs
+      - name: Bring up the ONE-worker m1-spine topology
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" up -d --wait --wait-timeout 300
+          # DEP-019 — the DEPLOYED worker must be DISPATCHING, and it is the journey. A worker that
+          # booted but composed no dispatch would leave every worker-driven assertion to fail much
+          # later with a symptom several layers from its cause.
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" logs worker-b             | grep -F 'dispatch COMPOSED'             || { echo "::error::the deployed worker did not compose dispatch"; exit 1; }
+          # And the reference provider must be serving a GATED wire — never an ungated one.
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" logs fake-provider             | grep -F 'GATED provider wire'             || { echo "::error::the reference provider is not serving the gated wire"; exit 1; }
+          # The topology is part of the claim, so assert it rather than assuming the override
+          # merged: exactly ONE worker service is running in this project.
+          workers="$(docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" ps --services --status running | grep -c '^worker-' || true)"
+          echo "running worker services: ${workers}"
+          test "${workers}" = "1" || { echo "::error::m1-spine expects exactly one worker service, saw ${workers}"; exit 1; }
+
+      - name: Run the m1-spine profile (live)
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_EVIDENCE_DIR: ${{ github.workspace }}/m1-spine-evidence/profile
+        run: node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs
+
+      - name: Collect the PASSING evidence bundle (before any negative control mutates the stack)
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR/passing"
+          --run-id "${{ github.run_id }}"
+          --reason "m1-spine PASSING profile on ${{ github.sha }}"
+
+      - name: POSITIVE CONTROL — with usage suppressed, the profile MUST go red
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_USAGE_MODE: suppressed
+          AOA_M1_SPINE_EVIDENCE_DIR: ${{ github.workspace }}/m1-spine-evidence/positive-control
+        run: |
+          set -uo pipefail
+          # The SAME profile, against a reference provider scripted to report NO usage. If it
+          # passes, the cost assertion is measuring nothing and the lane fails here — a profile
+          # that cannot go red is not a profile. `grep` on the marker additionally proves it
+          # went red for the COST reason and not, say, a bring-up failure.
+          out="${RUNNER_TEMP}/m1-spine-positive-control.txt"
+          if node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs > "$out" 2>&1; then
+            cat "$out"
+            echo "::error::m1-spine PASSED with usage suppressed — the cost assertion evaluates nothing"
+            exit 1
+          fi
+          grep -F '[m1-spine:cost]' "$out" || {
+            cat "$out"
+            echo "::error::m1-spine went red with usage suppressed, but NOT on the cost assertion"
+            exit 1
+          }
+          # ★★★ AND ON THE WORKER-DRIVEN ARM (added 2026-09-23 — Codex on PR #579, UPHELD).
+          # `[m1-spine:cost]` alone was NOT worker-specific: `violation()` attaches it to every
+          # `cost:` code, and `evaluateEnabledTenantSpine` runs on the harness attempts of §2 as
+          # well as on the `EXECUTOR === "worker"` block. Deleting that whole block therefore left
+          # this step red, marked, and reporting success — a control certifying *a* cost assertion
+          # and nothing about WHO EXECUTED, which is the ticket's only claim.
+          # `[m1-spine:worker-cost]` is minted only where `observation.workerDriven` is declared,
+          # which happens at exactly one call site inside that block (pinned by the self-test), so
+          # this grep is the mutation's detector. BOTH reasons must hold.
+          grep -F '[m1-spine:worker-cost]' "$out" || {
+            cat "$out"
+            echo "::error::m1-spine went red with usage suppressed, but the WORKER-DRIVEN cost/audit verdict produced no failure — the claim under test is not the one that failed"
+            exit 1
+          }
+          echo "positive control: the profile went red on the cost assertion, on the worker-driven arm, as required"
+          tail -n 40 "$out"
+
+      - name: POSITIVE CONTROL — a DUPLICATE usage event MUST turn the assertion red
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_USAGE_MODE: duplicate
+          AOA_M1_SPINE_EVIDENCE_DIR: ${{ github.workspace }}/m1-spine-evidence/duplicate-usage-control
+        run: |
+          set -uo pipefail
+          # WRK-018 acceptance 1 is "EXACTLY ONE usage equal to the result line" — a CARDINALITY
+          # claim, which a stored usage row cannot establish (it cannot be told apart from a
+          # duplicate or a replay). The profile counts the ACCEPTED usage events of the attempt
+          # instead, and this run sends a SECOND one with a DISTINCT event id — the case the
+          # ingest's own replay guard does not catch, since it keys on the event id. If the
+          # profile still passes, the "exactly one" arms are `>= 1` in disguise.
+          out="${RUNNER_TEMP}/m1-spine-duplicate-usage.txt"
+          if node --test --test-concurrency=1 tests/d1/m1-spine.test.mjs > "$out" 2>&1; then
+            cat "$out"
+            echo "::error::m1-spine PASSED with a duplicate usage event — the cardinality assertion is >= 1, not == 1"
+            exit 1
+          fi
+          # ★ NARROWED (Codex P2, PR #572, ruled FIX — `DEP-019-result.md` §13.7). This used to accept
+          # ANY `[m1-spine:usage]` failure, which `usage:no_usage_event` also carries — so the step
+          # could pass on the ZERO direction while claiming to prove the `> 1` one. It now requires
+          # the cardinality code itself.
+          grep -F 'usage:not_exactly_one' "$out" || {
+            cat "$out"
+            echo "::error::m1-spine went red on the duplicate run, but NOT on the usage-cardinality (> 1) assertion"
+            exit 1
+          }
+          # ★★★ WHAT THIS CONTROL DOES AND DOES NOT COVER, stated so nobody has to re-derive it.
+          # It exercises the HARNESS-driven attempts ONLY. It cannot reach the worker-driven one, and
+          # that is a property of the product rather than of this lane: `createUsageObserver` derives
+          # the event from the FINAL stream-json result line, so the worker emits AT MOST ONE usage
+          # event and the reference provider cannot make it emit two. The only harness route to a
+          # second event on that attempt is a foreign-worker upload, which the fenced ingest denies
+          # (the profile proves that denial in its own cross-tenant case).
+          # The worker-driven attempt's cardinality is therefore covered from the OTHER side: the
+          # usage-suppressed control above reds it at ZERO (`usage:no_usage_event` on the
+          # worker-driven verdict), and the passing profile asserts EXACTLY ONE.
+          echo "positive control: a duplicate usage event reds the cardinality assertion on the HARNESS attempts, as required"
+
+      # DEP-019 — THE NOT-THE-EXECUTOR CONTROL, at the lane level.
+      #
+      # The profile already carries an always-on in-test control (§2b-control): it judges tenant
+      # A's HARNESS-driven attempt with the SAME verdict and requires it to red on both arms. This
+      # step is the second half — it runs the whole profile with the worker-driven case DISABLED
+      # and proves the lane notices, so "worker-driven" cannot quietly become "not run".
+      - name: POSITIVE CONTROL — with the deployed worker NOT the executor, the claim MUST NOT stand
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_SPINE_EXECUTOR: harness
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/m1-spine-not-the-executor.txt"
+          # The TAP reporter, deliberately: `# SKIP` is a stable TAP token, while the default spec
+          # reporter's skip glyph is a unicode character whose shape is not a contract.
+          # ★ THE EXIT STATUS IS KEPT (Codex P1, PR #572). `|| true` discarded it, so a profile in
+          # which some OTHER case failed would still reach the greps below and be announced as a
+          # passing control. The suite must exit 0 here: under `harness` the worker-driven case is
+          # withdrawn and everything else — including the in-test control — must still pass.
+          status=0
+          node --test --test-concurrency=1 --test-reporter=tap tests/d1/m1-spine.test.mjs > "$out" 2>&1 || status=$?
+          if [ "$status" != "0" ]; then
+            cat "$out"
+            echo "::error::the profile FAILED under AOA_M1_SPINE_EXECUTOR=harness (exit ${status}); the control proves nothing"
+            exit 1
+          fi
+          # The worker-driven case must be WITHDRAWN, and the in-test control must have really RUN
+          # and passed. That pairing is what distinguishes "the claim was withdrawn" from "the whole
+          # profile fell over", and it is why the control is checked for the ABSENCE of `# SKIP`.
+          grep -E '^ok [0-9]+ - .*DEPLOYED worker performs.*# SKIP' "$out" >/dev/null || {
+            cat "$out"
+            echo "::error::the worker-driven case was not withdrawn under AOA_M1_SPINE_EXECUTOR=harness"
+            exit 1
+          }
+          control="$(grep -E '^(ok|not ok) [0-9]+ - .*worker-driven verdict REDS' "$out" || true)"
+          case "$control" in
+            ok*"# SKIP"*|"") cat "$out"; echo "::error::the in-test not-the-executor control did not RUN"; exit 1 ;;
+            "not ok"*) cat "$out"; echo "::error::the in-test not-the-executor control FAILED"; exit 1 ;;
+          esac
+          echo "not-the-executor control: the worker-driven claim is withdrawn and the verdict's red arm still runs"
+          tail -n 30 "$out"
+          tail -n 40 "$out"
+
+      # ★ The bundle the M1-D1-SPINE record is made from is the one collected ABOVE, immediately
+      # after the passing profile and BEFORE either negative control. Codex (PR #566) measured the
+      # reason: the controls reuse the same live database, and the duplicate-usage control
+      # deliberately appends a second usage event and a second cost row per enabled tenant, so a
+      # bundle taken after them describes the MUTATED state, not the passing one. This second
+      # collection is the post-control / failure state, kept under its own directory and named as
+      # such, so the two can never be confused.
+      - name: Collect the post-control (or failure) evidence bundle
+        if: always()
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR/post-controls"
+          --run-id "${{ github.run_id }}"
+          --reason "m1-spine post-control state on ${{ github.sha }} (${{ job.status }})"
+
+      - name: Upload the retained m1-spine evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m1-spine-evidence-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Tear down the m1-spine stack
+        if: always()
+        run: docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" down -v --remove-orphans || true
+
+  # ---------------------------------------------------------------------------
+  # DEP-018 — the M1-D1-SPINE campaign FAULT MATRIX (its own job, for the same reason
+  # `m1-spine` is: `AOA_D1_CAMPAIGN` is single-valued, so a third value would DISPLACE the
+  # foundation campaign on any run that selected it).
+  #
+  # It shares the `m1-spine` one-worker override and its F10 tenant set on purpose — the two
+  # profiles are the same gate's control plane, and a second topology would give the matrix
+  # different tenants from the ones the spine profile's record names. The two jobs do NOT share a
+  # stack: each brings its own up and tears it down.
+  #
+  # ★ THE POSITIVE CONTROL IS THE POINT. With `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION=1` every
+  # injection is skipped while every case still records and classifies. If the matrix still
+  # PASSES then, it is measuring nothing — the failure class this ticket exists to stop — so the
+  # lane runs exactly that and fails if it succeeds, and greps the evidence marker to prove it
+  # went red for the INJECTION reason rather than a bring-up failure.
+  # ---------------------------------------------------------------------------
+  m1-fault-matrix:
+    # Dispatch selector (see the `workflow_dispatch:` block). On every non-dispatch
+    # event `inputs.lanes` is empty, so the first disjunct runs the job exactly as before.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.lanes == 'all' || inputs.lanes == 'm1-fault-matrix' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COMPOSE_FILE_PATH: docker-compose.d1.yml
+      SPINE_OVERRIDE_PATH: docker/d1/m1-spine.override.yml
+      EVIDENCE_DIR: ${{ github.workspace }}/m1-fault-matrix-evidence
+      AOA_D1_FAKE_PROVIDER_IMAGE: aoa-d1-fake-provider:m1-fault-matrix
+      AOA_D1_CAMPAIGN: m1-fault-matrix
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # E6-F021 (2026-09-24 amendment) -- the MinIO service image is now this
+      # organisation's own GHCR mirror, pinned by digest in docker-compose.d1.yml. A
+      # repo-scoped GHCR package is not anonymously pullable, so the bring-up below needs
+      # this login. It uses the run's own GITHUB_TOKEN with `packages: read`; no secret is
+      # configured for it and no third party can revoke it.
+      - name: Login to GitHub Container Registry (D1 MinIO mirror)
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Static preflight (the declaration, its reds, and the compose invariants)
+        run: |
+          node scripts/check-d1-compose.mjs
+          node scripts/check-campaign-fault-matrix.mjs
+          node --test scripts/check-campaign-fault-matrix.test.mjs
+
+      - name: Enable Docker containerd image store (attestation + --load)
+        run: |
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+
+      - name: Build the split D1 images + the reference provider
+        run: |
+          set -euo pipefail
+          bash docker/images/build.sh
+          docker build -f docker/d1/fake-provider.Dockerfile -t "$AOA_D1_FAKE_PROVIDER_IMAGE" .
+          CP_TAG="$(grep -E '^CONTROL-PLANE_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          WK_TAG="$(grep -E '^WORKER_IMAGE=' docker/images/digests.env | cut -d= -f2-)"
+          test -n "$CP_TAG" && test -n "$WK_TAG"
+          {
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } >> "$GITHUB_ENV"
+          mkdir -p docker/d1
+          {
+            echo "AOA_D1_FAKE_PROVIDER_IMAGE=${AOA_D1_FAKE_PROVIDER_IMAGE}"
+            echo "AOA_D1_CONTROL_PLANE_IMAGE=${CP_TAG}"
+            echo "AOA_D1_WORKER_IMAGE=${WK_TAG}"
+          } > docker/d1/.env
+
+      # DEP-019 — this job reuses `docker/d1/m1-spine.override.yml`, which requires the per-run
+      # control-plane keypair and the `${…:?}` secrets master key. Measured on probe run
+      # 35853547516: without this step the bring-up fails the compose RENDER. ONE script, called by
+      # both jobs, so the two cannot drift the next time the topology gains a requirement.
+      - name: Generate the per-run control-plane keypair and secrets master key
+        run: node scripts/generate-d1-spine-keys.mjs
+
+      - name: Bring up the ONE-worker topology
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" up -d --wait --wait-timeout 300
+          workers="$(docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" ps --services --status running | grep -c '^worker-' || true)"
+          echo "running worker services: ${workers}"
+          test "${workers}" = "1" || { echo "::error::m1-fault-matrix expects exactly one worker service, saw ${workers}"; exit 1; }
+
+      - name: Run the M1-D1-SPINE fault matrix (live)
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_FAULT_MATRIX_EVIDENCE_DIR: ${{ github.workspace }}/m1-fault-matrix-evidence/profile
+        run: node --test --test-concurrency=1 tests/d1/m1-fault-matrix.test.mjs
+
+      - name: The matrix's own verdict over the retained bundle
+        run: >-
+          node scripts/check-campaign-fault-matrix.mjs
+          --evidence m1-fault-matrix-evidence/profile/m1-fault-matrix-evidence.json
+
+      - name: Collect the PASSING evidence bundle (before the negative control mutates the stack)
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR/passing"
+          --run-id "${{ github.run_id }}"
+          --reason "m1-fault-matrix PASSING profile on ${{ github.sha }}"
+
+      - name: POSITIVE CONTROL — with every injection suppressed, the matrix MUST go red
+        env:
+          AOA_D1_LIVE: "1"
+          AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION: "1"
+          AOA_M1_FAULT_MATRIX_EVIDENCE_DIR: ${{ github.workspace }}/m1-fault-matrix-evidence/suppressed-control
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/m1-fault-matrix-suppressed.txt"
+          if node --test --test-concurrency=1 tests/d1/m1-fault-matrix.test.mjs > "$out" 2>&1; then
+            cat "$out"
+            echo "::error::the fault matrix PASSED with every injection suppressed — it is measuring nothing"
+            exit 1
+          fi
+          grep -F '[fault-matrix:evidence]' "$out" || {
+            cat "$out"
+            echo "::error::the fault matrix went red with injections suppressed, but NOT on the evidence verdict"
+            exit 1
+          }
+          grep -F 'injection_did_not_fire' "$out" || {
+            cat "$out"
+            echo "::error::the suppressed run did not report an unfired injection — the observers are not deciding anything"
+            exit 1
+          }
+          echo "positive control: a suppressed injection reds the matrix, as required"
+          tail -n 40 "$out"
+
+      - name: Collect the post-control (or failure) evidence bundle
+        if: always()
+        run: >-
+          node scripts/collect-d1-evidence.mjs
+          --compose "$COMPOSE_FILE_PATH"
+          --out "$EVIDENCE_DIR/post-controls"
+          --run-id "${{ github.run_id }}"
+          --reason "m1-fault-matrix post-control state on ${{ github.sha }} (${{ job.status }})"
+
+      - name: Upload the retained fault-matrix evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m1-fault-matrix-evidence-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Tear down the fault-matrix stack
+        if: always()
+        run: docker compose -f "$COMPOSE_FILE_PATH" -f "$SPINE_OVERRIDE_PATH" down -v --remove-orphans || true

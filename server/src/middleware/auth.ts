@@ -360,6 +360,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         companyId: claims.company_id,
         keyId: undefined,
         runId: runIdHeader || claims.run_id || undefined,
+        // DAT-007 item #1: the SIGNED run id, immune to the x-aoa-run-id header override
+        // above. The distributed /mcp currency gate keys on this, never req.actor.runId.
+        signedRunId: claims.run_id,
         source: "agent_jwt",
       };
       next();

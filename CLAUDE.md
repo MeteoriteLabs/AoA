@@ -18,7 +18,7 @@ You are reading this as context for working on the AoA codebase. This applies wh
 
 ## Critical Rules
 
-1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files. Schema DDL is always `db:generate` output. **Narrow exception (C14):** drizzle-kit cannot emit idempotency guards (`IF NOT EXISTS` / `DO $$ … duplicate_object`) or data-only backfills; a few migrations (e.g. `0189`, `0195`) hand-APPEND those after generation — always with an inline comment and always idempotent. Schema DDL is never hand-authored. See `AGENTS.md` and Decision #19.
+1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files. Schema DDL is always `db:generate` output. **Narrow exception (C14) — TWO classes, both of which drizzle-kit provably cannot emit:** **(a) idempotency guards** (`IF NOT EXISTS` / `DO $$ … duplicate_object`) **and data-only backfills**, hand-APPENDED below generated DDL (e.g. `0189`, `0195`); **(b) idempotent cluster/security DDL** — roles, `GRANT`/`REVOKE`, `ENABLE`/`FORCE ROW LEVEL SECURITY`, `CREATE POLICY`, and `SECURITY DEFINER` functions plus their ACLs — hand-authored into a delta-free `--custom` migration (e.g. `0211`, `0213`, `0214`, `0261`, `0267`; `0266` is superseded and is NOT an exemplar). **Class (b) is governed by Decision #122 and its 2026-09-01 amendment, which carry the binding conditions — read them before hand-authoring anything;** this line is a summary, not the authority. **Tables, columns, indexes and foreign keys are NEVER hand-authored** — that is always `db:generate` output. See `AGENTS.md` and Decisions #19 + #122.
 2. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
 3. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. All user-facing text says "Task" / "Tasks". Never rename the table or routes.
 4. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
@@ -28,7 +28,7 @@ You are reading this as context for working on the AoA codebase. This applies wh
 8. **Memory feedback requires ≥3 occurrences.** Don't suggest memory from one-off edits. Pattern must be consistent. (Decision #46)
 9. **Discussion scope fallback: item-level > entry-level > discussion-level > null.** Founder's per-item override always wins. (Decision #61)
 10. **Consult `docs/architecture/decisions.md` before making architectural choices.** Do not relitigate locked decisions.
-11. **The only runtime hosted API key is for embeddings.** Agents, Commander, and **all extraction** (discussion + debrief-push + file-import + crew memory-extract tools) run keyless via locally-installed CLIs. Extraction is **CLI-only** — no extraction code path reads a hosted provider key, and there is no api fallback (the `callLLM`/`callAnthropic`/`callOpenAI` path + the engine-status route were removed, amended Decision #104 on 2026-06-27). Embeddings use OpenAI `text-embedding-3-small`; per-company key = Settings secret `llm:openai` → env `OPENAI_API_KEY`, configured in **Settings → Memory**. The `createOpenAiEmbedder` chokepoint in `server/src/services/embeddings.ts` is the sole caller. Do not add new hosted-API calls outside this chokepoint, and do not re-introduce a hosted-key extraction fallback. (Decision #104, amended 2026-06-27)
+11. **Extraction is CLI-only; credential mode follows the deployment boundary.** In self-hosted modes, agents, Commander, and extraction (discussion + debrief-push + file-import + crew memory-extract tools) use locally installed CLI logins and no hosted model-provider key. In `cloud_auth`, PR #320 keeps extraction as a sandbox-local CLI invocation but resolves the Company's configured model-provider key and materializes it only inside the isolated E2B environment; the shared host never executes model output or falls back to its own CLI login. There is no selectable/direct `api` extraction engine—the removed `callLLM`/`callAnthropic`/`callOpenAI` path and engine-status route stay removed. Embeddings continue to use OpenAI `text-embedding-3-small` through the `createOpenAiEmbedder` chokepoint. Do not add direct hosted-API extraction calls, serialize provider keys into prompts/protocol/evidence, or introduce a host fallback. (Decision #104, amended 2026-06-27 and 2026-08-08)
 
 ---
 
@@ -168,8 +168,8 @@ Flow: Discussion entry → CLI extraction → `discussion_extracted_items` → f
 
 - Polymorphic scope: department / project / goal. Entry-level scope overrides thread-level scope.
 - Inline annotations on entries (anchorStart/anchorEnd character offsets).
-- **Extraction engine — CLI-only (Decision #104, amended 2026-06-27):** `resolveExtractionEngine` returns `"cli"` or throws ("install a CLI and run its login"). There is no `api` engine and no hosted-key precheck — extraction never reads a provider key. The CLI engine is Option B server-side one-shot (`--print` / `exec`): no MCP bridge, no `submit_extracted_items` handshake, no Decision #100 crew-CLI blockers. Windows prompt delivery: user content is sent via **stdin** to claude (never argv), fixing empty Commander turns. The same CLI extractor serves discussion, debrief-push, file-import, and the crew memory-extract tools.
-- Extraction failure: entry marked `failed`/`skipped`, founder notified via `notifications` table. Can retry or manually create. Failure type classified (`not_installed` / `not_authed` / `timeout` / `nonzero_exit` / `unparseable`) with actionable CLI-guidance copy in DiscussionDetail (never points at a key). No engine-status banner — that route + UI were removed.
+- **Extraction engine — CLI-only (Decision #104, amended 2026-08-08 for PR #320):** `resolveExtractionEngine` returns `"cli"` or throws. There is no `api` engine. In self-hosted modes, extraction remains a server-side one-shot (`--print` / `exec`) using the installed CLI login. In `cloud_auth`, `one-shot-sandbox-cli.ts` resolves the Company's model-provider key, directly acquires an isolated E2B environment, and invokes the sandbox provider runtime; it does not use the MCP bridge and fails closed when Company/provider/environment context is unavailable. The key is scoped to that sandbox execution and is never taken from the shared host's CLI login. There is no `submit_extracted_items` handshake or Decision #100 crew-CLI blocker. Windows prompt delivery sends user content via **stdin** to claude (never argv). The same CLI extractor serves discussion, debrief-push, file-import, and crew memory-extract tools.
+- Extraction failure: entry marked `failed`/`skipped`, founder notified via `notifications` table. Can retry or manually create. Failure copy is cause-aware: local `not_installed`/`not_authed` points to the configured CLI login, while cloud `sandbox_unavailable` may point to provider-key and execution-environment Settings; timeout/nonzero/unparseable cases do not invent credential advice. No selectable-engine status banner exists.
 - **Extract-then-scope (W2, D6):** the controller `create_scope_draft` commit awaits `extractionService.extractThreadEntriesAwait` (never-extracted entries only — status pending/skipped/failed with zero items; 25-entry cap + 180s wall-clock deadline; best-effort) BEFORE compiling, then compiles with `suppressFallbackTask: true` — an Adjutant draft with zero real items shows **no synthetic task card**. Range integrity: the helper folds truncation (cap/deadline) + the first non-completed entry into `rangeEndCap` → the draft's `sourceEndSeq` is capped there, so unprocessed/failed entries stay in the NEXT scope's range (an all-failed pass mints NO draft; entries stay retryable). Applying a card that came from an extracted item resolves the source item (approved + result linkage + pendingItemCount decrement + hub reconcile — no duplicate approvals, no stale badges). The human create-draft route does not run extraction (synchronous request) and keeps ONE fallback card titled by `derivedTitleFromEntries` (longest entry's first sentence, ≤80 chars); the keyword-stub titles ("Implement real multi-message scope generation", …) are dead. Reprocess (delete + re-extract) semantics stay in `discussions.ts reprocessAllEntries`. End-state (D17): all task titles agent-authored — the human button becomes "Ask Adjutant to scope", queued behind the fake-crew-harness CI work.
 - **Autonomy → dispatch (W1a/W1b/W1c):** a scope draft (`create_scope_draft`) auto-applies per thread autonomy (`thread.autonomyLevel ?? internal_agent_config.crewAutonomyLevel` — D18 split the company dial; crew reads `crew_autonomy_level`, Commander keeps `autonomy_level`). **Manual (0)** = propose-only (founder accepts each card). **Assist (1)** = auto-create + assign the crew tasks as `planning` (non-dispatchable), then raise ONE `crew_dispatch` approval in the Inbox (`approvalService`, generic `approval_request` hub item → deep-links to `/approvals`); approving flips those tasks `planning→standard` + dispatches them, rejecting leaves them parked. **Drive (2)** = auto-create as `standard` + auto-dispatch. Every real dispatch (Drive auto + Assist-on-approve) runs `preflightCrewDispatch` (company budget hard-stop + thread pause/disable); blocked → left for manual accept (Assist approve throws + rolls back). The `crew_dispatch` approval carries only `taskIds` — memory candidates always stay founder-gated (D12). Key files: `server/src/services/thread-agent-actions.ts` (enqueue), `server/src/services/approvals.ts` (`crew_dispatch` approve/reject side-effect).
 
@@ -333,10 +333,54 @@ rollback, and smoke-test runbook.
 | Platform | Verify | E2E |
 |----------|--------|-----|
 | Linux | Required gate | Required gate |
-| macOS | Advisory (green) | Advisory (green) |
-| Windows | Advisory (4 tests skipped — Issues #113/#127) | Skipped — embedded-postgres can't start on `runneradmin` runner (Issue #114) |
+| macOS | Advisory — see status below | Advisory (green) |
+| Windows | Advisory — see status below (4 tests skipped — Issues #113/#127) | Skipped — embedded-postgres can't start on `runneradmin` runner (Issue #114) |
 
 Windows e2e skip is implemented at playwright config level (`tests/e2e/playwright.config.ts`).
+
+**Advisory `verify` status, corrected 2026-09-21 (M0 unit 2).** This table said macOS verify was
+*"Advisory (green)"* and described Windows only by its skipped tests. Both were false at
+`169be1f2c`: `cross-platform-weekly` had concluded `cancelled` on **every** scheduled run from
+2026-08-16 to 2026-09-20 — six consecutive weeks with no cross-platform verdict at all, which is
+what the DEP-013 consumer reports as `not_success`.
+
+- **macOS** failed 4 tests on the `/var` → `/private/var` symlink class
+  (`company-workspace-fs-routes.test.ts`, `workspace-runtime.test.ts`, and a third site found once
+  the lane could finish: `browser-runtime/path-adapter.test.ts`). Fixtures now resolve their temp
+  roots at creation; the underlying lexical path comparison is recorded as `E5-F003`.
+- **Windows** never finished: the single job ran typecheck + the whole suite + build under one
+  25-minute cap, and a timed-out job concludes `cancelled`. The lane is now **split into
+  `verify-cross-platform` (typecheck + build) and `test-cross-platform` (tests, sharded 4 ways)**,
+  mirroring the required Linux lane rather than raising the cap (GO-BOOK §2.0). Three further
+  causes surfaced behind the cap and are fixed: a missing dist build, a missing
+  `NODE_OPTIONS` heap ceiling, and a missing `plugin-sdk/dist` that `pnpm -r typecheck` had been
+  producing as a side effect.
+
+**Measured status (runs `35532248020`, `35533383104`).** ★ *Corrected 2026-09-21 after Codex review
+of PR #525: this paragraph still said Windows's failure set was "unmeasured", which was written
+before the lane could finish and was false once it could.* Both `verify-cross-platform` jobs and
+both `e2e-cross-platform` jobs are **green on both platforms**. Of the eight test shards, **five are
+green** and three fail on one test each:
+
+| Platform | Failing test | Disposition |
+|---|---|---|
+| Windows | `ensureRuntimeServicesForRun` late-exit rollback | `E5-F005` — real-process race |
+| Windows | `startRuntimeServicesForWorkspaceControl` batch validation | `E5-F005` — same family |
+| macOS | JOB-003 immutable-tick-deadline (real PostgreSQL) | `E3-F039` — **proven flake** (green in the earlier run, red in the later one, identical shard partition) |
+
+★★★ **What a green run of this lane means — `E6-F023`, resolved 2026-09-21 (option 3).** Until
+then every job carried `continue-on-error: true`, so the run conclusion was blind to all of them: run
+`35530935808` concluded `success` with **8 of 12 jobs failing**. Now `verify-cross-platform` and
+`e2e-cross-platform` are **verdict-bearing** (no flag, and the `Install Playwright` step's own flag is
+gone too, closing the path where a failed install skipped the e2e steps and left the job green),
+while `test-cross-platform` stays **advisory**. So a green **run** means both platforms typecheck and
+build, macOS passes the browser suite, and Windows installs Playwright — it does **not** mean the
+test shards passed, and a green **Windows** e2e job asserts build parity only (Issue #114).
+
+★ **This holds on `docs/replatform-program`, not on `main`.** The weekly `schedule` runs from `main`,
+which still has the old all-advisory workflow until the program integration checkpoint (M5); a green
+scheduled run there still means nothing. **No guard enforces the new shape** — re-adding the flag
+would silently restore the false green.
 
 **CDN fallback:** The required Linux `e2e` job uses a Google Chrome-for-Testing download when `cdn.playwright.dev` stalls (configured in `.github/workflows/pr.yml`). The advisory `e2e-cross-platform` macOS/Windows lanes do NOT use that fallback — they still rely on the default Playwright CDN and time out at 12 min if the CDN stalls. Generalizing the Google-storage fallback to mac/win lanes is tracked for 1.1.
 
@@ -344,7 +388,7 @@ Windows e2e skip is implemented at playwright config level (`tests/e2e/playwrigh
 
 ## Database Schema
 
-All table definitions live in `packages/db/src/schema/`. Schema changes use Drizzle ORM only — never raw SQL — except the C14 narrow exception (hand-appended idempotency guards + data backfills, e.g. 0189/0195; schema DDL is always `db:generate`).
+All table definitions live in `packages/db/src/schema/`. Schema changes use Drizzle ORM only — never raw SQL — except the C14 narrow exception, which has two classes: **(a)** hand-appended idempotency guards and data-only backfills (e.g. 0189/0195), and **(b)** idempotent cluster/security DDL, governed by Decision #122. Schema DDL is always `db:generate` output. See rule 1 above and `AGENTS.md` for the full text; **Decision #122 is the authority — this line summarises it and cannot widen it.**
 
 ### Core / Company
 

@@ -1,0 +1,399 @@
+// -----------------------------------------------------------------------------
+// DEP-015 — reds for the shipped CI boot lane's workflow-shape guard.
+//
+//   node --test scripts/check-m1-shipped-boot-shape.test.mjs
+//
+// Every case mutates the REAL committed workflow one way and asserts the guard reds. Per E6-D001
+// the one push allowed is a REGISTRATION-ONLY push (the program branch, paths = this file, every
+// job gated to dispatch); the positive controls red an unrestricted push and an ungated job.
+// -----------------------------------------------------------------------------
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  evaluateShippedBootWorkflowShape,
+  jobDispatchGates,
+  CANDIDATE_CONTROL_MARKERS,
+  SHIPPED_BOOT_WORKFLOW,
+} from "./lib/m1-shipped-boot-shape.mjs";
+import { parseYaml } from "./lib/yaml-lite.mjs";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const real = () => readFileSync(path.join(repoRoot, SHIPPED_BOOT_WORKFLOW), "utf8");
+const violationsOf = (text) => evaluateShippedBootWorkflowShape(text).violations;
+const anyMatch = (violations, re) => violations.some((x) => re.test(x));
+
+/** Replace exactly one occurrence, and fail the TEST if the anchor is gone — a mutation that
+ * silently did nothing would make its red vacuous. */
+function mutate(text, from, to) {
+  const count = text.split(from).length - 1;
+  assert.equal(count, 1, `mutation anchor must occur exactly once: ${JSON.stringify(from)} (found ${count})`);
+  return text.replace(from, to);
+}
+
+test("the REAL workflow satisfies every shape invariant", () => {
+  const violations = violationsOf(real());
+  assert.deepEqual(violations, [], violations.join("\n"));
+});
+
+test("the guard actually PARSES the real `on:` block (non-vacuous): one trigger, the two inputs", () => {
+  const text = real();
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^on:/.test(l));
+  const end = lines.findIndex((l, i) => i > start && /^\S/.test(l) && !/^#/.test(l));
+  const on = parseYaml(lines.slice(start, end).join("\n")).on;
+  assert.deepEqual(Object.keys(on).sort(), ["push", "workflow_dispatch"]);
+  assert.equal(on.workflow_dispatch.inputs.candidate.required, true);
+  assert.equal(on.workflow_dispatch.inputs.mode.default, "keyless");
+  // E6-D001: the push exists ONLY to register the workflow — its own path, the program branch.
+  assert.deepEqual(on.push, { branches: ["docs/replatform-program"], paths: [SHIPPED_BOOT_WORKFLOW] });
+});
+
+test("the guard actually FINDS the job and its dispatch-only gate (non-vacuous)", () => {
+  assert.deepEqual(jobDispatchGates(real()), { "shipped-boot": true });
+});
+
+// === E6-D001: the registration-only push ====================================================
+
+const PUSH_BLOCK = `  push:\n    branches:\n      - docs/replatform-program\n    paths:\n      - "${SHIPPED_BOOT_WORKFLOW}"\n`;
+
+test("POSITIVE CONTROL: a push trigger WITHOUT the paths restriction reds (it would fire on every code change)", () => {
+  const text = mutate(real(), PUSH_BLOCK, "  push:\n    branches:\n      - docs/replatform-program\n");
+  assert.ok(anyMatch(violationsOf(text), /registration push must be restricted to paths/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: paths listing anything besides the workflow file itself", () => {
+  for (const extra of ["      - \"server/**\"\n", "      - \".github/keyed-e2b-trigger\"\n"]) {
+    const text = mutate(real(), PUSH_BLOCK, `${PUSH_BLOCK}${extra}`);
+    assert.ok(anyMatch(violationsOf(text), /registration push must be restricted to paths/), `${extra}\n${violationsOf(text).join("\n")}`);
+  }
+  const swapped = mutate(real(), `      - "${SHIPPED_BOOT_WORKFLOW}"\n`, "      - \"docker/**\"\n");
+  assert.ok(anyMatch(violationsOf(swapped), /registration push must be restricted to paths/), violationsOf(swapped).join("\n"));
+});
+
+test("REJECT: the registration push on another branch, or with paths-ignore / tags", () => {
+  const branch = mutate(real(), PUSH_BLOCK, PUSH_BLOCK.replace("docs/replatform-program", "main"));
+  assert.ok(anyMatch(violationsOf(branch), /restricted to branches \[docs\/replatform-program\]/), violationsOf(branch).join("\n"));
+  const ignore = mutate(real(), PUSH_BLOCK, `${PUSH_BLOCK}    paths-ignore:\n      - "docs/**"\n`);
+  assert.ok(anyMatch(violationsOf(ignore), /may declare only `branches` \+ `paths`/), violationsOf(ignore).join("\n"));
+});
+
+test("REJECT: a job missing the dispatch-only `if` (a push-created run would execute it)", () => {
+  const text = mutate(real(), "    if: github.event_name == 'workflow_dispatch'\n", "");
+  assert.ok(anyMatch(violationsOf(text), /job 'shipped-boot' must carry `if: github\.event_name == 'workflow_dispatch'`/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: a job whose `if` is weaker than dispatch-only", () => {
+  const text = mutate(real(), "    if: github.event_name == 'workflow_dispatch'\n", "    if: github.event_name != 'pull_request'\n");
+  assert.ok(anyMatch(violationsOf(text), /job 'shipped-boot' must carry/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: a SECOND job without the gate (every job, not just the first)", () => {
+  const text = mutate(real(), "\njobs:\n", "\njobs:\n  sneaky:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n");
+  assert.ok(anyMatch(violationsOf(text), /job 'sneaky' must carry/), violationsOf(text).join("\n"));
+});
+
+test("a step-level `if` does not count as the job gate", () => {
+  const text = mutate(real(), "    if: github.event_name == 'workflow_dispatch'\n", "");
+  assert.equal(jobDispatchGates(text)["shipped-boot"], false);
+});
+
+for (const trigger of ["pull_request", "schedule", "merge_group", "workflow_call", "workflow_run"]) {
+  test(`REJECT: a \`${trigger}\` trigger`, () => {
+    const body = trigger === "schedule" ? "  schedule:\n    - cron: \"0 3 * * 1\"\n" : `  ${trigger}:\n`;
+    const text = mutate(real(), "on:\n  workflow_dispatch:\n", `on:\n${body}  workflow_dispatch:\n`);
+    assert.ok(anyMatch(violationsOf(text), new RegExp(`trigger '${trigger}' is forbidden`)), violationsOf(text).join("\n"));
+  });
+}
+
+test("REJECT: the candidate input no longer required (an unnamed candidate)", () => {
+  const text = mutate(real(), "        required: true\n        type: string\n      mode:", "        required: false\n        type: string\n      mode:");
+  assert.ok(anyMatch(violationsOf(text), /`candidate` input must be `required: true`/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: keyed as the default mode (spend must be opt-in)", () => {
+  const text = mutate(real(), "        default: keyless\n", "        default: keyed\n");
+  assert.ok(anyMatch(violationsOf(text), /must default to "keyless"/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: a keyed secret exposed without the keyed gate", () => {
+  const text = mutate(
+    real(),
+    "          E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}\n        run: node scripts/m1-shipped-boot/journey.mjs boot-workers",
+    "          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}\n        run: node scripts/m1-shipped-boot/journey.mjs boot-workers",
+  );
+  assert.ok(anyMatch(violationsOf(text), /ungated secret reference/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: any other secret, even gated (e.g. a signing key from the secret store)", () => {
+  const text = mutate(
+    real(),
+    "          ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}\n        run: >-",
+    "          ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}\n          CP_KEY: ${{ inputs.mode == 'keyed' && secrets.CP_SIGNING_KEY || '' }}\n        run: >-",
+  );
+  assert.ok(anyMatch(violationsOf(text), /secret 'CP_SIGNING_KEY' is not one the lane may read/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the checkout not bound to the candidate", () => {
+  const text = mutate(real(), "          ref: ${{ inputs.candidate }}\n", "          ref: docs/replatform-program\n");
+  assert.ok(anyMatch(violationsOf(text), /checkout must be `ref: \$\{\{ inputs.candidate \}\}`/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the ancestry check removed (any sha, not a frozen candidate)", () => {
+  const text = mutate(real(), 'git merge-base --is-ancestor "$CANDIDATE" FETCH_HEAD', "true");
+  assert.ok(anyMatch(violationsOf(text), /ancestor of docs\/replatform-program/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: a pulled image instead of a source build, or the admission step dropped", () => {
+  const pulled = mutate(real(), "          bash docker/images/build.sh\n", "          docker pull ghcr.io/meteoritelabs/aoa-worker:staging\n");
+  const v = violationsOf(pulled);
+  assert.ok(anyMatch(v, /docker\/images\/build\.sh/), v.join("\n"));
+  assert.ok(anyMatch(v, /never `docker pull`/), v.join("\n"));
+  const unadmitted = mutate(real(), "          bash docker/images/admit.sh\n", "");
+  assert.ok(anyMatch(violationsOf(unadmitted), /docker\/images\/admit\.sh/), violationsOf(unadmitted).join("\n"));
+});
+
+// ★ E6-F030. Two reds, because the repair has two halves and either alone is a hole: without the
+// BUILD the lane has no store image, and without the EXPORT the built image is never the one
+// Compose resolves — an older candidate would quietly fall back to its own withdrawn default.
+test("REJECT: the object store no longer built from source (it would have to be pulled)", () => {
+  const v = violationsOf(mutate(
+    real(),
+    "          docker build -f docker/d1/minio.Dockerfile \\\n",
+    "          docker build \\\n",
+  ));
+  assert.ok(anyMatch(v, /must BUILD its object store from upstream source/), v.join("\n"));
+});
+
+test("REJECT: the built store's tag not exported, so Compose resolves something else", () => {
+  const stripped = real()
+    .replace('          echo "AOA_M1_MINIO_IMAGE=$AOA_M1_MINIO_IMAGE" >> "$GITHUB_ENV"\n', "");
+  assert.ok(!/AOA_M1_MINIO_IMAGE=[^\n]*GITHUB_ENV/.test(stripped), "the export mutation must remove the `$GITHUB_ENV` write");
+  const v = violationsOf(stripped);
+  assert.ok(anyMatch(v, /must export the built store's tag/), v.join("\n"));
+});
+
+// ★ Codex P2, PR #604 — the mutation the FIRST version of the clause above could not see: an
+// ordinary shell assignment, which later steps do not inherit. The clause matched `NAME=` anywhere,
+// so it stayed green over exactly the regression it claims to prevent.
+test("REJECT: the export downgraded to a plain shell assignment (later steps inherit nothing)", () => {
+  const v = violationsOf(mutate(
+    real(),
+    '          echo "AOA_M1_MINIO_IMAGE=$AOA_M1_MINIO_IMAGE" >> "$GITHUB_ENV"\n',
+    '          AOA_M1_MINIO_IMAGE="$AOA_M1_MINIO_IMAGE"\n',
+  ));
+  assert.ok(anyMatch(v, /must export the built store's tag/), v.join("\n"));
+});
+
+// ★ Codex P2, PR #604 — the step runs the CANDIDATE's Dockerfile, so the release must be pinned by
+// the LANE. Dropping the build args would build that candidate's default MinIO under this tag.
+for (const [arg, value] of [["MINIO_VERSION", "RELEASE.2025-09-07T16-13-09Z"], ["MINIO_SOURCE_COMMIT", "07c3a429bfed433e49018cb0f78a52145d4bedeb"]]) {
+  test(`REJECT: the object-store build no longer pins ${arg} (the candidate's default would ship)`, () => {
+    const from = `            --build-arg "${arg}=${value}" \\\n`;
+    const v = violationsOf(mutate(real(), from, ""));
+    assert.ok(anyMatch(v, new RegExp(`must pin \`${arg}=`)), v.join("\n"));
+  });
+}
+
+test("REJECT: the built binary's own --version no longer read back", () => {
+  const stripped = real().replace(/--version/g, "--help");
+  assert.ok(!/--version/.test(stripped), "the mutation must remove every `--version`");
+  const v = violationsOf(stripped);
+  assert.ok(anyMatch(v, /read the built object store's own `--version` back/), v.join("\n"));
+});
+
+// ★ Codex P1, PR #604 — checkout replaces the workspace, and `docker/d1/minio.Dockerfile` only
+// exists from `bafa11938`. An accepted-but-older candidate (3966a01f9f carries every control marker)
+// would die at the build step on a missing file instead of being refused as too old.
+test("REJECT: the candidate gate no longer requires the object-store build recipe", () => {
+  const v = violationsOf(mutate(
+    real(),
+    "                   docker/d1/minio.Dockerfile; do\n",
+    "                   ; do\n",
+  ));
+  assert.ok(anyMatch(v, /candidate gate must require docker\/d1\/minio\.Dockerfile/), v.join("\n"));
+});
+
+// ★ The registry ban NAMED registries, and did not name the one this finding is about.
+test("REJECT: a quay.io reference — the ban must not be only as complete as its host list", () => {
+  const v = violationsOf(mutate(
+    real(),
+    '          AOA_M1_MINIO_IMAGE: "aoa-m1-minio:RELEASE.2025-09-07T16-13-09Z"\n',
+    '          AOA_M1_MINIO_IMAGE: "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"\n',
+  ));
+  assert.ok(anyMatch(v, /must not reference a registry image/), v.join("\n"));
+});
+
+test("REJECT: the evidence upload widened to the whole output dir (keys, env, state)", () => {
+  const text = mutate(real(), "          path: ${{ env.M1_OUT }}/evidence/\n", "          path: ${{ env.M1_OUT }}/\n");
+  assert.ok(anyMatch(violationsOf(text), /only uploaded path must be/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the evidence upload only on success, or the teardown not always", () => {
+  const upload = mutate(
+    real(),
+    "      - name: Upload the evidence bundle (on pass and fail)\n        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'\n",
+    "      - name: Upload the evidence bundle (on pass and fail)\n",
+  );
+  assert.ok(anyMatch(violationsOf(upload), /evidence upload must run `if: always\(\)`/), violationsOf(upload).join("\n"));
+  const teardown = mutate(real(), "      - name: Tear down (stack, volumes, keypair, secrets)\n        if: always()\n", "      - name: Tear down (stack, volumes, keypair, secrets)\n");
+  assert.ok(anyMatch(violationsOf(teardown), /teardown .* must run `if: always\(\)`/), violationsOf(teardown).join("\n"));
+});
+
+test("REJECT: an input spliced into shell text instead of passed through env", () => {
+  const text = mutate(real(), '          --candidate "$CANDIDATE" --mode "$MODE"', '          --candidate "${{ inputs.candidate }}" --mode "$MODE"');
+  assert.ok(anyMatch(violationsOf(text), /input spliced into shell text/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: write permissions", () => {
+  const text = mutate(real(), "permissions:\n  contents: read\n", "permissions:\n  contents: write\n");
+  const v = violationsOf(text);
+  assert.ok(anyMatch(v, /exactly `contents: read`/), v.join("\n"));
+  assert.ok(anyMatch(v, /no permission may be `write`/), v.join("\n"));
+});
+
+test("REJECT: the in-job keypair check removed", () => {
+  const text = mutate(real(), '            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n', "            true\n");
+  assert.ok(anyMatch(violationsOf(text), /verify:cp-am-keypair/), violationsOf(text).join("\n"));
+});
+
+// === the HARD pre-upload leak scan (ruled in under F2 after the distinct review) ============
+
+test("REJECT: the leak-scan step removed", () => {
+  const text = mutate(real(), '            node scripts/m1-shipped-boot/journey.mjs leak-scan --out "$M1_OUT"\n', "            true\n");
+  assert.ok(anyMatch(violationsOf(text), /must run the pre-upload leak scan/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the upload NOT gated on the leak scan's success (a leaking bundle would publish)", () => {
+  const text = mutate(real(), "        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'\n", "        if: always()\n");
+  assert.ok(anyMatch(violationsOf(text), /upload must be gated `if: always\(\) && steps\.leak-scan\.outcome == 'success'`/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the upload gated on the SCAN alone, with the collect step's capture failure ignored", () => {
+  // Codex P1, PR #574: the scan runs `if: always()`, so a capture that broke during the
+  // best-effort collect step fails THAT step while the scan reads the truncated log as clean.
+  const text = mutate(real(), " && steps.collect.outcome != 'failure'", "");
+  assert.ok(anyMatch(violationsOf(text), /steps\.collect\.outcome != 'failure'/), violationsOf(text).join("\n"));
+  const noId = mutate(real(), "        id: collect\n", "");
+  assert.ok(anyMatch(violationsOf(noId), /collect step must carry an `id:`/), violationsOf(noId).join("\n"));
+});
+
+test("REJECT: the leak-scan step without an id, or not always()", () => {
+  const noId = mutate(real(), "        id: leak-scan\n", "");
+  assert.ok(anyMatch(violationsOf(noId), /must carry an `id:`/), violationsOf(noId).join("\n"));
+  const notAlways = mutate(real(), "        id: leak-scan\n        if: always()\n", "        id: leak-scan\n");
+  assert.ok(anyMatch(violationsOf(notAlways), /leak-scan step must run `if: always\(\)`/), violationsOf(notAlways).join("\n"));
+});
+
+// === the log surface is collected (review batch 3A, PR #569) ================================
+
+test("REJECT: a phase that does not tee its output into the job-log surface", () => {
+  for (const phase of ["seed", "dispatch"]) {
+    const text = mutate(
+      real(),
+      `        run: node scripts/m1-shipped-boot/journey.mjs ${phase} --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n`,
+      `        run: node scripts/m1-shipped-boot/journey.mjs ${phase} --out "$M1_OUT"\n`,
+    );
+    assert.ok(anyMatch(violationsOf(text), new RegExp(`phase '${phase}' does not tee its output`)), violationsOf(text).join("\n"));
+  }
+});
+
+test("REJECT: the keypair check untee'd — it is the step that handles the key", () => {
+  const text = mutate(real(), '            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n', "            pnpm verify:cp-am-keypair\n");
+  assert.ok(anyMatch(violationsOf(text), /keypair check must tee its output/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: a phase dropped from the lane entirely", () => {
+  const text = mutate(
+    real(),
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n',
+    "            true\n",
+  );
+  assert.ok(anyMatch(violationsOf(text), /must run the 'collect' phase/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: the job-log directory not created before the first tee (Codex P1)", () => {
+  const text = mutate(real(), '          mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"\n', "");
+  assert.ok(anyMatch(violationsOf(text), /job-log directory must be created before the first teed step/), violationsOf(text).join("\n"));
+});
+
+test("REJECT: no explicit `shell: bash`, so a teed pipeline would run without pipefail (Codex P1)", () => {
+  const text = mutate(real(), "    defaults:\n", "    x-defaults:\n");
+  assert.ok(anyMatch(violationsOf(text), /must declare .*shell: bash.* pipefail/), violationsOf(text).join("\n"));
+});
+
+/** A marker may carry regex metacharacters, so it is escaped before it becomes a pattern. */
+const escapeRe = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, (m) => "\\" + m);
+
+test("REJECT: the candidate-controls gate removed — an older candidate would run its own pre-control driver (Codex P1)", () => {
+  for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
+    const line = real().split(/\r?\n/).find((l) => l.includes(`grep -q "${marker}" ${file}`));
+    assert.ok(line, `the workflow must gate on ${marker}`);
+    const text = mutate(real(), `${line}\n`, "");
+    assert.ok(
+      // A marker may carry regex metacharacters (`carry = joined.slice(`), so it is escaped.
+      anyMatch(violationsOf(text), new RegExp(`lacks '${escapeRe(marker)}'`)),
+      `${marker}:\n${violationsOf(text).join("\n")}`,
+    );
+  }
+});
+
+test("the candidate-controls gate names files that EXIST and markers that are present here (non-vacuous)", () => {
+  for (const [file, marker] of CANDIDATE_CONTROL_MARKERS) {
+    const text = readFileSync(path.join(repoRoot, file), "utf8");
+    assert.ok(text.includes(marker), `${file} must carry ${marker}, or the gate would refuse this very tree`);
+  }
+});
+
+test("the candidate-controls gate covers the whole control set, the log FILTER included", () => {
+  // Iterating the list cannot notice a list that lost an entry, so the set itself is pinned.
+  assert.deepEqual(
+    CANDIDATE_CONTROL_MARKERS.map(([file, marker]) => `${file}:${marker}`).sort(),
+    [
+      "scripts/lib/m1-shipped-boot.mjs:KEY_MATERIAL_MARKERS",
+      "scripts/lib/m1-shipped-boot.mjs:createLineRedactor",
+      "scripts/m1-shipped-boot/journey.mjs:CONTROL_PLANE_PUBLIC_KEY_PEM",
+      "scripts/m1-shipped-boot/journey.mjs:maskDirectivesFor",
+      "scripts/m1-shipped-boot/journey.mjs:stripMaskDirectives",
+      "scripts/m1-shipped-boot/log-filter.mjs:createLineRedactor",
+      "scripts/m1-shipped-boot/log-filter.mjs:the job-log capture failed",
+      "scripts/m1-shipped-boot/log-filter.mjs:capture-failed",
+      "scripts/m1-shipped-boot/journey.mjs:capture-failed",
+      "scripts/lib/m1-shipped-boot.mjs:carry = joined.slice(",
+      // DEP-022 — the cross-tenant drivers and the harness binding they address this stack with.
+      "scripts/m1-shipped-boot/journey.mjs:crossTenant(loadState",
+      "scripts/m1-shipped-boot/cross-tenant.mjs:runCrossTenantCases",
+      "scripts/m1-shipped-boot/cross-tenant.mjs:suppressInjection",
+      "scripts/check-cross-tenant-suppression.mjs:evaluateSuppressedRun",
+      "tests/d1/lib/e6f-harness.mjs:composeBaseArgs",
+      "tests/d1/lib/e6f-harness.mjs:HTTP_SERVICE",
+      "scripts/lib/m1-shipped-boot.mjs:ACCUMULATES: a prefix may span",
+      "scripts/lib/m1-shipped-boot.mjs:LENGTH floor",
+      "scripts/lib/m1-shipped-boot.mjs:stripLogPrefix",
+      "scripts/lib/m1-shipped-boot.mjs:LOG_TIMESTAMP",
+      "scripts/lib/m1-shipped-boot.mjs:base64Payload",
+      "scripts/m1-shipped-boot/journey.mjs:job log is ABSENT",
+      "scripts/m1-shipped-boot/log-filter.mjs:log-filter] opened",
+      "scripts/m1-shipped-boot/journey.mjs:is TRUNCATED",
+      "scripts/lib/m1-shipped-boot.mjs:insidePemBlock = !PEM_END.test(payload)",
+      "scripts/lib/m1-shipped-boot.mjs:directiveJoined",
+      "scripts/m1-shipped-boot/log-filter.mjs:randomUUID",
+      "scripts/m1-shipped-boot/journey.mjs:never closed",
+    ].sort(),
+  );
+});
+
+test("REJECT: `|| true` on the collect pipeline, or the filter's status not propagated (Codex P1)", () => {
+  const swallowed = mutate(
+    real(),
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"\n',
+    '            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" || true\n',
+  );
+  assert.ok(anyMatch(violationsOf(swallowed), /must not swallow the log filter's exit status/), violationsOf(swallowed).join("\n"));
+  const unpropagated = mutate(real(), '            [ "${statuses[1]}" -eq 0 ]', '            [ 0 -eq 0 ]');
+  assert.ok(anyMatch(violationsOf(unpropagated), /must propagate the log filter's own status/), violationsOf(unpropagated).join("\n"));
+});

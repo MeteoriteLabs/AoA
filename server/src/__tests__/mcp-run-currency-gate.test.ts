@@ -1,0 +1,229 @@
+// server/src/__tests__/mcp-run-currency-gate.test.ts — DAT-007 item #1, slice 2 (Tier 2).
+//
+// Route-level proof of the /mcp fence-bound currency MOUNT (server.ts). With the flag on, a
+// distributed run-JWT agent actor's request is gated by the injected currency resolver: a
+// "deny" yields the coarse 403 on EVERY method (initialize / tools/list / tools/call, since the
+// gate sits before the method split), an "admit" falls through, and a resolver throw fails
+// CLOSED. With the flag off, or for a non-agent / no-signedRunId actor, the resolver is never
+// consulted (byte-identical legacy). The resolver is injected as a STUB — the real DB query is
+// proven in the Tier-3 integration test. The deny/admit/skip differential is the anti-vacuity
+// control: all three can pass together only if the mount fires correctly and only when scoped.
+import express from "express";
+import request from "supertest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Mirror mcp-agent-actor.test.ts: pass REAL @armyofagents/db + drizzle-orm through (the noop
+// ../services/index.js mock is what keeps real service construction off a real DB).
+vi.mock("@armyofagents/db", async (importOriginal) => await importOriginal<Record<string, unknown>>());
+vi.mock("drizzle-orm", async (importOriginal) => await importOriginal<Record<string, unknown>>());
+vi.mock("../services/index.js", () => {
+  const noopFactory = () => ({});
+  return {
+    agentService: noopFactory, artifactService: noopFactory, companyService: noopFactory,
+    debriefService: noopFactory, extractionService: noopFactory, goalService: noopFactory,
+    issueService: noopFactory, memoryService: noopFactory, mcpService: noopFactory,
+    permissionService: noopFactory, accessService: noopFactory, projectService: noopFactory,
+    approvalService: noopFactory, issueApprovalService: noopFactory,
+    logActivity: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+import { mcpServerRoutes } from "../mcp/server.js";
+
+const FLAG = "AOA_DISTRIBUTED_EXECUTION_ENABLED";
+const rpc = (method: string, params: unknown = {}) => ({ jsonrpc: "2.0", id: 1, method, params });
+
+const DISTRIBUTED_AGENT = {
+  type: "agent",
+  source: "agent_jwt",
+  companyId: "company-1",
+  agentId: "agent-42",
+  runId: "run-99",
+  signedRunId: "run-99",
+};
+
+// CLI-016: the per-Organization tool-surface use gate sits beside the currency gate. The
+// DAT-007 cases below inject an ADMITTING stub for it so each still isolates the currency
+// verdict; the CLI-016 block at the end drives it directly.
+function buildApp(
+  actor: Record<string, unknown>,
+  resolveDistributedRunCurrency?: unknown,
+  resolveDistributedToolSurfaceAtUse: unknown = vi.fn().mockResolvedValue("admit"),
+) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as { actor: Record<string, unknown> }).actor = actor;
+    next();
+  });
+  app.use(
+    "/api",
+    mcpServerRoutes({} as never, {
+      companiesSvc: {
+        getById: vi.fn().mockResolvedValue({ id: "company-1", mcpEnabled: true }),
+        update: vi.fn(),
+      } as never,
+      mcpSvc: {
+        getStatus: vi.fn(), listKeys: vi.fn(), createKey: vi.fn(), revokeKey: vi.fn(),
+        listClients: vi.fn(), touchClient: vi.fn().mockResolvedValue(undefined), requireOwnedKey: vi.fn(),
+      } as never,
+      resolveScope: async () => ({ kind: "founder" as const, userId: "agent-1" }),
+      resolveRole: async () => "team_member",
+      resolveScopedAgentIds: async () => null,
+      ...(resolveDistributedRunCurrency
+        ? { resolveDistributedRunCurrency: resolveDistributedRunCurrency as never }
+        : {}),
+      resolveDistributedToolSurfaceAtUse: resolveDistributedToolSurfaceAtUse as never,
+    }),
+  );
+  return app;
+}
+
+describe("DAT-007 item #1 — /mcp fence-bound currency gate (route mount)", () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env[FLAG];
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = saved;
+  });
+
+  it("flag ON + distributed agent + resolver 'deny' → coarse 403 on initialize, tools/list, AND tools/call", async () => {
+    process.env[FLAG] = "1";
+    const resolve = vi.fn().mockResolvedValue("deny");
+    const app = buildApp(DISTRIBUTED_AGENT, resolve);
+    for (const method of ["initialize", "tools/list", "tools/call"]) {
+      const params = method === "tools/call" ? { name: "noop", arguments: {} } : {};
+      const res = await request(app).post("/api/companies/company-1/mcp").send(rpc(method, params));
+      expect(res.status).toBe(403);
+    }
+    // keyed on the SIGNED run id, with the URL company and the agent id
+    expect(resolve).toHaveBeenCalledWith({ signedRunId: "run-99", companyId: "company-1", agentId: "agent-42" });
+  });
+
+  it("flag ON + distributed agent + resolver 'admit' → falls through (200 on initialize)", async () => {
+    process.env[FLAG] = "1";
+    const resolve = vi.fn().mockResolvedValue("admit");
+    const app = buildApp(DISTRIBUTED_AGENT, resolve);
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).toBe(200);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("flag ON + BOARD actor → currency resolver NEVER consulted (source scoping, edge 2)", async () => {
+    // The gate is scoped to protocolActor.source === "agent"; a board actor never reaches it
+    // (whatever the board-auth pipeline decides its status is), so the resolver is not consulted.
+    process.env[FLAG] = "1";
+    const resolve = vi.fn().mockResolvedValue("deny");
+    const app = buildApp({ type: "board", source: "board", userId: "u-1", companyId: "company-1" }, resolve);
+    await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("flag ON + agent WITHOUT signedRunId → resolver NEVER consulted (edge 3, agent-API-key)", async () => {
+    process.env[FLAG] = "1";
+    const resolve = vi.fn().mockResolvedValue("deny");
+    const app = buildApp({ type: "agent", source: "agent_jwt", companyId: "company-1", agentId: "agent-42" }, resolve);
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).toBe(200);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("flag OFF (unset) + distributed agent → resolver NEVER consulted (byte-identical legacy)", async () => {
+    delete process.env[FLAG];
+    const resolve = vi.fn().mockResolvedValue("deny");
+    const app = buildApp(DISTRIBUTED_AGENT, resolve);
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).toBe(200);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("DAT-007-S3: keyed on the SIGNED run id, never the header-overridable runId (divergent ids pin)", async () => {
+    // Every fixture above sets runId === signedRunId ("run-99"), so a gate that read the
+    // header-overridable `req.actor.runId` (auth.ts sets it from x-aoa-run-id OVER the signed
+    // claim) would pass them all. Here the two DIFFER: the signed run is stale, the header names
+    // a live run. The stub resolver answers per id, so reading the header id would ADMIT (200).
+    process.env[FLAG] = "1";
+    const actor = { ...DISTRIBUTED_AGENT, runId: "run-header-live", signedRunId: "run-signed-stale" };
+    const resolve = vi.fn(async ({ signedRunId }: { signedRunId: string }) =>
+      signedRunId === "run-header-live" ? "admit" : "deny",
+    );
+    const app = buildApp(actor, resolve);
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).toBe(403);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith({
+      signedRunId: "run-signed-stale",
+      companyId: "company-1",
+      agentId: "agent-42",
+    });
+  });
+
+  it("flag ON + resolver THROWS → fails CLOSED (non-2xx), never swallowed to admit (Correction A)", async () => {
+    process.env[FLAG] = "1";
+    const resolve = vi.fn().mockRejectedValue(new Error("kernel db unreachable"));
+    const app = buildApp(DISTRIBUTED_AGENT, resolve);
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).not.toBe(200);
+  });
+});
+
+describe("CLI-016 — /mcp per-Organization tool-surface use gate (route mount)", () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env[FLAG];
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = saved;
+  });
+
+  it("★ currency ADMIT + tool surface DENY (run's Organization not armed) → coarse 403 on every method", async () => {
+    process.env[FLAG] = "1";
+    const currency = vi.fn().mockResolvedValue("admit");
+    const toolSurface = vi.fn().mockResolvedValue("deny");
+    const app = buildApp(DISTRIBUTED_AGENT, currency, toolSurface);
+    for (const method of ["initialize", "tools/list", "tools/call"]) {
+      const params = method === "tools/call" ? { name: "noop", arguments: {} } : {};
+      const res = await request(app).post("/api/companies/company-1/mcp").send(rpc(method, params));
+      expect(res.status).toBe(403);
+    }
+    // keyed on the SIGNED run id and the URL company, like the currency gate
+    expect(toolSurface).toHaveBeenCalledWith({ signedRunId: "run-99", companyId: "company-1" });
+  });
+
+  it("positive control: currency ADMIT + tool surface ADMIT → falls through (200)", async () => {
+    process.env[FLAG] = "1";
+    const toolSurface = vi.fn().mockResolvedValue("admit");
+    const app = buildApp(DISTRIBUTED_AGENT, vi.fn().mockResolvedValue("admit"), toolSurface);
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).toBe(200);
+    expect(toolSurface).toHaveBeenCalledTimes(1);
+  });
+
+  it("the tool-surface resolver THROWS → fails CLOSED (non-2xx)", async () => {
+    process.env[FLAG] = "1";
+    const app = buildApp(
+      DISTRIBUTED_AGENT,
+      vi.fn().mockResolvedValue("admit"),
+      vi.fn().mockRejectedValue(new Error("rollout read failed")),
+    );
+    const res = await request(app).post("/api/companies/company-1/mcp").send(rpc("initialize"));
+    expect(res.status).not.toBe(200);
+  });
+
+  it("scoped like the currency gate: a BOARD actor and a flag-OFF deployment never consult it", async () => {
+    process.env[FLAG] = "1";
+    const toolSurface = vi.fn().mockResolvedValue("deny");
+    await request(buildApp({ type: "board", source: "board", userId: "u-1", companyId: "company-1" }, undefined, toolSurface))
+      .post("/api/companies/company-1/mcp")
+      .send(rpc("initialize"));
+    delete process.env[FLAG];
+    const res = await request(buildApp(DISTRIBUTED_AGENT, vi.fn().mockResolvedValue("admit"), toolSurface))
+      .post("/api/companies/company-1/mcp")
+      .send(rpc("initialize"));
+    expect(res.status).toBe(200);
+    expect(toolSurface).not.toHaveBeenCalled();
+  });
+});

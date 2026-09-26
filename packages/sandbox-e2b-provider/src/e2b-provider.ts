@@ -1,0 +1,1225 @@
+// -----------------------------------------------------------------------------
+// E2bSandboxProvider — the REAL E2B driver logic, implementing worker-daemon's
+// authoritative per-op `SandboxProvider` over an INJECTED transport (CLI-001/D1).
+//
+// The driver logic here is real and identical whether the injected transport is
+// the deterministic key-less mock (`mock-transport.ts`, the no-key core proof) or
+// the `e2b` SDK binding (`real-transport.ts`, the keyed lane). It:
+//   * enforces create idempotency (lost-response replay returns the recorded id);
+//   * enforces an explicit TTL on every sandbox (`setTimeout` at create; a
+//     zero-deadline op is a deterministic timeout, never a hang);
+//   * holds the FULL sensitive detail (command/env/logs/secrets) and returns it
+//     ONLY from `inspect` (`InspectResult`) — so the cleanup authority's redaction
+//     is a real, non-vacuous projection (management `list` never carries it);
+//   * translates transport-level facts into the domain outcomes/denials the
+//     conformance suites assert (ignored signal → `StopOutcome.ignored`; transient
+//     teardown → a REPORTED `CleanupResult{failed}`, never a throw; a blocked
+//     egress → the domain `SandboxEgressDeniedError`; an unknown id → the domain
+//     `SandboxNotFoundError`).
+//
+// It advertises the eight core ops plus the optional ops the transport supports
+// AND this provider is configured to expose; unadvertised optional ops throw the
+// exact worker-daemon `UnsupportedProviderOperation`. No tenant/E2B field is
+// invented into a management projection (CAV-002); the redaction to the neutral
+// invoke-port projection is the E6-F008 adapter's job.
+// -----------------------------------------------------------------------------
+
+import {
+  CORE_PROVIDER_OPERATIONS,
+  type ProviderOperation,
+  type ArtifactUploadGrantV1,
+  type ArtifactDownloadGrantV1,
+} from "@armyofagents/worker-protocol";
+import { createHash } from "node:crypto";
+import type {
+  ArtifactDigestResult,
+  ArtifactExportMode,
+  ArtifactExportResult,
+  FileStagingMode,
+  StageFilesResult,
+  StagedFileRequest,
+  CheckpointMode,
+  CheckpointResult,
+  CleanupResult,
+  CreateResult,
+  CreateSandboxSpec,
+  EnumerateOutputsResult,
+  ExecuteInput,
+  ExecuteResult,
+  HealthMode,
+  HealthResult,
+  InspectResult,
+  ListInput,
+  ListResult,
+  ProcessHandle,
+  ProcessObservation,
+  ProcessSignalResult,
+  ProcessStartResult,
+  ProcessStatusResult,
+  ProcessSupervisionMode,
+  ProviderOpContext,
+  ResourceLabels,
+  ResourceSummary,
+  RestoreResult,
+  SandboxEnumerationMode,
+  SandboxProvider,
+  SandboxState,
+  StopOutcome,
+  StopResult,
+} from "@armyofagents/worker-daemon";
+// DAT-009-3e (E5-F002) — the ONE home of the signed-PUT header contract. A VALUE import from
+// worker-daemon, which is one of this package's declared runtime dependencies.
+import { grantPutHeaders } from "@armyofagents/worker-daemon";
+
+import { METADATA_KEYS } from "./directives.js";
+import { classifyRunSecrets } from "./export-secret-scan.js";
+import type { ExportBytesScanner } from "./export-secret-scan.js";
+import {
+  ProcessLaunchNotAcknowledged,
+  SandboxEgressDeniedError,
+  SandboxExportSecretSetUnavailableError,
+  SandboxExportScannerRefusedError,
+  SandboxExportScannerUnavailableError,
+  SandboxNotFoundError,
+  SandboxRecordIndeterminateError,
+  UnsupportedProviderOperation,
+} from "./errors.js";
+import {
+  E2bProcessLaunchNotAcknowledgedError,
+  E2bTransportEgressBlockedError,
+  E2bTransportNotFoundError,
+  E2bTransportPathNotFoundError,
+  E2bTransportTransientError,
+  E2bSymlinkRefusedError,
+  type E2bProcessObservation,
+  type E2bRecordState,
+  type E2bSandboxRecord,
+  type E2bStagedFile,
+  type E2bTransport,
+} from "./transport.js";
+
+const DEFAULT_TTL_MS = 60_000;
+
+/**
+ * CLI-012 (`E7-D11`, review `SD-6`) — the PER-FILE byte ceiling on an exported artifact.
+ *
+ * ★ IT IS AN ADMISSION CHECK, NOT THE GRANT. The grant carries the EXACT digested size
+ * (`artifact-export.ts` sets `maxBytes: described.sizeBytes` and says why); this is the
+ * independent limit applied from listing metadata BEFORE the read, and enforced again AS the
+ * read happens so a file that grew after enumeration cannot be materialised. 25 MiB.
+ */
+export const E2B_MAX_ARTIFACT_BYTES = 25 * 1024 * 1024;
+
+/** Which optional ops this provider exposes by default: `health` (an E2B running
+ * probe) is supported; `checkpoint`/`restore` are recorded unsupported-with-
+ * fallback (see the capability matrix) so the no-key contract suite naturally
+ * exercises BOTH negotiation branches. Override for tests. */
+export const DEFAULT_ADVERTISED_OPTIONAL_OPS: readonly ProviderOperation[] = ["health"];
+
+export interface E2bSandboxProviderOptions {
+  readonly transport: E2bTransport;
+  /** The pinned E2B template alias every sandbox is created from. */
+  readonly templateId?: string;
+  /** The optional ops (`checkpoint`/`restore`/`health`) this provider advertises.
+   * Defaults to {@link DEFAULT_ADVERTISED_OPTIONAL_OPS}. A checkpoint/restore
+   * advertisement additionally requires the transport to expose `pause`/`resume`. */
+  readonly advertisedOptionalOps?: readonly ProviderOperation[];
+  /** Default per-op deadline when a caller passes none. */
+  readonly defaultTtlMs?: number;
+  /**
+   * CLI-008 Unit B — how the provider turns a download grant into bytes. Injected so the
+   * no-key mock lane can stage without a network, exactly as `transport` is injected.
+   * Defaults to the global `fetch` against the grant's presigned URL.
+   *
+   * ★ The implementation MUST NOT log or re-throw the url or headers: the grant is a bearer
+   * capability, and the port already classifies this class of value as sensitive.
+   */
+  readonly redeemDownloadGrant?: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
+  /**
+   * DAT-009 — how the provider turns an upload grant plus bytes into a stored object.
+   * Injected for the same reason `redeemDownloadGrant` is: the no-key lane must be able to
+   * prove the read -> verify -> reference path with no network, and the keyed lane must be
+   * able to prove the SANDBOX half against real E2B without standing up an object store.
+   *
+   * ★ The implementation MUST NOT log or re-throw the url or headers: the grant is a bearer
+   * capability that writes an attempt-scoped object key until it expires.
+   */
+  readonly performUploadGrant?: (grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal) => Promise<void>;
+  /**
+   * CLI-012, planning-session ruling on §11.9 — **SD-5's scanner seam, and its ABSENCE is a
+   * REFUSAL.**
+   *
+   * `exportArtifact` refuses while this is not a callable function: no read, no upload, nothing
+   * at rest. A scanner that throws or rejects is also a refusal — a check that failed to complete
+   * witnessed nothing. Resolving cleanly is the ONLY path that exports.
+   *
+   * ★ IT IS KEYED ON PRESENCE, NOT ON A FLAG. A boolean someone can set would be a bypass with a
+   * name; this cannot be satisfied except by supplying the thing itself. `CLI-017-B` supplies the
+   * real implementation (the sandbox-scoped secret handoff plus the literal-value scan); until
+   * then every export refuses, which is the intended state.
+   *
+   * ★ IT IS HANDED THE BYTES, NOT THE PATH. It is the last party to see them before they leave.
+   *
+   * ★★★ CLI-017-B — THE SIGNATURE IS NOW `ExportScanInput`, AND THE WIDENING IS THIS SLICE'S TO
+   * MAKE. `E7-D11` §3 records at source that a content check on `exportArtifact` alone CANNOT
+   * deliver SD-5: `create` forwards `spec.env` to the transport as `envVars` and keeps only
+   * `{sandboxId, resourceLabels}`, while `exportArtifact(sandboxId, path, grant, ctx)` receives no
+   * env at all. So the provider now holds a SANDBOX-SCOPED secret registry (`#runSecrets` below)
+   * and hands this scanner THIS sandbox's secret set — never a global one and never another
+   * sandbox's (founder ruling F10). The `signal` field closes `E7-F040`, which recorded this seam
+   * as the one bounded-operation site carrying no abort signal and left the decision to whoever
+   * supplied the implementation.
+   */
+  readonly scanExportBytes?: ExportBytesScanner;
+}
+
+/** The default redemption: a plain GET against the presigned url with the grant's headers. */
+async function fetchGrantBytes(grant: ArtifactDownloadGrantV1): Promise<Uint8Array> {
+  const response = await fetch(grant.url, { method: "GET", headers: { ...grant.headers } });
+  if (!response.ok) {
+    // The status, never the url — the url IS the capability.
+    throw new Error(`staged-input download failed with status ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+/**
+ * The default upload: a plain PUT of the bytes against the presigned url, with the signed-PUT
+ * headers derived from `grantPutHeaders` — their ONE home (DAT-009-3e, `E5-F002`).
+ *
+ * ★★ THE CHECKSUM HEADERS ARE NOT OPTIONAL, and this is the one non-obvious line in the export
+ * path. DAT-002's live MinIO run measured that the control plane binds `ChecksumAlgorithm: SHA256`
+ * when it signs but returns `headers: {}`, so the PUT itself must carry the checksum;
+ * `artifact-commit.ts` then fails CLOSED when the store cannot supply one to its `headObject`
+ * re-verification. The value is BASE64 of the raw digest while the grant's `expectedSha256` is
+ * hex — `grantPutHeaders` owns that encoding change too.
+ *
+ * ★★ E5-F002, RESOLVED AT THE CAUSE. This function used to re-derive the header set itself, and
+ * got it wrong on two axes: it OMITTED `x-amz-sdk-checksum-algorithm`, which every other
+ * derivation (and the signed query) carries, and it hashed the BYTES IT WAS HANDED instead of the
+ * grant's expectation. The header set now comes from `grantPutHeaders` and nowhere else.
+ *
+ * ★ THE DIGEST-SOURCE DECISION: the checksum is the GRANT's `expectedSha256`. The signer binds the
+ * algorithm, never the value, so the store verifies the body against this header — and with the
+ * grant's value in it, the store refuses bytes the grant was not minted for at the PUT, instead of
+ * storing them and leaving the fenced commit to refuse `hash_mismatch` later, in another process.
+ * On `exportArtifact`'s own path the two values are equal (it re-hashes and refuses a mismatch
+ * before calling this), so the decision only shows when the two disagree, which is exactly when
+ * it matters. `put-grant-bytes.test.ts` pins it and its opposite.
+ *
+ * Header order: the `content-type` default FIRST, then `grantPutHeaders`, which spreads the grant's
+ * own headers LAST — so a server that signs a content-type or supplies its own checksum still
+ * wins, which is the only ordering that survives `presign` signing more in future.
+ *
+ * ★ H-04: neither the url nor the headers ever reach a thrown message. A non-2xx reports its
+ * STATUS; a transport failure (a severed connection) is re-thrown as a fixed, distinguishable
+ * message with NO `cause`, because a transport error can name the host and query it was reaching.
+ *
+ * ★ NO REDIRECTS (`redirect: "error"`, Codex P2 on PR #557). A redirect would forward the body to
+ * a destination the adapter-manager's origin binding never saw. And the PUT is ABORTABLE: the
+ * caller's `signal` ends a stalled upload (reported as a timeout), so a hung store cannot hold the
+ * per-sandbox lock and strand the run's destroy (Codex P1).
+ */
+export async function putGrantBytes(grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(grant.url, {
+      method: "PUT",
+      redirect: "error",
+      ...(signal === undefined ? {} : { signal }),
+      headers: {
+        "content-type": "application/octet-stream",
+        ...grantPutHeaders(grant),
+      },
+      // A Uint8Array is a valid BodyInit at runtime; the cast is only for the lib's
+      // ArrayBufferLike variance.
+      body: bytes as unknown as BodyInit,
+    });
+  } catch {
+    // Deliberately not chained: the transport's own error may carry the url.
+    if (signal?.aborted) throw new Error("artifact export upload timed out before a response");
+    throw new Error("artifact export upload did not complete: the connection was severed before a response");
+  }
+  if (!response.ok) {
+    // The status, never the url — the url IS the capability.
+    throw new Error(`artifact export upload failed with status ${response.status}`);
+  }
+}
+
+/** Settle with `work`, or reject with `timeoutMessage` when `signal` aborts first. The abandoned
+ * `work` is left to settle on its own; its rejection is handled so it is never unhandled. The
+ * message is a FIXED string: it never carries the path, the grant or the url. */
+function boundedBySignal<T>(work: Promise<T>, signal: AbortSignal, timeoutMessage: string): Promise<T> {
+  work.catch(() => undefined);
+  if (signal.aborted) return Promise.reject(new Error(timeoutMessage));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error(timeoutMessage));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Project a CLASSIFIED record state onto the port's lifecycle vocabulary.
+ *
+ * ★ SVC-008a §4.2 A-iii — `"unknown"` is deliberately NOT accepted here. Widening
+ * `E2bRecordState` with `"unknown"` reds this exhaustive switch, and that red is the
+ * MECHANISM, not a cost: it forces every consumer of a record state to decide what an
+ * indeterminate one means, and the two consumers are ruled differently because they fail
+ * in opposite directions (`inspect` throws; `list` takes the non-destructive interim rule
+ * of §9.4). Clearing the red by mapping `"unknown"` onto some lifecycle value HERE would
+ * launder it into both call sites at once.
+ */
+function mapClassifiedState(state: Exclude<E2bRecordState, "unknown">): SandboxState {
+  switch (state) {
+    case "running":
+      return "running";
+    case "paused":
+      return "stopped";
+    case "stopped":
+      return "stopped";
+    default: {
+      const exhaustive: never = state;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * Project the transport's observation onto the port's, adding only the timestamp of the
+ * READ that produced it.
+ *
+ * ★ `observedAt` timestamps the read, never the state, and it is STRUCTURALLY ABSENT from
+ * the `unknown` arm — the arm with no successful read to timestamp. There is no default
+ * branch: a new transport-level inhabitant reds the build here rather than being
+ * laundered into whichever arm happens to be last.
+ */
+function toPortObservation(observation: E2bProcessObservation): ProcessObservation {
+  switch (observation.state) {
+    case "running":
+      return { state: "running", observedAt: Date.now() };
+    case "exited":
+      return {
+        state: "exited",
+        exitCode: observation.exitCode,
+        signal: observation.signal,
+        observedAt: Date.now(),
+      };
+    case "gone":
+      return { state: "gone", observedAt: Date.now() };
+    case "unknown":
+      return { state: "unknown", reason: observation.reason };
+    default: {
+      const exhaustive: never = observation;
+      return exhaustive;
+    }
+  }
+}
+
+/** Deterministic parse of the round-tripped management record. */
+function parseRecord(record: E2bSandboxRecord): {
+  labels: ResourceLabels;
+  command: string;
+  env: Record<string, string>;
+  workloadType: string;
+} {
+  const rawLabels = record.metadata[METADATA_KEYS.labels];
+  const rawEnv = record.metadata[METADATA_KEYS.env];
+  let labels: ResourceLabels;
+  try {
+    labels = JSON.parse(rawLabels ?? "{}") as ResourceLabels;
+  } catch {
+    labels = {} as ResourceLabels;
+  }
+  let env: Record<string, string> = {};
+  try {
+    env = JSON.parse(rawEnv ?? "{}") as Record<string, string>;
+  } catch {
+    env = {};
+  }
+  return {
+    labels,
+    command: record.metadata[METADATA_KEYS.command] ?? "",
+    env,
+    workloadType: record.metadata[METADATA_KEYS.workload] ?? "",
+  };
+}
+
+export class E2bSandboxProvider implements SandboxProvider {
+  readonly #transport: E2bTransport;
+  readonly #templateId: string;
+  readonly #defaultTtlMs: number;
+  readonly #redeemDownloadGrant: (grant: ArtifactDownloadGrantV1) => Promise<Uint8Array>;
+  readonly #performUploadGrant: (grant: ArtifactUploadGrantV1, bytes: Uint8Array, signal?: AbortSignal) => Promise<void>;
+  /**
+   * CLI-012 (SD-5) — the export secret scanner, or `undefined`. NOT defaulted to a no-op: a
+   * default that cleared everything would be the bypass this whole control exists to refuse.
+   * `exportArtifact` refuses while it is not a function.
+   */
+  readonly #scanExportBytes: ExportBytesScanner | undefined;
+  readonly advertisedOperations: ReadonlySet<ProviderOperation>;
+  readonly checkpointMode: CheckpointMode;
+  readonly healthMode: HealthMode;
+  /**
+   * DAT-009 — declared `"grant_upload"`, and this one is REAL.
+   *
+   * Slice 1 declared `"none"` deliberately and named the reason: the transport already has
+   * `readFile`, so a real implementation is "a small, provider-specific piece", explicitly out
+   * of scope for that slice (`DAT-009-slice-1-design.md` §7). This is that piece. The mode now
+   * says `"grant_upload"` because the two methods below actually read the sandbox, verify what
+   * they read against the grant, and move it to object storage — the same standard
+   * `fileStagingMode` is held to. A provider that CLAIMED support and then fabricated a
+   * reference would be the WRK-009 defect all over again, where a fabricated success is
+   * byte-identical to a real one on every gate; the refusal tests below are what keep this
+   * declaration honest.
+   *
+   * ★★ NOTHING IN PRODUCTION READS THIS FIELD — measured by search, not assumed: outside the
+   * two declarations (`provider-wire/src/driver.ts`, `supervisor/noop-provider.ts`), the port's
+   * own type, and tests, the only reads are the two decline guards in this file. No supervisor,
+   * placement or hello builder branches on it. So flipping it from `"none"` changes NO runtime
+   * behaviour anywhere today; it becomes consultable when link 3 exists to consult it.
+   * ★ *Amended 2026-09-21 (DAT-009-3e):* the provider-wire driver now declares `"grant_upload"`
+   * as well, and its own two methods read ITS field before any RPC. That is a read of the
+   * driver's declaration, not of this one; the paragraph above is otherwise unchanged.
+   *
+   * ★ WHAT THIS DOES NOT DO. Declaring the mode does not put an artifact on any run.
+   * Nothing in production calls `exportArtifact` — the worker-side sequencer
+   * (digest → mint grant → export → commit) is DAT-009 slice 3 and is unbuilt — and the
+   * kind an exported object is committed under is the COMMITTER's decision, not this
+   * provider's. `countProducedOutputs` arm 1 filters `kind = 'workspace_patch'` (in
+   * `server/src/services/e7-distributed-run-verifier-store.ts` — symbol, not a line pin; the
+   * old `:201-211` citation was moved ~280 lines by W21B/W21C and now points into
+   * `listJobEvents`), so this file moves no capability counter. See
+   * `CLI-008-unit-f-design.md` §1.6 link 2.
+   */
+  readonly artifactExportMode: ArtifactExportMode = "grant_upload";
+
+  /**
+   * CLI-008 Unit B — declared `"grant_download"`, and this one is REAL.
+   *
+   * Unlike `artifactExportMode` above (honestly `"none"` because slice 1 left the
+   * implementation out of scope), staging is implemented here over the transport's existing
+   * `writeFiles`, which both drivers already have. Declaring support this provider did not
+   * have would be the WRK-009 defect; declaring `"none"` for one it does have would leave the
+   * capability unreachable. It has it, so it says so.
+   */
+  readonly fileStagingMode: FileStagingMode = "grant_download";
+
+  /** Idempotency ledger: a stable create key → the recorded resource. A replayed
+   * key returns the SAME sandbox and never provisions a second one. */
+  readonly #idempotency = new Map<string, { sandboxId: string; resourceLabels: ResourceLabels }>();
+  /**
+   * CLI-017-B — THE SANDBOX-SCOPED SECRET REGISTRY. SD-5's handoff, and the whole reason
+   * this slice is not "add a content check to `exportArtifact`".
+   *
+   * `E7-D11` section 3, verified at source: `create` forwards `spec.env` to the transport as
+   * `envVars` and retains only `{sandboxId, resourceLabels}` in `#idempotency` — deliberately, per
+   * `[Cred-1]` (DEP-012 slices 4+5), because a copy in durable E2B metadata would leave the tenant
+   * model-provider key AT REST in a shared-account store, which Decision #104 forbids. And
+   * `exportArtifact(sandboxId, path, grant, ctx)` takes no env. So the two halves SD-5 needs — the
+   * bytes and the run's own secret values — meet nowhere today. This map is where they meet.
+   *
+   * THE LIFECYCLE, in full, because every arm of it is an acceptance row:
+   *
+   *   - POPULATED at `create`, from `spec.env`, keyed by `sandboxId`, IN PROCESS MEMORY ONLY.
+   *     Never in E2B metadata, never in `inspect`/`list`, never in a log line, never in a thrown
+   *     message, never in durable storage (row 7).
+   *   - PURGED on `destroy` and `reconcileCleanup` — both route through `#reclaim`, so a
+   *     terminated run leaves no secret set behind.
+   *   - PURGED INDEPENDENTLY on a provider-local expiry BOUND TO THE SANDBOX'S OWN TTL (row 6b).
+   *     `create` installs an E2B TTL and the sandbox can end on that TTL with NEITHER cleanup
+   *     method ever being called on this provider instance, so a map purged only on explicit
+   *     cleanup would hold the run's credentials in memory indefinitely after the sandbox was
+   *     gone. Explicit cleanup cancels the timer (no double purge, no leaked timer), and the timer
+   *     is identity-guarded so a re-registered sandbox cannot be purged by its predecessor's timer
+   *     firing late (no resurrected entry, and no purge of a live successor).
+   *   - ABSENT means REFUSED (row 6). See `SandboxExportSecretSetUnavailableError`.
+   *
+   * VALUES ONLY. `classifyRunSecrets` drops the env KEY NAMES on the way in: row 7 asks for the
+   * set to be absent from every log line and thrown message, and a set that carried the names
+   * would name the tenant's variables even in a dump that withheld their values.
+   */
+  readonly #runSecrets = new Map<
+    string,
+    { readonly values: readonly string[]; timer: ReturnType<typeof setTimeout> }
+  >();
+  /**
+   * SVC-008a — the SAME mechanism as `#idempotency` above, for the launch.
+   *
+   * ★ A SECOND MAP, NOT A SECOND SCHEME. `ProviderOpContext` states one contract for every
+   * op ("a repeated key returns the recorded result and does not double-apply"), and this
+   * follows the ledger `create` already uses rather than inventing a parallel one — two
+   * idempotency schemes in one provider would be worse than the gap. It is a separate MAP
+   * only because the recorded values have different shapes and a shared key space would let
+   * a create replay hand back a launch, or the reverse.
+   */
+  readonly #processIdempotency = new Map<string, ProcessStartResult>();
+  #opCounter = 0;
+  /** SVC-008a §9.4 — how many records this provider could not classify. The observable
+   * that keeps the interim `hasLiveLease` rule from being silent; the provider has no
+   * metrics sink injected, so it is exposed for inspection instead. */
+  #indeterminateRecords = 0;
+
+  /**
+   * SVC-008a — declared from the TRANSPORT's own answer, never asserted.
+   *
+   * ★ WHAT THIS DOES AND DOES NOT CLAIM. `RealE2bTransport` declares `"handle"` on the
+   * strength of a reading of the `e2b@2.30.5` TYPE DECLARATIONS — `commands.run(cmd,
+   * {background: true})` resolves a `CommandHandle` with a `pid`, `commands.list()`
+   * resolves `ProcessInfo[]`, `commands.kill(pid)` resolves `true`/`false` — and that
+   * reading has NOT been run against a real E2B account. So this field says "the binding
+   * beneath me implements the trio against the SDK's documented surface", never "this has
+   * been measured working". The keyed lane is what measures it, and the conformance
+   * suite's keyed arm must report SKIPPED rather than passed when no key is present.
+   *
+   * A transport that declares `"none"` makes this `"none"`, and all three methods throw.
+   */
+  readonly processSupervisionMode: ProcessSupervisionMode;
+
+  constructor(options: E2bSandboxProviderOptions) {
+    this.#transport = options.transport;
+    this.#templateId = options.templateId ?? "base";
+    this.#defaultTtlMs = options.defaultTtlMs ?? DEFAULT_TTL_MS;
+    this.#redeemDownloadGrant = options.redeemDownloadGrant ?? fetchGrantBytes;
+    this.#performUploadGrant = options.performUploadGrant ?? putGrantBytes;
+    this.#scanExportBytes = options.scanExportBytes;
+
+    const requested = new Set<string>((options.advertisedOptionalOps ?? DEFAULT_ADVERTISED_OPTIONAL_OPS).map(String));
+    const advertised = new Set<ProviderOperation>(CORE_PROVIDER_OPERATIONS);
+    // checkpoint/restore require BOTH advertisement AND transport pause/resume.
+    const canCheckpoint = requested.has("checkpoint") && typeof this.#transport.pause === "function";
+    const canRestore = requested.has("restore") && typeof this.#transport.resume === "function";
+    if (canCheckpoint) advertised.add("checkpoint");
+    if (canRestore) advertised.add("restore");
+    if (requested.has("health")) advertised.add("health");
+    this.advertisedOperations = advertised;
+    this.checkpointMode = canCheckpoint ? "snapshot" : "none";
+    this.healthMode = requested.has("health") ? "poll" : "none";
+    // Delegated, never asserted: the provider claims exactly what the injected transport
+    // claims (the same shape `checkpointMode` uses, which gates on `transport.pause`).
+    this.processSupervisionMode = this.#transport.processSupervisionMode;
+  }
+
+  /** SVC-008a §9.4 — records whose lifecycle state could not be classified. */
+  indeterminateRecordCount(): number {
+    return this.#indeterminateRecords;
+  }
+
+  #nextOpId(op: ProviderOperation): string {
+    this.#opCounter += 1;
+    return `e2b-${op}-${this.#opCounter}`;
+  }
+
+  #ttl(ctx: ProviderOpContext): number {
+    return ctx.deadlineMs > 0 ? ctx.deadlineMs : this.#defaultTtlMs;
+  }
+
+  /**
+   * CLI-017-B — register (or RE-register) this sandbox's secret set, with a TTL-bound expiry.
+   *
+   * RE-REGISTRATION REPLACES, IT DOES NOT ACCUMULATE. A create that reaches here twice for the
+   * same `sandboxId` cancels the old timer before installing the new one, so no timer is leaked
+   * and the entry's lifetime is the LATEST sandbox TTL rather than the earliest.
+   *
+   * THE TIMER IS IDENTITY-GUARDED, AND ITS MUTANT DOES **NOT** RED — SAID PLAINLY RATHER THAN
+   * CLAIMED AS A PROOF. It purges only if the entry it is still holding is the one it was created
+   * for, which would matter if a stale timer could outlive a re-registration of the SAME
+   * `sandboxId`. It cannot: this method's first statement is `#purgeRunSecrets`, which
+   * `clearTimeout`s the predecessor before the successor is installed. Mutating the guard to a
+   * bare `delete(sandboxId)` therefore leaves every test green (mutation `M-B3`, recorded in
+   * `CLI-017-B-record.md` as an UNREACHABLE mutant with this reason). It is kept as redundant
+   * defence against a future reordering — if anyone ever registers before purging, the guard is
+   * what stops a late timer deleting a LIVE successor's set, and a live sandbox whose set has
+   * silently vanished refuses every export (row 6): a self-inflicted outage that looks exactly
+   * like the security control working. Recorded as defence in depth, NOT as a proven control.
+   *
+   * `unref` WHERE AVAILABLE. The registry must never be the reason a process will not exit.
+   */
+  #registerRunSecrets(
+    sandboxId: string,
+    env: Readonly<Record<string, string>> | undefined,
+    ttlMs: number,
+  ): void {
+    this.#purgeRunSecrets(sandboxId);
+    const entry: { readonly values: readonly string[]; timer: ReturnType<typeof setTimeout> } = {
+      values: classifyRunSecrets(env),
+      // Replaced immediately below; assigned first so the closure can compare identities.
+      timer: undefined as unknown as ReturnType<typeof setTimeout>,
+    };
+    entry.timer = setTimeout(() => {
+      if (this.#runSecrets.get(sandboxId) === entry) this.#runSecrets.delete(sandboxId);
+    }, ttlMs);
+    (entry.timer as unknown as { unref?: () => void }).unref?.();
+    this.#runSecrets.set(sandboxId, entry);
+  }
+
+  /**
+   * CLI-017-B — drop this sandbox's secret set and its timer. IDEMPOTENT: purging an absent entry
+   * is a no-op, so `destroy` followed by `reconcileCleanup` (the converging cleanup authority's
+   * normal shape) does not double-purge or throw.
+   */
+  #purgeRunSecrets(sandboxId: string): void {
+    const existing = this.#runSecrets.get(sandboxId);
+    if (!existing) return;
+    clearTimeout(existing.timer);
+    this.#runSecrets.delete(sandboxId);
+  }
+
+  /**
+   * TEST-ONLY OBSERVABILITY, and it reports PRESENCE, never CONTENT.
+   *
+   * Row 6b has to distinguish "the entry expired" from "the entry is still there", and row 7
+   * requires the values never to leave this object. A count satisfies the first without weakening
+   * the second: nothing here can return, log or serialise a secret.
+   */
+  registeredSecretSetCount(): number {
+    return this.#runSecrets.size;
+  }
+
+  async create(spec: CreateSandboxSpec, ctx: ProviderOpContext): Promise<CreateResult> {
+    const key = ctx.idempotencyKey;
+    if (key) {
+      const existing = this.#idempotency.get(key);
+      if (existing) {
+        return { sandboxId: existing.sandboxId, providerOpId: this.#nextOpId("create"), resourceLabels: existing.resourceLabels };
+      }
+    }
+    // The management record the transport round-trips (labels/command/workload only).
+    //
+    // ★ [Cred-1] (DEP-012 Slice 4+5) — the tenant `env` is DELIBERATELY NOT written into
+    // durable E2B metadata. A real transport persists `metadata` in E2B cloud (returned by
+    // Sandbox.list()/getInfo()), so a `[METADATA_KEYS.env]: JSON.stringify(spec.env)` copy
+    // would leave the tenant model-provider key AT REST in a shared-account durable store —
+    // forbidden by Decision #104 (the credential must not hit a durable store). The copy was
+    // REDUNDANT: `env` still reaches the running sandbox via the necessary `envVars` channel
+    // below; its only reader was `inspect`, whose gated wire ALWAYS redacts env, and `list`
+    // dropped it. The deterministic MOCK now decodes its create-fault directives from
+    // `req.envVars` (which carries the same env), not from this metadata.
+    const metadata: Record<string, string> = {
+      [METADATA_KEYS.labels]: JSON.stringify(spec.resourceLabels),
+      [METADATA_KEYS.command]: spec.command,
+      [METADATA_KEYS.workload]: spec.workloadType,
+    };
+    const { sandboxId } = await this.#transport.create({
+      templateId: this.#templateId,
+      timeoutMs: this.#ttl(ctx),
+      metadata,
+      // The necessary channel: E2B needs the env to run the sandbox. NOT durable metadata.
+      envVars: spec.env,
+    });
+    // Every sandbox gets an enforced TTL (idempotent belt-and-suspenders).
+    const ttlMs = this.#ttl(ctx);
+    await this.#transport.setTimeout(sandboxId, ttlMs);
+    // SD-5's HANDOFF, POPULATED HERE AND NOWHERE ELSE. This is the only point in the provider's
+    // life that sees both a `sandboxId` and the run's `env`; `exportArtifact` sees neither the env
+    // nor a way to ask for it. The expiry is bound to the SAME `ttlMs` the sandbox itself was just
+    // given, so the set cannot outlive what it describes.
+    this.#registerRunSecrets(sandboxId, spec.env, ttlMs);
+    if (key) this.#idempotency.set(key, { sandboxId, resourceLabels: spec.resourceLabels });
+    return { sandboxId, providerOpId: this.#nextOpId("create"), resourceLabels: spec.resourceLabels };
+  }
+
+  async execute(input: ExecuteInput, ctx: ProviderOpContext): Promise<ExecuteResult> {
+    // Driver-owned command budget. A non-positive deadline is an exhausted budget →
+    // a DETERMINISTIC timedOut terminal, enforced HERE rather than delegated to the
+    // transport: E2B treats `timeoutMs = 0` as "disable/default" (never an instant
+    // kill, returning timedOut:false), so trusting the transport's verdict on a zero
+    // budget would invert the "never hangs, always bounded" guarantee against real
+    // E2B. The driver owns the zero-budget verdict; a POSITIVE budget is enforced by
+    // the transport's own command timeout (real E2B honours a positive timeoutMs, and
+    // the keyed lane asserts a long command is killed at its budget).
+    if (ctx.deadlineMs <= 0) {
+      return {
+        providerOpId: this.#nextOpId("execute"),
+        exitCode: null,
+        signal: "SIGKILL",
+        timedOut: true,
+        stdoutRef: `ref:stdout:${input.sandboxId}`,
+        stderrRef: `ref:stderr:${input.sandboxId}`,
+      };
+    }
+    try {
+      const request = {
+        sandboxId: input.sandboxId,
+        command: input.command,
+        args: input.args,
+        envVars: input.env,
+        // Positive command budget: forwarded as the transport command timeout.
+        timeoutMs: ctx.deadlineMs,
+      };
+      // WRK-018 — the OPTIONAL stdout stream channel rides the transport's existing
+      // `onStdout` handler (CLI-003/D1). Only stdout is carried: the channel exists for the
+      // agent's own report (claude's stream-json usage), and stderr is not needed for it.
+      // Absent the channel the call keeps its pre-channel ONE-argument shape. The chunks are
+      // handed ONLY to the callback — never logged or kept here; the supervisor's per-run
+      // capture scrubs them with the run's canaries.
+      const onStdout = input.onStdout;
+      const result =
+        onStdout === undefined
+          ? await this.#transport.runCommand(request)
+          : await this.#transport.runCommand(request, { onStdout: (chunk) => onStdout(chunk) });
+      return {
+        providerOpId: this.#nextOpId("execute"),
+        exitCode: result.exitCode,
+        signal: result.signal,
+        timedOut: result.timedOut,
+        // No customer bytes cross this boundary — opaque references only (E5).
+        stdoutRef: `ref:stdout:${input.sandboxId}`,
+        stderrRef: `ref:stderr:${input.sandboxId}`,
+      };
+    } catch (err) {
+      if (err instanceof E2bTransportEgressBlockedError) {
+        throw new SandboxEgressDeniedError(err.destinationClass);
+      }
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+  }
+
+  /**
+   * ★★★ SVC-008a §4.2 Half A — THE STOP VERDICT, DERIVED FROM WHAT WAS OBSERVED.
+   *
+   * `StopOutcome` is NOT widened, and it does not need to be: `"ignored"`'s existing
+   * contract is already *"the sandbox did not comply and the supervisor must escalate"*,
+   * which is the correct handling for BOTH `still_running` and `unknown`. Mapping an
+   * indeterminate read onto the ESCALATING value is fail-safe; mapping it onto the
+   * TERMINATING value is the E7-F034 defect.
+   *
+   * What this changes on the shipping lane: `cancel` now returns `"ignored"` against real
+   * E2B, so `CleanupAuthority`'s `kill` rung EXECUTES for the first time in production,
+   * `kill` also returns `"ignored"`, and the stage reaches `destroy`. The unconditional
+   * forced `destroy` after the ladder is unchanged, so `cleanup_escalation{escalation_stage}`
+   * starts reporting `"destroy"` where it reported `"cancel"` — the metric becoming TRUE:
+   * this provider has no graceful stop, and every cancellation is a hard teardown.
+   *
+   * ★★★ FOR A CLASSIFIABLE RECORD, AND ONLY FOR ONE. This docstring used to say "no resource
+   * behaviour changes at all", and that was FALSE for the class {@link inspect} introduces
+   * below. An UNCLASSIFIABLE record previously mapped to `"stopped"` (the old `mapState`
+   * default) -> a terminal `SandboxState` -> the ordinary ladder -> a forced `destroy`. It
+   * now throws `SandboxRecordIndeterminateError` out of `inspect`, `CleanupAuthority`'s
+   * ownership gate refuses, `#convergeOne` reports `"failed"`, and NO destroy is issued: the
+   * resource is deliberately left to the next pass and, failing that, to the reaper. That is
+   * the intended non-destructive disposition — no teardown against a record whose ownership
+   * could not be established — but it IS a resource-behaviour change, and stating otherwise
+   * would hide the one case an operator most needs to know about. `indeterminateRecordCount()`
+   * is how often it fires.
+   */
+  #stopVerdict(observed: "stopped" | "still_running" | "unknown"): StopOutcome {
+    return observed === "stopped" ? "stopped" : "ignored";
+  }
+
+  async cancel(sandboxId: string, _ctx: ProviderOpContext): Promise<StopResult> {
+    const result = await this.#transport.signal(sandboxId, "cancel");
+    return { providerOpId: this.#nextOpId("cancel"), outcome: this.#stopVerdict(result.observed) };
+  }
+
+  async kill(sandboxId: string, _ctx: ProviderOpContext): Promise<StopResult> {
+    const result = await this.#transport.signal(sandboxId, "kill");
+    return { providerOpId: this.#nextOpId("kill"), outcome: this.#stopVerdict(result.observed) };
+  }
+
+  async destroy(sandboxId: string, _ctx: ProviderOpContext): Promise<CleanupResult> {
+    return this.#reclaim("destroy", sandboxId);
+  }
+
+  async reconcileCleanup(sandboxId: string, _ctx: ProviderOpContext): Promise<CleanupResult> {
+    return this.#reclaim("reconcile_cleanup", sandboxId);
+  }
+
+  /** Terminate + reclaim. A transient transport failure is REPORTED as failed —
+   * never thrown — so the cleanup convergence can retry it idempotently. An
+   * already-gone sandbox is a converged success (idempotent). */
+  async #reclaim(op: ProviderOperation, sandboxId: string): Promise<CleanupResult> {
+    // CLI-017-B — PURGE FIRST, AND UNCONDITIONALLY. Both `destroy` and `reconcileCleanup` route
+    // through here, and both are called precisely because this sandbox is finished with. It is
+    // deliberately BEFORE the terminate rather than after it: a transport failure below returns a
+    // REPORTED `failed` (never a throw) and the cleanup authority retries, so a purge placed after
+    // the call would leave the run's credentials in memory for every retry cycle of a sandbox that
+    // may already be gone. Purging early cannot lose anything — an export for a sandbox being torn
+    // down must refuse anyway (row 6), which is the fail-closed direction.
+    this.#purgeRunSecrets(sandboxId);
+    try {
+      await this.#transport.terminate(sandboxId);
+      return { providerOpId: this.#nextOpId(op), cleanupStatus: "success" };
+    } catch (err) {
+      if (err instanceof E2bTransportNotFoundError) {
+        return { providerOpId: this.#nextOpId(op), cleanupStatus: "success" };
+      }
+      if (err instanceof E2bTransportTransientError) {
+        return { providerOpId: this.#nextOpId(op), cleanupStatus: "failed" };
+      }
+      throw err;
+    }
+  }
+
+  async list(input: ListInput, _ctx: ProviderOpContext): Promise<ListResult> {
+    const providerOpId = this.#nextOpId("list");
+    const page = await this.#transport.list({ pageSize: input.pageSize, pageToken: input.pageToken ?? null });
+    const resources: ResourceSummary[] = page.items
+      .map((record) => {
+        const parsed = parseRecord(record);
+        const indeterminate = record.state === "unknown";
+        if (indeterminate) this.#indeterminateRecords += 1;
+        return {
+          sandboxId: record.sandboxId,
+          resourceLabels: parsed.labels,
+          generation: parsed.labels.deviceGeneration ?? 0,
+          // ★ SVC-008a §9.4 — `SandboxState` has no indeterminate inhabitant, and adding
+          // one is a cross-package widening (`startup-reconcile`, `reconcile`,
+          // `provider-wire/projection`, the contract harness) that this ticket does NOT
+          // own. `"cancelling"` is a PLACEHOLDER CHOSEN FOR ITS ROUTE, not a claim: it is
+          // the member of `ALIVE_STATES` (`startup-reconcile.ts`) that asserts the least
+          // about a settled lifecycle, and it keeps an unreadable record on the
+          // ESCALATING cleanup-authority route rather than the direct-teardown one.
+          state: indeterminate ? "cancelling" : mapClassifiedState(record.state),
+          // ★★★ SVC-008a §9.4 — THE MANDATORY INTERIM RULE, and it is a deferral with a
+          // rule rather than a hole. `hasLiveLease` is a BOOLEAN and both values are
+          // affirmative claims made from nothing: `false` sends a live sandbox whose state
+          // field was unreadable to `defaultIsOrphan` (`reconcile.ts`) and then to
+          // TEARDOWN; `true` leaks a genuinely dead one past every converge. The
+          // non-destructive direction is taken, matching the `indeterminate -> leave it to
+          // the reaper` precedent at `startup-reconcile.ts` (`state === "unreachable"` ->
+          // `disposition: "indeterminate"`). An indeterminate record must NEVER silently
+          // become an orphan verdict, which is what shipped before this line. Whoever
+          // answers §9.4 replaces the boolean; until then this loses orphans to the reaper
+          // rather than tearing down live work — and `indeterminateRecordCount()` below is
+          // how an operator sees how often it fires.
+          hasLiveLease: record.state === "running" || indeterminate,
+        };
+      })
+      // DRIVER-OWNED deterministic ordering: real E2B does not promise a stable total
+      // order across two list walks, so the driver sorts each page by the opaque
+      // resource id. This makes the contract §8 pagination-determinism guarantee a
+      // property of the driver's projection, not an artifact of a transport double.
+      .sort((a, b) => (a.sandboxId < b.sandboxId ? -1 : a.sandboxId > b.sandboxId ? 1 : 0));
+    return { providerOpId, resources, nextPageToken: page.nextPageToken };
+  }
+
+  async inspect(sandboxId: string, _ctx: ProviderOpContext): Promise<InspectResult> {
+    let record: E2bSandboxRecord;
+    try {
+      record = await this.#transport.getInfo(sandboxId);
+    } catch (err) {
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+    if (record.state === "unknown") {
+      // ★ SVC-008a §4.2 A-iii. An indeterminate record is a PARTIAL READ — not a
+      // lifecycle fact and not an absence — so it propagates rather than being collapsed
+      // onto a state. Specifically NOT `SandboxNotFoundError`: the cleanup authority maps
+      // that to a converged "already gone" success, so laundering an unreadable record
+      // into it would end the converge on nothing witnessed.
+      this.#indeterminateRecords += 1;
+      throw new SandboxRecordIndeterminateError(sandboxId);
+    }
+    const parsed = parseRecord(record);
+    // The FULL, sensitive detail — held here so the cleanup authority's redaction
+    // is non-vacuous. `list` deliberately never carries any of this.
+    return {
+      providerOpId: this.#nextOpId("inspect"),
+      sandboxId: record.sandboxId,
+      resourceLabels: parsed.labels,
+      generation: parsed.labels.deviceGeneration ?? 0,
+      state: mapClassifiedState(record.state),
+      command: parsed.command,
+      env: parsed.env,
+      logs: [],
+      workspaceBytes: 0,
+      objectGrants: [],
+      secrets: {},
+    };
+  }
+
+  /**
+   * Read an in-sandbox file's bytes, mapping the transport's not-found onto the domain one.
+   *
+   * ★ BOTH drivers throw `E2bTransportNotFoundError` for a missing SANDBOX and for a missing
+   * PATH alike (`real-transport.ts` `readFile`, `mock-transport.ts` `readFile`), and the
+   * distinction does not matter here: either way there is nothing to describe, and the answer
+   * must stay a THROW. A fabricated digest would mint a grant for bytes that do not exist and
+   * push the refusal all the way out to the fenced commit, far from its cause.
+   */
+  async #readArtifactBytes(sandboxId: string, path: string, signal?: AbortSignal): Promise<Uint8Array> {
+    // ★★★ CLI-012 (`E7-F039`) — THE NO-FOLLOW RECHECK, AT THE READ BOUNDARY.
+    //
+    // The enumeration-time link marker is a SNAPSHOT: a background process the agent left
+    // running (the `A-O2-9`/`W7` class) can replace a regular file with a symlink afterwards,
+    // and because `files.read` FOLLOWS links (P-011 probe, arm `S-P5`, `readFollowsLink=true`)
+    // the digest and the export would then both read the STABLE target — so the sequencer's
+    // existing re-hash refusal PASSES and the run's own staged prompt exports as its output.
+    //
+    // ★ WHICH BRANCH THIS IS, AND THE MEASUREMENT BEHIND IT. `E7-D11` authorized two: an
+    // atomic no-follow/handle-bound read if the installed SDK has one, otherwise a per-entry
+    // `lstat`. MEASURED against the installed `e2b@2.30.5`: `FilesystemReadOpts` is
+    // `{gzip?, streamIdleTimeoutMs?}` over `{requestTimeoutMs?, signal?}` and the package's
+    // whole `dist/index.d.ts` contains NO no-follow, follow-symlink or file-descriptor read
+    // surface — so the atomic operation is unreachable and this is the `lstat` branch, taken
+    // over `Filesystem.getInfo(path) => EntryInfo{symlinkTarget?}`.
+    //
+    // ★★★ AND IT IS HONESTLY A CHECK-THEN-READ PAIR. A swap between this stat and the read
+    // below wins; the residual is FILED as `E7-F039` and BOUNDED by `SD-5` (the sandbox is
+    // per-run and single-tenant, so a successful swap reads the TENANT'S OWN file, and the one
+    // materially damaging outcome — a redeemed secret reaching durable storage — is what SD-5
+    // refuses). It is NOT presented as atomic.
+    let entry;
+    try {
+      entry = await this.#transport.statEntry(sandboxId, path, ...(signal ? [{ signal }] : []));
+    } catch (err) {
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+    if (entry.symlink) throw new E2bSymlinkRefusedError(path);
+    try {
+      // ★ `E5-F009` — BOUNDED. The read stops and refuses at the cap rather than materialising
+      // the file and measuring it afterwards, which is what made this a shared-process exposure
+      // once the wire route put the provider in the adapter-manager. The pre-digest admission
+      // check in the producer is only the cheap arm that avoids the read entirely; a file that
+      // GREW between enumeration and digest is refused here.
+      // ★ CLI-012 (Codex P2, round 4) — the op's deadline rides into the SDK request itself, so a
+      // slow-but-progressing stream is ABORTED at the deadline rather than abandoned mid-flight.
+      return await this.#transport.readFile(sandboxId, path, {
+        maxBytes: E2B_MAX_ARTIFACT_BYTES,
+        ...(signal ? { signal } : {}),
+      });
+    } catch (err) {
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+  }
+
+  /**
+   * CLI-012 (ruling F7) — enumerate `root`, METADATA ONLY.
+   *
+   * ★ NO BYTES. This forwards the transport's own files-only/recursive/absolute/bounded
+   * listing (`E7-D09`, `filesOnlyFromListing`) and adds nothing to it but the port's shape.
+   * It must never grow a content field and must never be composed with `captureSandboxEntries`
+   * (readFile + sha256 in the daemon), which would route every file's bytes through a process
+   * dependency-pinned (E4-D01) precisely so it does not handle them.
+   */
+  async enumerateOutputs(sandboxId: string, root: string, ctx: ProviderOpContext): Promise<EnumerateOutputsResult> {
+    if (this.sandboxEnumerationMode === "none") throw new UnsupportedProviderOperation("enumerate_outputs");
+    if (!(ctx.deadlineMs > 0)) throw new Error("output enumeration budget exhausted before the listing");
+    let entries;
+    try {
+      const listSignal = AbortSignal.timeout(ctx.deadlineMs);
+      entries = await boundedBySignal(
+        this.#transport.listDir(sandboxId, root, { signal: listSignal }),
+        listSignal,
+        "output enumeration timed out",
+      );
+    } catch (err) {
+      // ★ CLI-012 (Codex P2, PR #576) — A MISSING ROOT IS "NO OUTPUT", NOT A MISSING SANDBOX.
+      // The task section's Failure behavior says an empty output root produces `[]`; a run that
+      // wrote nothing never creates the root at all, and reporting that as a dead sandbox turned
+      // every normal no-output window into `producer_failed`. Checked FIRST, because the path
+      // error is a SUBCLASS of the sandbox one.
+      if (err instanceof E2bTransportPathNotFoundError) return { entries: [] };
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+    return {
+      entries: entries.map((entry) => ({
+        path: entry.path,
+        sizeBytes: entry.sizeBytes,
+        symlink: entry.symlink,
+      })),
+    };
+  }
+
+  /**
+   * CLI-012 — declared `"metadata"`, and it is real: the method above reaches the sandbox
+   * through the transport's bounded `listDir` and returns descriptions only.
+   */
+  readonly sandboxEnumerationMode: SandboxEnumerationMode = "metadata";
+
+  /**
+   * DAT-009 — describe an in-sandbox file. METADATA ONLY; never content.
+   *
+   * The digest and the size are what let the worker mint a grant at all:
+   * `artifactTransferGrantRequestV1Schema` requires BOTH `expectedSha256` and `maxBytes`, and
+   * only the provider can see inside the sandbox. That is the whole reason this is a separate
+   * operation from the export rather than one call.
+   */
+  async digestArtifact(sandboxId: string, path: string, ctx: ProviderOpContext): Promise<ArtifactDigestResult> {
+    // ★ HONEST LABEL: this guard is UNREACHABLE BY CONSTRUCTION here, because the mode above is a
+    // hard-coded literal. It is kept for exact symmetry with `stageFiles`'s identical shipped
+    // guard, and because the port's contract is "the methods are present on every implementer and
+    // only SUPPORT is optional" — so the decline path must exist even when this implementer never
+    // takes it. It is a contract stub, NOT a live check, and no mutation can kill it; saying so is
+    // the difference between a documented stub and a false claim of enforcement.
+    if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("digest_artifact");
+    // DAT-009-3e (Codex P1, PR #557) — the READ is bounded too. A stalled sandbox read would
+    // otherwise hold the adapter-manager's per-sandbox lock for as long as the transport hangs.
+    if (!(ctx.deadlineMs > 0)) throw new Error("artifact digest budget exhausted before the read");
+    const digestSignal = AbortSignal.timeout(ctx.deadlineMs);
+    const bytes = await boundedBySignal(
+      this.#readArtifactBytes(sandboxId, path, digestSignal),
+      digestSignal,
+      "artifact digest read timed out",
+    );
+    return { sha256: createHash("sha256").update(bytes).digest("hex"), sizeBytes: bytes.byteLength };
+  }
+
+  /**
+   * DAT-009 — move an in-sandbox file to object storage under `grant`, returning a REFERENCE.
+   *
+   * Grant in, reference out: the bytes go sandbox -> provider -> store and never cross this
+   * port. That is the exact inversion of `stageFiles`, and it is what the byte-egress decision
+   * (Option D) requires — the daemon is dependency-pinned precisely so it never handles them.
+   *
+   * ★★ VERIFY BEFORE UPLOADING, and this is not the same check the store does. The grant was
+   * minted from a PRIOR `digestArtifact` call, so between the two the file can have grown or
+   * changed — a long-running agent still writing, a retry against a mutated sandbox. Re-hashing
+   * here refuses AT THE CAUSE. Without it the PUT succeeds, and the fenced commit's `headObject`
+   * re-verification rejects a checksum that no longer matches the manifest, in a different
+   * process, with nothing left to point at. The size check is separate and comes first: a file
+   * that outgrew its grant must not be uploaded at all.
+   *
+   * Errors carry the path and the digests, never the grant, the url or the headers.
+   */
+  async exportArtifact(
+    sandboxId: string,
+    path: string,
+    grant: ArtifactUploadGrantV1,
+    ctx: ProviderOpContext,
+  ): Promise<ArtifactExportResult> {
+    // Unreachable by construction, exactly as in `digestArtifact` above — see the note there.
+    if (this.artifactExportMode === "none") throw new UnsupportedProviderOperation("export_artifact");
+    // ★★★ SD-5, FAIL-CLOSED ON THE SCANNER'S PRESENCE — the FIRST thing this method does, so an
+    // unscannable export does not even read the file. Planning-session ruling on §11.9
+    // (2026-09-23): the refusal ships BEFORE the scanner, because until `CLI-017-B` lands the
+    // only thing closing this window was `E7-D11`'s prose precondition, and a prose precondition
+    // is not a control. A missing OR non-callable scanner is a refusal, never a bypass.
+    const scan = this.#scanExportBytes;
+    if (typeof scan !== "function") throw new SandboxExportScannerUnavailableError();
+    // CLI-017-B, SD-5's FAIL-CLOSED ARM (acceptance row 6) — AND IT IS BEFORE THE READ, for the
+    // same reason the scanner-presence refusal above is. The registry is process memory, so after
+    // an adapter-manager restart it is EMPTY while sandboxes created by the previous process are
+    // still alive and still exportable. Letting those through unscanned would make the whole of
+    // SD-5 bypassable by restarting a process. An absent set is a refusal.
+    //
+    // IT IS LOOKED UP PER `sandboxId`, WHICH IS WHAT MAKES ROW 5 A PROPERTY (founder ruling F10).
+    // Organization A's secret set is never consulted for Organization B's export, because there is
+    // no global set to consult — only this map, keyed by the sandbox each run owns exclusively
+    // (the sandbox is per-run and single-tenant; review `A-O2-12`).
+    const registered = this.#runSecrets.get(sandboxId);
+    if (!registered) throw new SandboxExportSecretSetUnavailableError();
+    // DAT-009-3e (Codex P1, PR #557) — the upload is BOUNDED by the op's budget. An exhausted
+    // budget uploads nothing; otherwise the PUT is aborted at `ctx.deadlineMs`, and the call
+    // settles then even if an injected uploader ignores the signal.
+    if (!(ctx.deadlineMs > 0)) throw new Error("artifact export budget exhausted before the upload");
+    const signal = AbortSignal.timeout(ctx.deadlineMs);
+    // The READ is inside the budget too (Codex P1, PR #557): the adapter-manager holds its
+    // per-sandbox lock across this whole call, so a hung read would strand the run's destroy
+    // exactly as a hung upload would.
+    const bytes = await boundedBySignal(
+      this.#readArtifactBytes(sandboxId, path, signal),
+      signal,
+      "artifact export read timed out",
+    );
+    if (bytes.byteLength > grant.maxBytes) {
+      throw new Error(`artifact at ${path} is ${bytes.byteLength} bytes, over the granted ${grant.maxBytes}`);
+    }
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (digest !== grant.expectedSha256) {
+      // The digests, never the url.
+      throw new Error(`artifact at ${path} hashed ${digest}, expected ${grant.expectedSha256}`);
+    }
+    // ★★★ THE SCAN, AND IT IS THE LAST GATE BEFORE THE BYTES LEAVE. It runs after the digest
+    // check so the bytes scanned are provably the bytes the grant names, and BEFORE the upload so
+    // a refusal means nothing at rest. A throw or a rejection is a REFUSAL: a check that did not
+    // complete witnessed nothing, and "the scanner errored" must never read as "the scan passed".
+    // ★ The scanner's own error is NOT chained or interpolated — it has seen the file's bytes.
+    try {
+      await boundedBySignal(
+        Promise.resolve(scan({ bytes, sandboxId, secrets: registered.values, signal })),
+        signal,
+        "artifact export secret scan timed out",
+      );
+    } catch (err) {
+      // A timeout is the op's own budget, not a scanner verdict — but it is still a refusal, and
+      // it is reported as one rather than as a clean scan.
+      if (err instanceof Error && err.message === "artifact export secret scan timed out") throw err;
+      throw new SandboxExportScannerRefusedError();
+    }
+    await boundedBySignal(
+      this.#performUploadGrant(grant, bytes, signal),
+      signal,
+      "artifact export upload timed out before a response",
+    );
+    return { objectKey: grant.objectKey };
+  }
+
+  /**
+   * CLI-008 Unit B — redeem each grant and write the bytes into the sandbox.
+   *
+   * ★ VERIFY BEFORE WRITING. The digest and the size are checked against the grant's own
+   * `expectedSha256`/`maxBytes` before a single byte reaches `writeFiles`. Without that, a
+   * store that served the wrong object — or a truncated response — produces a sandbox whose
+   * agent works from the wrong instructions and whose run terminalizes cleanly, which is
+   * indistinguishable from success on every gate downstream.
+   *
+   * ALL-OR-NOTHING: every file is fetched and verified first, and the single `writeFiles`
+   * call happens only if all of them passed. A partial stage is worse than no stage, because
+   * the agent cannot tell which files it is missing.
+   *
+   * Errors never carry the grant, the url or the headers.
+   */
+  async stageFiles(
+    sandboxId: string,
+    files: readonly StagedFileRequest[],
+    _ctx: ProviderOpContext,
+  ): Promise<StageFilesResult> {
+    if (this.fileStagingMode === "none") throw new UnsupportedProviderOperation("stage_files");
+    if (files.length === 0) return { stagedPaths: [] };
+    const staged: E2bStagedFile[] = [];
+    for (const file of files) {
+      const bytes = await this.#redeemDownloadGrant(file.grant);
+      if (bytes.byteLength > file.grant.maxBytes) {
+        throw new Error(
+          `staged-input for ${file.path} is ${bytes.byteLength} bytes, over the granted ${file.grant.maxBytes}`,
+        );
+      }
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      if (digest !== file.grant.expectedSha256) {
+        // The digests, never the url.
+        throw new Error(
+          `staged-input for ${file.path} hashed ${digest}, expected ${file.grant.expectedSha256}`,
+        );
+      }
+      staged.push({ path: file.path, bytes });
+    }
+    await this.#transport.writeFiles(sandboxId, staged);
+    return { stagedPaths: staged.map((file) => file.path) };
+  }
+
+  // --- SVC-008a process supervision -------------------------------------------
+  //
+  // A thin, honest projection of the transport's observations onto the port's. Every
+  // arm is either a value the transport WITNESSED or an explicit `unknown` with a reason;
+  // there is no default branch anywhere below, which is the property `mapState` lacked.
+
+  #requireProcessSupervision(op: "start_process" | "process_status" | "signal_process"): void {
+    // A `"none"` provider THROWS and never returns an observation: an unsupported
+    // capability must never be called again, while a returned `unknown` means "escalate
+    // and retry". One value cannot carry both handlings, and a caller that wired up a
+    // `"none"` provider by mistake would emit an escalation storm instead of failing at
+    // the first call. Same mechanism, same failure behaviour, as `stageFiles`.
+    if (this.processSupervisionMode === "none") throw new UnsupportedProviderOperation(op);
+  }
+
+  async startProcess(input: ExecuteInput, ctx: ProviderOpContext): Promise<ProcessStartResult> {
+    this.#requireProcessSupervision("start_process");
+    // ★★★ REPLAY BEFORE LAUNCH — the `ProviderOpContext` contract, on the operation where
+    // breaking it is most expensive.
+    //
+    // Without this, `startProcess` twice under one key invoked the transport twice and
+    // returned two handles. The realistic producer is a retry after a LOST RESPONSE: the
+    // launch succeeded, the answer never arrived, the caller retries with the stable key —
+    // and now TWO service instances run in one sandbox while the caller never learned the
+    // first handle, so the second is invisible to the very supervisor that would stop it.
+    // That is duplicate placement one layer below the epic designed to prevent it.
+    //
+    // The recorded result is returned VERBATIM (same `providerOpId`, same handle, same
+    // `acknowledgedAt`): a freshly minted op id would mean a second op happened, which is
+    // the thing being ruled out. An empty key opts out, exactly as it does for `create` —
+    // that is the create-gate's deliberate STRIP (`adapter-manager/create-gate.ts`), where a
+    // durable ledger above this one is the sole idempotency layer.
+    const key = ctx.idempotencyKey;
+    if (key) {
+      const recorded = this.#processIdempotency.get(key);
+      if (recorded) return recorded;
+    }
+    try {
+      const { handle } = await this.#transport.startProcess({
+        sandboxId: input.sandboxId,
+        command: input.command,
+        args: input.args,
+        envVars: input.env,
+        timeoutMs: this.#ttl(ctx),
+      });
+      // Belt-and-suspenders on the port's non-empty contract: a transport that regressed
+      // to the `String(x ?? "")` idiom must not be able to hand a caller `handle: ""`,
+      // which IS present and would read as a started process.
+      if (typeof handle !== "string" || handle.length === 0) {
+        throw new ProcessLaunchNotAcknowledged(input.sandboxId, "transport returned no usable handle");
+      }
+      const result: ProcessStartResult = {
+        providerOpId: this.#nextOpId("execute"),
+        handle,
+        acknowledgedAt: Date.now(),
+      };
+      // ★ RECORDED ONLY ON A WITNESSED LAUNCH. A refusal or an unreadable handle threw
+      // above and records nothing, so a retry under the same key is a genuine retry of a
+      // launch that never happened — never a replay of a failure.
+      if (key) this.#processIdempotency.set(key, result);
+      return result;
+    } catch (err) {
+      if (err instanceof E2bProcessLaunchNotAcknowledgedError) {
+        throw new ProcessLaunchNotAcknowledged(input.sandboxId, err.message);
+      }
+      if (err instanceof E2bTransportNotFoundError) throw new SandboxNotFoundError();
+      throw err;
+    }
+  }
+
+  async processStatus(
+    sandboxId: string,
+    handle: ProcessHandle,
+    _ctx: ProviderOpContext,
+  ): Promise<ProcessStatusResult> {
+    this.#requireProcessSupervision("process_status");
+    return {
+      providerOpId: this.#nextOpId("inspect"),
+      observation: toPortObservation(await this.#transport.processStatus(sandboxId, handle)),
+    };
+  }
+
+  async signalProcess(
+    sandboxId: string,
+    handle: ProcessHandle,
+    kind: "cancel" | "kill",
+    _ctx: ProviderOpContext,
+  ): Promise<ProcessSignalResult> {
+    this.#requireProcessSupervision("signal_process");
+    const result = await this.#transport.signalProcess(sandboxId, handle, kind);
+    return {
+      providerOpId: this.#nextOpId(kind === "cancel" ? "cancel" : "kill"),
+      accepted: result.accepted,
+      observation: toPortObservation(result.observation),
+    };
+  }
+
+  async checkpoint(sandboxId: string, _ctx: ProviderOpContext): Promise<CheckpointResult> {
+    if (!this.advertisedOperations.has("checkpoint") || typeof this.#transport.pause !== "function") {
+      throw new UnsupportedProviderOperation("checkpoint");
+    }
+    const { snapshotId } = await this.#transport.pause(sandboxId);
+    return { providerOpId: this.#nextOpId("checkpoint"), mode: this.checkpointMode, checkpointRef: snapshotId };
+  }
+
+  async restore(sandboxId: string, _ctx: ProviderOpContext): Promise<RestoreResult> {
+    if (!this.advertisedOperations.has("restore") || typeof this.#transport.resume !== "function") {
+      throw new UnsupportedProviderOperation("restore");
+    }
+    await this.#transport.resume(sandboxId);
+    return { providerOpId: this.#nextOpId("restore"), restored: true };
+  }
+
+  async health(sandboxId: string, _ctx: ProviderOpContext): Promise<HealthResult> {
+    if (!this.advertisedOperations.has("health")) {
+      throw new UnsupportedProviderOperation("health");
+    }
+    const running = await this.#transport.isRunning(sandboxId);
+    return { providerOpId: this.#nextOpId("health"), mode: "poll", status: running ? "healthy" : "unhealthy" };
+  }
+}

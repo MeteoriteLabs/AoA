@@ -1,0 +1,448 @@
+// -----------------------------------------------------------------------------
+// The injectable E2B transport SEAM (CLI-001/D1).
+//
+// `E2bTransport` abstracts the small set of `e2b` SDK primitives the real driver
+// logic (`E2bSandboxProvider`) needs: create / run-command / signal / terminate /
+// get-info / list / set-timeout / pause / resume / is-running. The provider is
+// programmed AGAINST this interface, never the concrete SDK, so a test can inject
+// a deterministic, key-less, pure-TS double (`mock-transport.ts`) and exercise the
+// REAL driver logic; the real binding (`real-transport.ts`) wraps the `e2b` SDK.
+//
+// The seam is deliberately provider-shaped-but-neutral: it carries an opaque
+// `metadata` bag (a `Record<string,string>` the provider round-trips) and returns
+// primitive lifecycle facts. Transport-level faults surface as the two transport
+// error classes below (a transient teardown failure and a blocked-egress refusal),
+// which the provider translates into the domain outcomes/denials the conformance
+// suites assert. The transport itself makes NO authority decision.
+// -----------------------------------------------------------------------------
+
+/**
+ * The lifecycle state a transport reports for a sandbox record.
+ *
+ * ★ SVC-008a §4.2 A-i — `"unknown"` means the transport got an answer it CANNOT
+ * CLASSIFY, or no answer at all, for THIS field. It is not a lifecycle state; it is the
+ * ABSENCE of one, and it exists so no parser is ever cornered into inventing a lifecycle.
+ *
+ * Before this inhabitant existed, `mapState` (`real-transport.ts`) fell through to
+ * `"stopped"` for an absent, renamed or non-string state field — so an SDK field rename,
+ * a partial/error-shaped response body, or a future `"hibernated"` was laundered into an
+ * affirmative stop. That is E7-F034's exact class, one layer below where the finding
+ * looked. `E2bRecordState` is LOCAL to this package: it is not `SANDBOX_STATES`, not
+ * `StopOutcome`, and nothing under `packages/worker-protocol/`, so widening it touches no
+ * frozen surface.
+ */
+export type E2bRecordState = "running" | "paused" | "stopped" | "unknown";
+
+/** An opaque provider-owned record. `metadata` is round-tripped verbatim — the
+ * provider stores its (management) labels + any test fault directives there; the
+ * transport treats it as an opaque blob and never interprets it as authority. */
+export interface E2bSandboxRecord {
+  readonly sandboxId: string;
+  readonly metadata: Readonly<Record<string, string>>;
+  readonly state: E2bRecordState;
+}
+
+/** The primitive result of running a command inside a sandbox. `exitCode` is the
+ * process exit status (`null` when it was signalled); `timedOut` marks a deadline
+ * hit; `crashed` marks an abnormal (non-timeout) failure the provider maps to a
+ * `failed` terminal. Egress refusals are raised, not returned (see below). */
+export interface E2bCommandResult {
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly timedOut: boolean;
+  readonly crashed: boolean;
+}
+
+/**
+ * What the transport OBSERVED after a cancel/kill signal attempt — never what it
+ * assumed, and never what it merely requested.
+ *
+ * ★ SVC-008a §4.2 A-ii. This replaces `delivered: boolean`, which had no inhabitant for
+ * "I witnessed nothing" and so forced `RealE2bTransport.signal` to return an affirmative
+ * `{delivered: true}` from its own `catch` (E7-F034). The provider maps `"stopped"` to
+ * `StopOutcome.stopped` and BOTH other values to `"ignored"` — mapping an indeterminate
+ * read onto the ESCALATING value is fail-safe; mapping it onto the terminating value is
+ * the defect.
+ */
+export interface E2bSignalResult {
+  readonly observed: "stopped" | "still_running" | "unknown";
+}
+
+/** A page of records from `list`. */
+export interface E2bListPage {
+  readonly items: readonly E2bSandboxRecord[];
+  readonly nextPageToken: string | null;
+}
+
+// --- CLI-010 (E7-D09) — the `listDir` bounds ---------------------------------
+
+/** The most entries (files AND directories) one `listDir` call may enumerate. A breach
+ * throws {@link E2bListDirBoundExceededError}; the list is never truncated. */
+export const E2B_LIST_DIR_MAX_ENTRIES = 100_000;
+
+/** The deepest an entry may sit below the listed root (a direct child is depth 1). A breach
+ * throws {@link E2bListDirBoundExceededError}; the list is never truncated. */
+export const E2B_LIST_DIR_MAX_DEPTH = 64;
+
+/**
+ * CLI-012 (ruling F7, `E7-D11`) — ONE enumerated entry. **METADATA ONLY; no bytes.**
+ *
+ * ★ WHY THIS REPLACED `readonly string[]`. Until CLI-012 this call returned bare paths, and
+ * `filesOnlyFromListing` used the SDK's `type` only to drop directories while DISCARDING
+ * `symlinkTarget` and `size`. The CLI-011 P-011 probe (run `35833717162`, arm `S-P5`) measured
+ * the consequence on a live sandbox: a planted symlink arrives as an ordinary file path while
+ * `files.read` FOLLOWS it — so a paths-only seam makes the `A-O2-4` symlink refusal
+ * unimplementable, and `R/l1 → .aoa-run-prompt.md` would be exported as the run's "output".
+ * `size` rides the same entry (arm `S-P6`: `files.list` already reports a correct byte size), so
+ * the `SD-6` admission bounds are enforced BEFORE any read — that is `E5-F009`'s cheap arm.
+ *
+ * ★ `E7-D09` is NOT reopened: files-only, recursive, absolute and bounded all stand unchanged.
+ */
+export interface E2bDirEntry {
+  /** ABSOLUTE, strictly under the listed root. */
+  readonly path: string;
+  /** Byte size as the listing reported it. A SNAPSHOT — see {@link E2bTransport.readFile}. */
+  readonly sizeBytes: number;
+  /**
+   * ★ THE LINK MARKER. `true` when the listing reported a symlink target for this path.
+   * A SNAPSHOT taken at one instant: a regular file can be replaced by a symlink afterwards,
+   * which is `E7-F039` — the read boundary rechecks with {@link E2bTransport.statEntry}.
+   */
+  readonly symlink: boolean;
+}
+
+/**
+ * CLI-012 — a read refused because it would exceed its caller-supplied byte bound.
+ *
+ * ★ REFUSED, NOT MEASURED AFTERWARDS. `E5-F009` is discharged by stopping the read at the cap;
+ * a whole-file read followed by a length check materialises the tenant-controlled file in the
+ * shared adapter-manager process first, which is the defect itself.
+ */
+export class E2bReadBoundExceededError extends Error {
+  readonly limit: number;
+  constructor(path: string, limit: number) {
+    super(`e2b transport: read of ${path} exceeded the ${limit}-byte bound`);
+    this.name = "E2bReadBoundExceededError";
+    this.limit = limit;
+  }
+}
+
+/**
+ * CLI-012 (`E7-F039`) — a path whose own entry says it is a symlink.
+ *
+ * Raised by the read boundary's no-follow recheck, never by enumeration (which classifies and
+ * skips per-file, `E5-D07`).
+ */
+export class E2bSymlinkRefusedError extends Error {
+  constructor(path: string) {
+    super(`e2b transport: refused to read ${path}: it is a symbolic link`);
+    this.name = "E2bSymlinkRefusedError";
+  }
+}
+
+// --- Transport-level errors (never authority) --------------------------------
+
+/** CLI-010 (E7-D09) — a `listDir` breached {@link E2B_LIST_DIR_MAX_ENTRIES} or
+ * {@link E2B_LIST_DIR_MAX_DEPTH}. Loud by design: a silently shortened listing is the
+ * output-loss class, so the whole enumeration is refused instead. */
+export class E2bListDirBoundExceededError extends Error {
+  readonly bound: "entries" | "depth";
+  readonly limit: number;
+  constructor(root: string, bound: "entries" | "depth", limit: number) {
+    super(`e2b transport: listDir(${root}) exceeded the ${bound} bound (${limit})`);
+    this.name = "E2bListDirBoundExceededError";
+    this.bound = bound;
+    this.limit = limit;
+  }
+}
+
+/** CLI-010 (E7-D09) — a `listDir` entry that cannot be honoured under the files-only
+ * contract: no absolute path under the root, or no `file`/`dir` type to classify it by. */
+export class E2bListDirMalformedEntryError extends Error {
+  constructor(root: string, detail: string) {
+    super(`e2b transport: listDir(${root}) returned a malformed entry: ${detail}`);
+    this.name = "E2bListDirMalformedEntryError";
+  }
+}
+
+/** The transport could not confirm a sandbox exists. The provider maps this to
+ * the domain `SandboxNotFoundError` (which the cleanup authority further collapses
+ * into the uniform, oracle-free `ResourceNotAvailableError`). */
+export class E2bTransportNotFoundError extends Error {
+  constructor(sandboxId: string) {
+    super(`e2b transport: sandbox not found: ${sandboxId}`);
+    this.name = "E2bTransportNotFoundError";
+  }
+}
+
+/**
+ * CLI-012 (Codex P2, PR #576) — the PATH was not found, though the sandbox was.
+ *
+ * ★★★ A SUBCLASS DELIBERATELY, SO NOTHING ELSE CHANGES. Every existing
+ * `instanceof E2bTransportNotFoundError` handler keeps catching this, which means introducing it
+ * cannot quietly alter any other op's behaviour; only a caller that asks for the narrower class
+ * sees the difference.
+ *
+ * ★ WHY IT IS NEEDED. `listDir` collapsed "no such sandbox" and "no such directory" into one
+ * error, and `E2bSandboxProvider.enumerateOutputs` re-mapped that to `SandboxNotFoundError`. So a
+ * successful run that simply wrote nothing — and therefore never created the output root — was
+ * reported as a failed producer rather than as the empty listing the task section's Failure
+ * behavior specifies (*"an empty output root produces `[]`"*).
+ *
+ * ★ FAIL-CLOSED. Only an error POSITIVELY identified as a file-not-found becomes this; anything
+ * unrecognised stays the sandbox error, so an unclassifiable failure is never read as "the run
+ * produced no output".
+ */
+export class E2bTransportPathNotFoundError extends E2bTransportNotFoundError {
+  constructor(sandboxId: string, path: string) {
+    super(`${sandboxId}:${path}`);
+    this.message = `e2b transport: path not found: ${sandboxId}:${path}`;
+    this.name = "E2bTransportPathNotFoundError";
+  }
+}
+
+/** A transient teardown failure (the E2B control API rejected a terminate). The
+ * provider maps this to a REPORTED `CleanupResult{cleanupStatus:"failed"}` — never
+ * a throw — so the monotonic cleanup convergence can retry it idempotently. */
+export class E2bTransportTransientError extends Error {
+  constructor(message = "e2b transport: transient teardown failure") {
+    super(message);
+    this.name = "E2bTransportTransientError";
+  }
+}
+
+/** The sandbox network fence refused an egress attempt carrying its frozen
+ * destination class. The provider re-raises this as the domain
+ * `SandboxEgressDeniedError` carrying the same class. */
+export class E2bTransportEgressBlockedError extends Error {
+  readonly destinationClass: string;
+  constructor(destinationClass: string) {
+    super(`e2b transport: egress blocked: ${destinationClass}`);
+    this.name = "E2bTransportEgressBlockedError";
+    this.destinationClass = destinationClass;
+  }
+}
+
+// --- The seam ----------------------------------------------------------------
+
+export interface E2bCreateRequest {
+  readonly templateId: string;
+  readonly timeoutMs: number;
+  readonly metadata: Readonly<Record<string, string>>;
+  readonly envVars: Readonly<Record<string, string>>;
+}
+
+export interface E2bRunCommandRequest {
+  readonly sandboxId: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly envVars: Readonly<Record<string, string>>;
+  readonly timeoutMs: number;
+}
+
+/**
+ * CLI-003/D1 — optional streaming callbacks for a `runCommand`. A coding run's
+ * stdout/stderr is delivered chunk-by-chunk as it is produced so the caller can turn
+ * it into durable `log` events. Callbacks are BEST-EFFORT observation only: they
+ * carry NO authority and never change the `E2bCommandResult` (whose shape is
+ * unchanged). Absent handlers = the pre-CLI-003 behaviour (no streaming). The real
+ * binding wires the `e2b` SDK command stream; the mock replays deterministic chunks
+ * from the reserved `__aoa_stream_chunks` directive.
+ */
+export interface E2bStreamHandlers {
+  readonly onStdout?: (chunk: string) => void;
+  readonly onStderr?: (chunk: string) => void;
+}
+
+export interface E2bListRequest {
+  readonly pageSize: number;
+  readonly pageToken?: string | null;
+}
+
+/** A file to stage into a sandbox: an absolute in-sandbox path + its raw bytes.
+ * CLI-002/D1 — the ONLY primitive that puts host-assembled bytes (the declared
+ * snapshot, the actor-gated `## Context` block, approved runtime inputs) into a
+ * sandbox. Provider-neutral: no tenant/E2B field, just path + bytes. */
+export interface E2bStagedFile {
+  readonly path: string;
+  readonly bytes: Uint8Array;
+}
+
+// --- SVC-008a: process supervision at the transport scope --------------------
+//
+// `runCommand` is a COMPLETION oracle — it resolves only once the command has exited
+// (this file's own `real-transport.ts` comment records, from real E2B run 33789547290,
+// that `sandbox.commands.run()` is `start()` then `CommandHandle.wait()`). A supervisor
+// built on it records a hung launch as a started instance. `getInfo`/`isRunning` answer
+// about the SANDBOX, which is up from the moment `create` resolves. The trio below is the
+// missing scope: a launch you can witness, a status you can read, and a stop that cannot
+// lie about what it saw.
+
+/** Whether this transport can launch a process it can later observe and signal. */
+export type E2bProcessSupervisionMode = "none" | "handle";
+
+/** An opaque, TRANSPORT-MINTED process handle. Never empty — see {@link E2bProcessStartResult}. */
+export type E2bProcessHandle = string;
+
+/**
+ * WHAT THE TRANSPORT SAW. `"unknown"` is not a lifecycle state; it is the absence of one,
+ * and its `reason` names a read that was ATTEMPTED and did not answer.
+ */
+export type E2bProcessObservation =
+  | { readonly state: "running" }
+  | { readonly state: "exited"; readonly exitCode: number | null; readonly signal: string | null }
+  | { readonly state: "gone" }
+  | {
+      readonly state: "unknown";
+      readonly reason: "read_failed" | "sandbox_unreachable" | "handle_unrecognized" | "state_unrecognized";
+    };
+
+export interface E2bProcessStartResult {
+  /** ★ NON-EMPTY BY CONTRACT — presence is the acknowledgement, so "present" must not be
+   * satisfiable by a value that means nothing. A launch response from which no non-empty
+   * handle can be read is an {@link E2bProcessLaunchNotAcknowledgedError}, never `""`. */
+  readonly handle: E2bProcessHandle;
+}
+
+export interface E2bProcessSignalResult {
+  /** About the CALL only. There is deliberately no member naming a process outcome. */
+  readonly accepted: "accepted" | "refused" | "unsupported";
+  /** About the PROCESS, obtained by RE-READING after the attempt. */
+  readonly observation: E2bProcessObservation;
+}
+
+export interface E2bStartProcessRequest {
+  readonly sandboxId: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly envVars: Readonly<Record<string, string>>;
+  /** The sandbox-side command budget, forwarded to the provider. */
+  readonly timeoutMs: number;
+}
+
+/** The transport could not ACKNOWLEDGE a launch: the provider refused, or its response
+ * carried no handle this binding can read. The provider maps it to the domain
+ * `ProcessLaunchNotAcknowledged`. */
+export class E2bProcessLaunchNotAcknowledgedError extends Error {
+  readonly sandboxId: string;
+  constructor(sandboxId: string, detail?: string) {
+    super(`e2b transport: process launch not acknowledged for ${sandboxId}${detail ? `: ${detail}` : ""}`);
+    this.name = "E2bProcessLaunchNotAcknowledgedError";
+    this.sandboxId = sandboxId;
+  }
+}
+
+/**
+ * The injectable E2B transport. Optional capabilities (`pause`/`resume`) may be
+ * absent — the provider gates the optional `checkpoint`/`restore` ops on their
+ * presence AND on its own advertisement.
+ */
+export interface E2bTransport {
+  create(req: E2bCreateRequest): Promise<{ readonly sandboxId: string }>;
+  /** Run a command inside the sandbox. `handlers` (CLI-003/D1) optionally receive
+   * stdout/stderr chunks as they are produced — best-effort observation that never
+   * alters the returned {@link E2bCommandResult}. */
+  runCommand(req: E2bRunCommandRequest, handlers?: E2bStreamHandlers): Promise<E2bCommandResult>;
+  /**
+   * CLI-002/D1 — stage `files` (declared snapshot + `## Context` bundle + approved
+   * inputs) into a live sandbox before execution. The real binding uses the `e2b`
+   * SDK filesystem API; the mock models an in-memory fs so staging + a fake CLI's
+   * file mutation are no-key-testable. An unknown sandbox throws
+   * {@link E2bTransportNotFoundError}. It carries NO tenant field (CAV-002).
+   */
+  writeFiles(sandboxId: string, files: readonly E2bStagedFile[]): Promise<void>;
+  /**
+   * CLI-002/D1 — read a staged/mutated file's bytes back (assertions + result
+   * collection). Missing sandbox OR path throws {@link E2bTransportNotFoundError}.
+   *
+   * ★ CLI-012 (`E5-F009`) — `opts.maxBytes` BOUNDS THE READ ITSELF. The implementation must
+   * stop and throw {@link E2bReadBoundExceededError} once more than `maxBytes` has arrived,
+   * and must NEVER materialise the whole file first and measure it afterwards. The listing
+   * size is a snapshot: a background writer the agent left running can leave a file inside the
+   * cap at enumeration and grow it to gigabytes before the read, after which a pre-read check
+   * passes and an unbounded read still materialises the enlarged file in the shared
+   * adapter-manager process. Omitting `opts` keeps the pre-CLI-012 unbounded behaviour, which
+   * only the local staging/assertion callers use.
+   */
+  readFile(
+    sandboxId: string,
+    path: string,
+    /**
+     * ★ CLI-012 (Codex P2, round 4) — `signal` BOUNDS THE OPERATION, not just the caller.
+     * The caller's `boundedBySignal` returns at the deadline and leaves the abandoned work to
+     * settle, so without this the SDK request runs on — holding a pooled connection and still
+     * streaming a tenant's bytes into a shared process after the op that asked for them gave up.
+     * `e2b@2.30.5`'s `FilesystemRequestOpts` already carries `signal`; this threads it.
+     */
+    opts?: { readonly maxBytes?: number; readonly signal?: AbortSignal },
+  ): Promise<Uint8Array>;
+  /**
+   * CLI-012 (`E7-F039`) — describe ONE path WITHOUT following it: the `lstat` half.
+   *
+   * ★ THE BRANCH THIS IS, recorded. The installed `e2b@2.30.5` exposes NO no-follow or
+   * handle-bound read (`FilesystemReadOpts` carries only `gzip` and `streamIdleTimeoutMs`), so
+   * the atomic open-and-read is unreachable through the SDK and `E7-D11` pre-authorizes the
+   * second means: a per-entry no-follow stat before the read. It is the CHECK half of a
+   * check-then-read pair and the race is `E7-F039`, a named residual bounded by `SD-5`.
+   *
+   * Missing sandbox OR path throws {@link E2bTransportNotFoundError}.
+   */
+  /** ★ CLI-012 — `signal` BOUNDS THE OPERATION (see {@link E2bTransport.readFile}). */
+  statEntry(sandboxId: string, path: string, opts?: { readonly signal?: AbortSignal }): Promise<E2bDirEntry>;
+  /**
+   * CLI-002/D1, contract fixed by CLI-010 (E7-D09) — enumerate the files under `path`:
+   * FILES ONLY (never a directory), RECURSIVELY, as ABSOLUTE paths strictly under `path`
+   * (never `path` itself), sorted. METADATA ONLY — no bytes cross this call.
+   *
+   * BOUNDED: a listing with more than {@link E2B_LIST_DIR_MAX_ENTRIES} entries, or any entry
+   * deeper than {@link E2B_LIST_DIR_MAX_DEPTH} levels below `path`, throws
+   * {@link E2bListDirBoundExceededError}. An entry that cannot be classified file-vs-directory
+   * or does not sit under `path` throws {@link E2bListDirMalformedEntryError}. It NEVER
+   * returns a silently shortened list. Missing sandbox throws {@link E2bTransportNotFoundError}.
+   *
+   * ★ CLI-012 (ruling F7) — each entry now carries its absolute path, a LINK MARKER and a byte
+   * SIZE ({@link E2bDirEntry}). It used to return `readonly string[]`; see that type for why.
+   */
+  /**
+   * ★ CLI-012 — `signal` BOUNDS THE OPERATION (see {@link E2bTransport.readFile}). Without it a
+   * stalled `files.list` runs on after the caller's deadline, holding a connection and
+   * enumerating up to the entry bound while the adapter-manager has already released its
+   * per-sandbox lock and moved on to teardown. `FilesystemListOpts` carries `signal`.
+   */
+  listDir(sandboxId: string, path: string, opts?: { readonly signal?: AbortSignal }): Promise<readonly E2bDirEntry[]>;
+  /** Deliver a graceful-cancel or forced-kill signal to a live sandbox. */
+  signal(sandboxId: string, kind: "cancel" | "kill"): Promise<E2bSignalResult>;
+  /** Terminate + reclaim a sandbox. May throw {@link E2bTransportTransientError}. */
+  terminate(sandboxId: string): Promise<void>;
+  getInfo(sandboxId: string): Promise<E2bSandboxRecord>;
+  list(req: E2bListRequest): Promise<E2bListPage>;
+  setTimeout(sandboxId: string, timeoutMs: number): Promise<void>;
+  isRunning(sandboxId: string): Promise<boolean>;
+
+  // --- SVC-008a process supervision (MANDATORY methods, optional SUPPORT) ------
+  //
+  // "Mandatory means no absent path": every transport implements all three, and only
+  // `processSupervisionMode` says whether they do anything. A `"none"` transport THROWS
+  // `UnsupportedProviderOperation` (via the provider) rather than returning an `unknown`
+  // observation — an unsupported capability must never be called again, while an
+  // `unknown` means "escalate and retry", and one value cannot carry both handlings.
+
+  /** Whether the three methods below are supported. */
+  readonly processSupervisionMode: E2bProcessSupervisionMode;
+  /** Launch a DETACHED process and return as soon as the provider acknowledges a handle.
+   * Never waits for the process to exit. Throws
+   * {@link E2bProcessLaunchNotAcknowledgedError} when no non-empty handle can be read. */
+  startProcess(req: E2bStartProcessRequest): Promise<E2bProcessStartResult>;
+  /** Read what the transport can SEE of the process behind `handle`. A read that THREW is
+   * `{state: "unknown"}`; an ANSWER that the process is absent is `{state: "gone"}`. */
+  processStatus(sandboxId: string, handle: E2bProcessHandle): Promise<E2bProcessObservation>;
+  /** Signal the process behind `handle`, then RE-READ its status. */
+  signalProcess(
+    sandboxId: string,
+    handle: E2bProcessHandle,
+    kind: "cancel" | "kill",
+  ): Promise<E2bProcessSignalResult>;
+
+  pause?(sandboxId: string): Promise<{ readonly snapshotId: string }>;
+  resume?(sandboxId: string): Promise<void>;
+}

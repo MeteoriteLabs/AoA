@@ -216,6 +216,7 @@ export {
   remoteSecretImportPreviewSchema,
   remoteSecretImportCommitSchema,
   updateRuntimeProviderKeySchema,
+  createRuntimeProviderKeyWithSecretSchema,
   type CreateSecret,
   type RotateSecret,
   type UpdateSecret,
@@ -226,6 +227,7 @@ export {
   type RemoteSecretImportCommit,
   type CreateRuntimeProviderKey,
   type UpdateRuntimeProviderKey,
+  type CreateRuntimeProviderKeyWithSecret,
 } from "./secret.js";
 
 export {
@@ -504,11 +506,19 @@ export {
   gvisorEnvironmentConfigSchema,
   createExecutionTargetSchema,
   workerExecutionTargetHeartbeatSchema,
+  issueWorkerEnrollmentCodeSchema,
   type CreateExecutionTargetInput,
   type WorkerExecutionTargetHeartbeatInput,
+  type IssueWorkerEnrollmentCodeInput,
 } from "./execution-target.js";
 
 export { isGitHubRepoUrl } from "./github.js";
+
+export {
+  submitJobCommandSchema,
+  submitJobSourceSchema,
+  type SubmitJobCommandInput,
+} from "./job-control.js";
 
 export {
   createUserEntityPinSchema,

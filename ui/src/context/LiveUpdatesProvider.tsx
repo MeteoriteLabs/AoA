@@ -839,6 +839,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const subscribedThreadsRef = useRef<Map<string, number>>(new Map());
   const reconnectListenersRef = useRef<Set<() => void>>(new Set());
   const hubItemChangedListenersRef = useRef<Set<(itemId: string) => void>>(new Set());
+  // MIG-003: the max durable per-company `seq` seen. Sent as `?sinceSeq=N` on
+  // reconnect for gap recovery, and used to suppress duplicate seqs (overlapping
+  // replay + live). 0 = fresh (no server replay; only future events).
+  const lastSeqRef = useRef(0);
 
   const [connectionState, setConnectionState] = useState<LiveConnectionState>(
     typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "connecting",
@@ -944,6 +948,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!selectedCompanyId) return;
 
+    // Each company has its own durable seq space — reset the cursor on switch.
+    lastSeqRef.current = 0;
+
     let closed = false;
     let reconnectAttempt = 0;
     let reconnectTimer: number | null = null;
@@ -970,7 +977,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     const connect = () => {
       if (closed) return;
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(selectedCompanyId)}/events/ws`;
+      // MIG-003: send `?sinceSeq=N` only when we have a real cursor (>0), so a
+      // fresh connect gets no history replay (only future events); a reconnect
+      // replays exactly the gap it missed (or is told to snapshot-refetch).
+      const sinceSuffix = lastSeqRef.current > 0 ? `?sinceSeq=${lastSeqRef.current}` : "";
+      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(selectedCompanyId)}/events/ws${sinceSuffix}`;
       socket = new WebSocket(url);
       socketRef.current = socket;
 
@@ -1004,7 +1015,28 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         if (!raw) return;
 
         try {
-          const parsed = JSON.parse(raw) as LiveEvent;
+          const parsed = JSON.parse(raw) as LiveEvent & { seq?: number };
+          // MIG-003: bounded snapshot fallback — the server could not replay our
+          // cursor exactly (older than the retained window), so do a blanket
+          // refetch of active queries + notify catch-up consumers.
+          if ((parsed as { type?: string }).type === "__resume") {
+            void queryClient.invalidateQueries();
+            for (const cb of reconnectListenersRef.current) {
+              try {
+                cb();
+              } catch {
+                // listener errors must not break the socket
+              }
+            }
+            return;
+          }
+          // MIG-003: duplicate suppression by monotonic seq (overlapping replay +
+          // live). Seq-less events (ephemeral local-emit, e.g. presence) always
+          // pass and never advance the cursor.
+          if (typeof parsed.seq === "number") {
+            if (parsed.seq <= lastSeqRef.current) return;
+            lastSeqRef.current = parsed.seq;
+          }
           // Presence is ephemeral — consume it directly into local state.
           if (parsed.type === "thread.presence") {
             const threadId = readString(parsed.payload?.threadId);

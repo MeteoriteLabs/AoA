@@ -1,0 +1,128 @@
+// Public surface of the deterministic fixture-driven fake sandbox provider.
+// Explicit re-exports only (no `export *`).
+
+export {
+  FakeSandboxProvider,
+  createFakeSandboxProvider,
+  UnsupportedProviderOperation,
+  LIFECYCLE_CHECKPOINTS,
+  FAKE_PROVIDER_CANNED_USAGE_V1,
+  FAKE_PROVIDER_USAGE_MODES,
+} from "./fake-driver.js";
+export type {
+  FakeSandboxProviderOptions,
+  FakeSandboxDriver,
+  SandboxProviderDriver,
+  ProviderOpArgs,
+  ProviderPageRequest,
+  ProviderResourceRef,
+  ProviderResourceProjection,
+  ProviderListResult,
+  ProviderCleanupResult,
+  ProviderOpResult,
+  ScriptInput,
+  ReplayResult,
+  LifecycleCheckpoint,
+  FailureInjection,
+  FakeProviderUsageV1,
+  FakeProviderUsageMode,
+} from "./fake-driver.js";
+
+export {
+  createControlServer,
+  startControlServer,
+  loadFixtureFromDir,
+  defaultGoldenFixturesDir,
+} from "./control-server.js";
+export type { ControlServerOptions, StartedControlServer } from "./control-server.js";
+
+export {
+  validateFixture,
+  emitFixtureEvents,
+  derivePlan,
+  isLifecycleCheckpoint,
+  FixtureValidationError,
+} from "./fixture-runtime.js";
+export type { ValidatedFixture, RunStep, RunPlan } from "./fixture-runtime.js";
+
+// DEP-019 — the DETERMINISTIC SCRIPTED COMMAND. `DEP-016`'s canned usage rides the CONTRACT
+// driver's result, which only a harness reads; a DEPLOYED worker derives usage from the run's
+// stdout. This is what the reference provider writes there.
+export {
+  SCRIPT_FLAG_PREFIX,
+  DEFAULT_SCRIPTED_COMMAND_PLAN,
+  ScriptedCommandError,
+  parseScriptedCommand,
+  buildScriptedStdoutChunks,
+  executeScriptedCommand,
+  executeScriptedCommandAsync,
+  SCRIPTED_COMMAND_MAX_DELAY_MS,
+} from "./scripted-command.js";
+export type {
+  ScriptedCommandPlan,
+  ScriptedExecuteInput,
+  ScriptedExecuteResult,
+  ScriptedExecuteOptions,
+} from "./scripted-command.js";
+
+// DEP-019 — the DEP-017 env-absence probe is EXECUTED, not scripted. `DEP-016` acceptance item 6
+// took the "cannot live here" fork only because the reference provider ran no command.
+export {
+  NODE_EVAL_WRAPPER_PATTERN,
+  NodeEvalRefusedError,
+  PROBE_ARGV_LENGTH,
+  assertProbeArgvShape,
+  classifyShellInvocation,
+  createNodeEvalRunner,
+} from "./node-eval.js";
+export type {
+  ClassifyOptions,
+  NodeEvalRequest,
+  NodeEvalResult,
+  NodeEvalRunner,
+  NodeEvalRunnerOptions,
+  ShellInvocation,
+} from "./node-eval.js";
+
+// DEP-019 — the reference provider on the AUTHORITATIVE per-op port, the face a DEPLOYED worker
+// reaches through the adapter-manager wire.
+export {
+  PER_OP_CORE_OPERATIONS,
+  SandboxNotFoundError,
+  createFakeSandboxProviderPort,
+} from "./per-op-provider.js";
+export type {
+  FakeSandboxProviderPort,
+  FakeSandboxProviderPortOptions,
+  PortCreateSpec,
+  PortCreateResult,
+  PortExecuteInput,
+  PortInspectResult,
+  PortListInput,
+  PortListResult,
+  PortOpContext,
+  PortOwnershipSelector,
+  PortResourceLabels,
+  PortResourceSummary,
+  PortSandboxState,
+  PortStopResult,
+  PortCleanupResult,
+} from "./per-op-provider.js";
+
+export { InvocationLedger } from "./invocation-ledger.js";
+export type { InvocationLedgerEntry, FakeClockOptions } from "./invocation-ledger.js";
+
+export { sha256Hex } from "./hash.js";
+
+// DEP-008 — the HOSTILE reference driver (a distinct SandboxProviderDriver) and its
+// mirrored authority errors. Used by the sibling package's isolation conformance
+// suite; also passes the DEP-000 happy-path suite as a regression guard.
+export {
+  HostileSandboxProvider,
+  createHostileSandboxProvider,
+  HOSTILE_MAX_DESTROY_ATTEMPTS,
+  EffectAuthorityWithdrawnError,
+  CleanupAuthorityDeniedError,
+  ResourceNotAvailableError,
+  SandboxEgressDeniedError,
+} from "./hostile-driver.js";

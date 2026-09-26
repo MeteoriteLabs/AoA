@@ -1,0 +1,2295 @@
+# E7 — Coding/CLI on E2B — Implementation Plan
+
+> ★★★ **CORRECTED 2026-09-20 after review — TWO OF THE LINK CLAIMS WERE WRONG, AND ONE OF THEM
+> WAS MINE ABOUT WORK I HAD ALREADY MERGED.** Both were found by adversarial review of this plan
+> and both are verified at source. They do not change what Unit F must achieve; they change the
+> route, and they move link 5 out of "ordinary engineering".
+>
+> **(1) `captureSandboxEntries` is the WRONG TOOL for the E2B lane — it pulls bytes through the
+> daemon.** `capture-sandbox.ts` does `readFile(absolute)` and then `sha256(bytes)`, so every
+> captured file's bytes transit the worker daemon. That contradicts the sequencer's own stated
+> contract at `artifact-export.ts`: *"**GRANTS OUT, NEVER BYTES** … the bytes go sandbox →
+> provider → object storage and **never touch the daemon**, which is dependency-pinned (E4-D01)
+> precisely so it does not handle them."* The provider-side route that honours it already exists
+> and is real — `E2bSandboxProvider.digestArtifact` returns `{sha256, sizeBytes}` (**metadata
+> only**) and `exportArtifact` re-hashes and PUTs, with `artifactExportMode = "grant_upload"`.
+>
+> ★ **So the capture half of link 1 is NOT solved for the lane that matters.** It is a
+> **local/desktop-lane** tool — the sandbox analogue of DAT-001's local-FS walk, correct where the
+> daemon legitimately holds the filesystem — and it is **inert** (zero callers, not re-exported),
+> so nothing in production is affected. But it must not be composed on the E2B or networked lane,
+> and an earlier record of mine describing it as "link 1's capture half" without that qualifier
+> was wrong.
+>
+> ★ **No guard catches this.** `check-worker-daemon-boundary` passes, because it enforces a
+> *dependency* boundary; the *data-plane* rule is prose in a docstring. A guard for it is worth
+> considering and is not in this plan's scope.
+>
+> **(2) Link 5 is NOT ordinary engineering — it needs a designed projection contract.** The frozen
+> `artifactPreparedPayloadV1Schema` is `{artifactId, kind}`, `.strict()` — **no path** — and the
+> projector says so itself: *"`artifact_prepared` carries an artifactId and a kind, never a path …
+> so there is no honest file list to build."* Worse, that `artifactId` identifies a
+> **`job_artifacts`** row while `task_outputs.artifactId` references the separate **`artifacts`**
+> table. So F5 owes a **lookup and materialization contract** (`job_artifacts` → path, and
+> `job_artifacts` → `artifacts`) before any projector work, and the frozen v1 wire constrains how.
+>
+> **What survives unchanged:** link 2 is built; the export **sequencer** (`createArtifactExportSequencer`)
+> is built and correct — it already implements the metadata-first route; link 4 remains ordinary.
+> **What changes:** F3's route (metadata-only enumeration + provider digest/export, never
+> `captureSandboxEntries`), and F5's classification (**designed contract first**, not ordinary work).
+
+**Plan status:** `draft` — not approvable until (a) the operator approves the read-back, (b) the
+`scope-triage.md` dispositions this plan executes are reflected in an owner-approved amendment, and
+(c) the shared decisions below (E7-D01…E7-D07) are ratified. This plan covers **only** the E7 work
+the first milestone requires: `CLI-008` (disposition **M**, link-scoped) and the arming of the
+`E7-1-coding-journey` gate clause. `CLI-001` through `CLI-006` are shipped and out of scope;
+`CLI-007` is disposition **N** — *frozen, independently reviewed, live-enforced, no gate clause, no
+open finding* — and **owes nothing**, so filing a correction against it would manufacture work.
+
+> **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` to
+> execute this plan ticket by ticket **only after operator approval**. Every ticket uses a fresh
+> implementer subagent (strict RED → GREEN) and a DISTINCT independent reviewer subagent. **One
+> ticket below — `CLI-011` — is a DESIGN ticket and may not be assigned as build work under any
+> circumstance.** Three mechanisms have been proposed for it and all three were refuted.
+
+**The single most valuable thing this plan does:** it **splits `CLI-008` Unit F into link-scoped
+tickets.** Unit F was chartered as one question — *"what supplies the output"* — and has been
+`UNSIZED` since 2026-09-04 because one of its six links has no design. The other five are not
+blocked by that, and four of them are ordinary engineering. Carrying them inside one UNSIZED ticket
+is why nothing in the return path has moved, and why the triage could not put a date on `M1b`.
+
+**Goal:** make the return path buildable link by link, so that `M1b`'s exit criterion 4 — *"the
+sandboxed adapter can use the approved tools/workspace and return attributable reviewable output; a
+mechanism-only run with `capabilityProven=false` cannot satisfy this criterion"* — has a schedule
+rather than a blocker, while stating without softening which single link still has none.
+
+---
+
+## 0. Planning record, freeze, dependency gates, and shared decisions
+
+| Item | Recorded value |
+|---|---|
+| Planning revision | `e710d8b54027eb7338733e05f422c71cd5127345` — branch `claude/plan-spine-m1-split`. Every `file:line`, caller count and symbol below was measured at this tip. Several published line pins have drifted since they were written; §1 names the ones I found. |
+| Plan of record | [`../../epic-regrooming/scope-triage.md`](../../epic-regrooming/scope-triage.md) as amended 2026-09-20, including the `M1a`/`M1b` split and the nine-criterion allocation. |
+| Epic status | `backlog` (`README.md:3`). The exit gate is a staging/internal canary Organization completing the full coding journey plus a real-E2B D2 lane. **Neither `M1-D1-SPINE` nor `M1-D2-CODING` completes E7.** |
+| `CLI-008` disposition | **M** — *"No result doc; **ten** open findings name it as `ticket`. The largest unbuilt block in the original A."* Verified at this tip: `scripts/finding-ownership.json` names `CLI-008` as `ticket` for exactly ten findings — `E7-F003`, `F015`, `F016`, `F017`, `F023`, `F024`, `F026`, `F027`, `F032`, `F033`. |
+| Unit A | ✅ **DONE** 2026-09-02 (PR #339, `0e0904206`). Changed the **judge**, not the capability. |
+| Unit B | ✅ **DONE** 2026-09-03 (PR #340, `393f7a251`). The inbound channel. `E7-1-staged-input-write` and `E7-1-staged-input-grant` are both `wired`. |
+| Unit C | ✅ **RULED + ENACTED 2026-09-19.** Founder ruled mechanism A transport + mechanism C plumbing, land now **inert-until-authorized**. Slices 1–4 merged (`3a034f40d`..`1523a8353`) behind `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` (`server/src/config/distributed-execution.ts:29`); the claude argv emits `--mcp-config "$N" --strict-mcp-config --allowedTools mcp__aoa` at `server/src/services/task-run-sandbox-invocation.ts:218`. **`E7-F003`'s tools row legitimately stays open** — the flag is off and `capabilityProven` is false. |
+| Unit D | ✅ **DONE** 2026-09-03. Prompt on stdin from a staged file; instructions bundle on `--append-system-prompt-file`. Closes `E7-F008`, `E7-F009`. |
+| Unit E | **Unbuilt, XL, and NOT first-milestone.** See E7-D05. |
+| Unit F | **Six links.** Link 2 BUILT; link 1's **capture** half BUILT and inert; links 3/4/5 unbuilt and ordinary; link 1's **emit** half **undesigned after three refutations**; link 6 (the judge) blocked behind it. [`tickets/CLI-008-unit-f-design.md`](./tickets/CLI-008-unit-f-design.md) §1.6. |
+| `E7-F014` | **RESOLVED** 2026-09-04 (PR #351). The unit-F design's §5 "blocking dependency — being fixed on a parallel branch" is **discharged**; a non-zero exit no longer throws past every post-execute capture. That staleness is `CLI-009`'s to correct. |
+| `E7-F021` | **RESOLVED** 2026-09-11, founder-authorized. `--dangerously-skip-permissions` is on both claude literals in `task-run-sandbox-invocation.ts`, guarded RED-when-removed by `server/src/__tests__/task-run-batch-workload.test.ts`. So the unit-F stop condition's **clause 1 is discharged for `claude_local`**. |
+| `E7-F027` | **OPEN, narrowed.** codex is refused by its own trusted-directory gate before any model call. **Stop-condition clause 2 still stands: any near-term mechanism must be `claude_local`-only, not adapter-agnostic.** |
+| Formal test authority | Linux CI under DEC-03. Windows short-path evidence is `operator-directed windows-local`. Windows e2e is skipped at the Playwright config level (Issue #114). |
+| Keyed E2B | **Do not dispatch a keyed E2B workflow without explicit founder authorization — it spends money.** Every keyed row below is a request, not an entitlement. |
+
+`decisions.md` **does not exist** for this epic and is created by the first executed ticket.
+Findings live in [`findings.md`](./findings.md); IDs are `E7-F0xx`, decisions `E7-D0x`.
+
+### ★ The structural hazard this plan must not walk into
+
+`scripts/check-finding-ownership.mjs`'s `findCompletedTicketIds` counts a ticket **complete when its
+`-result.md` exists** — that is how `E5-F001` discovered `DSK-002` had shipped while still holding a
+residual. `CLI-008` currently owns ten open findings and has **no result doc**, which is the only
+reason those ten still have a live owner.
+
+**So creating `tickets/CLI-008-result.md` before the link-scoped successors exist would orphan ten
+findings in one commit.** This is the same deadlock the triage recorded for `MIG-010` (D-10: file
+the successor first). **The split IS the remedy**: each link-scoped ticket takes the findings that
+belong to it, and only then can `CLI-008` carry a result honestly. `CLI-009` sequences that
+and is explicitly forbidden from creating the parent result doc.
+
+### Shared decisions and locked contracts (E7-D01…E7-D07)
+
+- **E7-D01 — `capabilityProven` can assert PROVENANCE and never PRODUCTIVITY.** It is computed from
+  two SQL counts over control-plane rows (`E7ProducedOutputCounts`,
+  `server/src/services/e7-distributed-run-verifier.ts:130-133`). A count over rows can assert *these
+  bytes reached durable AoA storage through an attested path*; it can never assert *these bytes are
+  the work the task asked for*, because the verifier reads tables and never an artifact's bytes. The
+  two arms fail on **different axes** and collapsing them into one word ("non-probative") is what let
+  round 1 argue both sides of a single principle. No ticket here may restate the bar as productivity.
+- **E7-D02 — The three refutations are binding, and a fourth mechanism proposed without surviving
+  §6 will be refuted for the same reason.** Round 1 fell on argv **shape**; round 2 on argv **size**;
+  round 3 on **the predicate itself** — its repair (drop the forgeable `task_outputs` arm and widen
+  the artifact arm off `kind = 'workspace_patch'`) is satisfied on **every** converted distributed
+  run by the run's **own staged input bundle**. The core move is itself the defect.
+- **E7-D03 — Links 3, 4 and 5 are NOT blocked by the emit question, and there are TWO counters,
+  not one.** ★★★ *Superseded text: "links 4 and 5 flip NO counter" and "the **counter** moves on
+  link 3 alone". Corrected 2026-09-20, verified at source.* That reading was true of ONE of
+  `countProducedOutputs`' two arms and false of the other, once `CLI-014` was corrected to route
+  through `jobOutputBridge.projectAcceptedOutput`. The two counters, named separately:
+  - **The QUALIFYING ARTIFACT counter** — `countProducedOutputs` arm 1, committed
+    `kind = 'workspace_patch'` `job_artifacts`, attempt-scoped as of `E7-F031`. It queries
+    `job_artifacts` directly and joins no events, so **a committed artifact counts whether or not
+    anything announced it** (`E7-F016`'s substance). **Link 3 alone moves this counter. Link 4 does
+    not, and link 5 does not.**
+  - **The RECEIPT-BACKED OUTPUT counter** — `countProducedOutputs` arm 2, the `taskOutputs` number:
+    `task_outputs` rows inner-joined to an applied `output_projection` / `task_outputs` receipt on
+    both `job_id` and `attempt_id`
+    (`server/src/services/e7-distributed-run-verifier-store.ts:579-606`). Its **sole** writer is
+    `jobOutputBridge.projectAcceptedOutput` — which is precisely what F5 must route through — so
+    **link 5 DOES move this counter.** Link 4 still moves neither.
+  What links 4 and 5 buy *beyond* the counters is that a committed artifact becomes **visible to the
+  founder on the task**, which is exit criterion 4's actual sentence. Confusing the two counters with
+  each other, or either with visibility, is the error this plan is written to avoid.
+- **E7-D04 — `claude_local` only, for anything Unit-F-shaped, until `E7-F027` is characterised.**
+  Clause 1 of the stop condition is discharged; clause 2 is not. A mechanism that looks
+  adapter-agnostic while codex is refused before any model call is a fix that leaves codex broken and
+  looks like a fix.
+- **E7-D05 — Unit E is NOT in `M1b`.** The capture half is deliberately narrow to the Unit-F shape-(a)
+  convention: *capture a designated OUTPUT PATH the agent was told to write to, against an EMPTY base
+  downstream (→ all `create` ops). No git base, no ignore policy, no Unit-E workspace*
+  (`packages/worker-daemon/src/snapshot/capture-sandbox.ts` header). The `workspace_patch` route —
+  which is what `E5-3-patch-quarantine` and `E5-result-commit-worker` need — remains XL and
+  Unit-E-blocked, and is post-`M1b`.
+- **E7-D06 — Grants inbound, references outbound, never bytes.**
+  `DECISION-byte-egress-and-provider-topology.md` Option D: the provider reads the file from inside
+  its sandbox and PUTs it directly to object storage under a worker-minted grant. Nothing here
+  re-opens that; it constrains every candidate mechanism equally. **An S3-compatible store is a hard
+  precondition** — `checksumSha256` is supplied only by `storage/s3-provider.ts:212`, the local-disk
+  provider supplies none, and `artifact-commit.ts` fails closed when the store cannot supply a
+  checksum. Staging sets `AOA_STORAGE_PROVIDER: "s3"`.
+- **E7-D07 — No frozen-protocol edit.** `artifact_prepared` is already in the frozen event kinds
+  (`packages/worker-protocol/src/events.ts:358`), already has a frozen payload schema (`:387`), and
+  is already in the `job_events` CHECK constraint (`packages/db/src/schema/job_events.ts:75`).
+  `EventSequencer` is daemon code **outside** the `worker-protocol-contract-bytes` freeze. So link 4
+  needs no custodian STOP — which is worth stating, because it is the one link a planner would assume
+  was blocked.
+
+### NOT in scope (epic non-goals for the first milestone)
+
+- No Unit E, no `WorkspaceManifestV1` producer, no `--add-dir`, no repository to work in (E7-D05).
+- No fourth supply mechanism written under time pressure (E7-D02). `CLI-011` is a design pass.
+  ★★★ *Corrected eleventh round: an earlier revision listed *“do not build it”* among its permitted
+  outcomes and required an attack pass to adopt it. §13 of the unit-F design is **RATIFIED** — the
+  founder ruled **“close the fifth option as SUPERSEDED”** — so it is neither a permitted outcome
+  nor an attack F1b owes. Carrying a closed option in a constraints list reopens it by the back
+  door.*
+- No adapter-agnostic mechanism; no codex work beyond characterisation (E7-D04).
+- No re-opening of the DE-08 sandbox-egress ruling (CONCEDED at the managed-shared tier, 2026-09-11)
+  and no claim that H-06 passes.
+- No `packages/db` schema change and no `drizzle-kit generate`.
+- No re-opening of `CLI-001`…`CLI-006` or `CLI-007` (disposition N).
+- No sink cutover. ★★★ **BUT `jobOutputBridge` ITSELF IS AN `M1a` PREREQUISITE, NOT M2** — *corrected eleventh round: `scope-triage.md` puts the three parity-bridge consumers, `jobOutputBridge` among them, in the `M1a` required-result set (D-8), and the E5 plan says so too. What is M2 is the **sink cutover**, not the bridge.* The distinction matters because link 5 relied on the deferral to justify a second writer, and there is only one writer. Superseded text: `E3-17-output` / `jobOutputBridge` is **M2**, not M1, and link 5 must not become a
+  second writer of `task_outputs` ahead of it (see `CLI-014`).
+
+---
+
+## 1. Consumed as-built interfaces / what already exists and is reused
+
+### Unit F's six links, at this tip
+
+| # | Link | State, measured | Owner below |
+|---|---|---|---|
+| 1a | **capture** — walk a designated in-sandbox output root | ⚠️ **BUILT, INERT, AND WRONG-LANE.** Metadata-only *enumeration* is what link 3 needs; the built helper also reads and hashes bytes **in the daemon**, which the sequencer contract forbids — so the capture half is **not** solved for the E2B lane. `captureSandboxEntries` (`packages/worker-daemon/src/snapshot/capture-sandbox.ts:67`) over an INJECTED `listDir`/`readFile` seam, fail-closed on any path outside the root or failing `isSafeWorkspacePath`, deterministic, plain `CapturedFileEntry[]`. **Nothing re-exports it from `snapshot/index.ts` and nothing calls it** — verified: every reference at this tip is its own definition or `src/__tests__/capture-sandbox.test.ts`. | `CLI-010` |
+| 1b | **emit** — tell the agent to write there | ★★★ **UNDESIGNED.** The half the three refutations are about. Nothing yet tells the agent to write to that root, so `captureSandboxEntries` has nothing to walk on a real run. **This flips no counter and closes no finding.** | `CLI-011` (DESIGN ONLY) |
+| 2 | **a real `exportArtifact`/`digestArtifact`** | ✅ **BUILT** 2026-09-04 (PR #353). `packages/sandbox-e2b-provider/src/e2b-provider.ts:246` declares `artifactExportMode = "grant_upload"`; `exportArtifact` reads → size-checks → **re-hashes against the grant** → PUTs → returns `{objectKey}`. Proven on a **real E2B sandbox** (`keyed-e2b-dat-009-export.yml`, 4/4, run `33856478690`), including the TOCTOU refusal. | — (closed) |
+| 3 | **worker-side consumer** — sequence digest → mint grant → export → commit | **UNBUILT.** `createArtifactExportSequencer` (`packages/worker-daemon/src/lease/artifact-export.ts:264`) exists with zero production callers; its only other reference is the barrel at `packages/worker-daemon/src/index.ts:178`. The hook and composition are **E5's** `DAT-009-3c`/`3d`; the **producer of `ArtifactExportRequest[]`** is this epic's. | `CLI-012` |
+| 4 | **announcement** | **UNBUILT, and NOT blocked.** `EventSequencer` (`packages/worker-daemon/src/supervisor/events.ts`) has no `artifactPrepared` method. The event kind, payload schema and DB CHECK are all already frozen-and-present (E7-D07). | `CLI-013` |
+| 5 | **projector** | **UNBUILT.** `foldAttemptEvidence` hard-codes `detectedFiles: []` (`server/src/services/canary-terminal-projection.ts:256`) and `createCanaryRunProjector.projectTerminal` (`server/src/services/canary-run-projector.ts:156`) has four steps — events, terminal, `finalizeRun` (`:219`), run-summary comment (`:238`) — **none of which writes `task_outputs`**. | `CLI-014` |
+| 6 | **the judge** | **Counts the wrong things, and its obvious repair is refuted.** The module's only `capabilityFailures.push` is at `server/src/services/e7-distributed-run-verifier.ts:657`. | `CLI-015` |
+
+### Line pins that have drifted since they were published — correct these, do not copy them
+
+| Published | Measured at `e710d8b54` | Where it appears |
+|---|---|---|
+| `canary-terminal-projection.ts:251` | **`:256`** | unit-F design §1.6 link 5 |
+| `canary-run-projector.ts:149` / steps at `:163,:188,:211,:228` | **`:156`** / `:219`, `:238` | unit-F design §1.6 link 5 |
+| *"`events.ts` declares exactly seven emitters"* | **false at this tip** — the service emitters (`serviceInstanceStarted` `:269`, `serviceHealth` `:282`, `serviceGracefulStopObserved` `:288`, `serviceInstanceStopped` `:299`, `serviceInstanceLost` `:305`) landed after that census | unit-F design §1.8 |
+| `E7-F014` *"being fixed on a parallel branch"* (§5, "blocking dependency") | **RESOLVED** 2026-09-04 (PR #351) | unit-F design §5 |
+| `e7-distributed-run-verifier-store.ts:198-218` / `:207` | the predicate moved ~230 lines in W21B/W21C; the store's own header records the move (`countProducedOutputs` 198 → 387, arm 1's `workspace_patch` conjunct 207 → 473) | CLI-008 design §2 |
+
+The lesson these five rows carry is the programme's dominant failure class: **cite by symbol and
+treat a line number as a hint.** `ls` every cited file and re-measure at HEAD.
+
+### E5 / E3 surfaces this epic consumes and does not edit
+
+| Surface | Source | E7 use |
+|---|---|---|
+| `POST /api/worker-control/artifact-transfer-grants` `:605`, `/artifact-commits` `:654` | `server/src/routes/worker-control.ts` | Mint + fenced commit. Mounted whenever distributed execution is on. Live-proven against real MinIO (`DAT-002-live-minio-result.md`, `d1-merge-train` `31885553697`, 13/13). |
+| `createArtifactExportSequencer`, `grantPutHeaders` | `packages/worker-daemon/src/lease/artifact-export.ts:264,146` | Link 3's sequencing. **E5 owns the hook + composition** (`DAT-009-3c`/`3d`); this epic owns the producer. |
+| `SupervisorDeps.resolveExportArtifacts` | does not exist yet — `DAT-009-3c` | Link 3's seam. `CLI-012` is its first and only caller. |
+| `DistributedRunCurrencyResolver` | `server/src/mcp/distributed-run-currency-resolver.ts:35`, composed `server/src/mcp/server.ts:302`, called `:466-479` | The fence-bound gate that scopes the run credential to a live lease. **It is the precondition for arming the tool surface** — the founder ruling names it as such. |
+| `E2bTransport.readFile` / `listDir` | `packages/sandbox-e2b-provider/src/real-transport.ts:453,466` | The concrete binding behind link 1a's injected seam. |
+| `postRunSummaryComment` | `server/src/services/run-summary-comment.ts` | The shared writer the projector already uses at step 4. Link 5 adds a step; it does not fork the writer. |
+
+---
+
+## 2. Epic shape and runtime rules
+
+### Direction of authority
+
+| Fact | Authority | Rule |
+|---|---|---|
+| Whether an artifact exists and is committed | The control plane, after a fenced commit re-verifies the declared SHA-256 via `headObject` | The worker's export returns an `{objectKey}`; only the commit makes it real. |
+| Whether the founder can see it on the task | The projector writing `task_outputs` **through `jobOutputBridge.projectAcceptedOutput`** | **A committed artifact counts for the QUALIFYING ARTIFACT counter (arm 1) whether or not it is visible.** Exit criterion 4 asks for visible; arm 1 asks for committed. ★ Separately, the projector's bridge route writes an `output_projection` receipt and therefore **does** move the RECEIPT-BACKED OUTPUT counter (`taskOutputs`, arm 2). All three are owed (E7-D03). |
+| Whether the agent may call `mcp__aoa__*` | The run's identity being **fence-current**, resolved by DAT-007 item #1 | The surface is emitted only under the flag, and the flag is only safe once the resolver is proven (`DAT-007-S3` in E5's plan). |
+| Whether the run produced useful work | **Nobody, today.** `capabilityProven` reads tables, never bytes | E7-D01. No ticket may claim otherwise. |
+
+### Runtime rules every ticket obeys
+
+- **Bytes leave the sandbox by a direct provider→object-store PUT under a worker-minted grant**
+  (E7-D06). The control plane carries grants and references. No payload crosses the
+  dependency-pinned daemon.
+- **Best-effort on the way out, fail-closed on the way in — with ONE recorded exception.** Staging
+  fails the attempt because an agent running without its input produces a clean terminal for
+  mutilated work; **export** (`CLI-012`) must not discard a successful run because its *evidence*
+  could not be filed.
+  ★★★ **The `artifact_prepared` ANNOUNCEMENT is EXEMPT from this rule and is bound instead to
+  `CLI-008-F4`'s recorded contiguity decision.** *Superseded text: "export **and announcement** must
+  not discard a successful run because its evidence could not be filed." Corrected 2026-09-20,
+  verified at source.* The announcement cannot be best-effort: `EventSequencer.#emit` increments
+  `#seq` **before** awaiting the sink (`packages/worker-daemon/src/supervisor/events.ts:139`
+  allocates, `:164` awaits), so a swallowed sink failure leaves a hole and the terminal that follows
+  it is rejected — the control plane's ack status set is
+  `"accepted" | "gap" | "hash_mismatch" | …` (`server/src/services/job-events.ts:125`). A blanket
+  best-effort rule here **forbids two of the three options F4's own *Failure behavior* permits**
+  (fatal, and retry-until-land-or-fail) and silently re-mandates the one the ingest contract
+  rejects. Every other out-bound path — export, capture, `emitOp` — keeps the rule unchanged.
+- **No `capabilityProven` claim from composition.** `E7-1-staged-input-write` already states the
+  precedent in its own register reason: `wired` means *reachable from a boot root*, and that seam
+  *passes NO files*. **A function that returns `[]` by construction is the vacuously-true clause the
+  register exists to prevent** and is forbidden in every ticket below.
+- **Never dispatch a keyed E2B workflow without explicit founder authorization.**
+- **Do not close, enrol, or upgrade a `deliveryStatus` for half a conjunction.** This programme made
+  that error twice and retracted publicly once.
+
+### `E7-1-coding-journey` — why it is dormant, precisely
+
+`scripts/gate-clause-wiring.json` → `E7-1-coding-journey`, symbol `E2bSandboxProvider`,
+`expectedReferences: 4`, status `unwired`. Two one-file construction seams name it, two references
+each: (a) the **desktop** root `packages/worker-keystore/src/bin/sandbox-provider.ts` (DEP-010), and
+(b) the **adapter-manager** host root `packages/adapter-manager/src/bin/adapter-manager.ts:141`
+(DEP-012 Slice 3 · Wave β2), which resolves the provider over the real transport and hands it to
+`createProviderServer`.
+
+It is `unwired` **in a shipped CI boot**, for two separate reasons, and both belong to E6:
+
+1. **(a)** needs `AOA_WORKER_SANDBOX_PROVIDER=e2b` plus a composed supervisor loop — deferred.
+2. **(b)** has a Dockerfile (`docker/adapter-manager`) and a staging compose that injects the AM
+   public key, the boot envs and the matched CP mint key — but **the image is not built/pushed in
+   CI**. `.github/workflows/deploy-replatform-campaign.yml` builds it (`:408-409`) under
+   `workflow_dispatch` on the campaign host, which is an **operator-dispatched deploy, not a shipped
+   CI boot**; `M1a`'s bar is explicitly a shipped CI boot. ★ The through-the-daemon consumer **is
+   built**: `packages/worker-networked-host/src/bin/networked-host.ts` (DEP-011 Slice 2b-ii) reads
+   `AOA_WORKER_PROVIDER_URL` and boots the daemon with a networked `makeRunProvider`; it ships inert.
+   What is missing is the **image in CI** (`DEP-014`) and the **shipped CI boot that runs it**
+   (`DEP-015`), both filed at M1 Step 0.
+   ★ *Corrected 2026-09-21 (M1 Step 0, S0-4), verified at source. Superseded text: "The
+   through-the-daemon consumer is **DEP-011 Slice 5**, disposition **M**, and is not built."*
+
+The bin **fail-closes** without the CP public key, and `pnpm verify:cp-am-keypair` smoke-checks the
+matched pair at C0 before the canary. The `expectedReferences` number is typed out, not computed, so
+a later reference fires `unwired_but_now_has_caller`. `CLI-008-E7-1-JOURNEY-ARM` below promotes the
+clause **when, and only when, both preconditions ship** — it does not build either of them.
+
+---
+
+## 3. TDD, evidence, and commit protocol for every ticket
+
+1. The controller creates `tickets/<ID>-result.md` at `gate_review` with the exact bare 40-hex Start
+   SHA, named implementer/reviewer, acceptance checklist, command ledger and explicit `pending`
+   review sentinels. **It does NOT create `tickets/CLI-008-result.md`** — see §0's structural hazard.
+2. A fresh implementer writes focused tests first and records a genuine RED on unchanged behavior.
+   False REDs caused by imports, build order, or environment are rejected.
+3. The implementer makes the smallest GREEN change, runs the focused acceptance suite **plus the
+   affected-package typecheck and build**, updates `findings.md`, and commits.
+4. A DISTINCT reviewer checks out the reviewed 40-hex revision, reruns the focused command there,
+   appends review attempt 1 with plain `git commit`, and alone may set `complete`.
+5. Any H-04 / H-05 / H-06 failure is a non-waivable `fail`.
+
+**Traps that apply to these exact files:**
+
+- `server/tsconfig.json` **excludes `src/__tests__`** — a clean `tsc --noEmit` does not typecheck the
+  server suites. After merging siblings that touch a shared signature, run both sides' suites at the
+  merged head.
+- Cross-package suites resolve via `dist/`; build `@armyofagents/worker-protocol` before
+  `@armyofagents/worker-daemon`.
+- `node scripts/ci-local.mjs` green is **not** CI green (it skips the sharded `verify`).
+- The workload seam is **the most heavily pinned surface in the repo** — the unit-F design counts 16
+  pins (§3.2). A change to the argv reds tests in several packages at once; that is by design.
+- Finding ids collide across parallel branches; **first-filed keeps the id**, and the renumbering
+  unit must measure the sibling's head.
+- `AOA_RUN_WIN_INTEGRATION=1` for integration tests; `jq` is not on PATH (use `gh --jq`).
+
+```powershell
+function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
+  $priorErrorAction = $ErrorActionPreference
+  $ErrorActionPreference = 'Stop'
+  try { $global:LASTEXITCODE = 0; & $Command; $ok = $?; $code = $global:LASTEXITCODE }
+  catch { throw "$Label failed before a valid native exit: $($_.Exception.Message)" }
+  finally { $ErrorActionPreference = $priorErrorAction }
+  if (-not $ok -or $code -ne 0) { throw "$Label failed with native exit $code" }
+}
+```
+
+| Ticket | Exact focused command (RED first, then identical GREEN) |
+|---|---|
+| `CLI-009` | `Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'register citations' { node scripts/check-register-citation-integrity.mjs }; Invoke-NativeGate 'id uniqueness' { node scripts/check-register-id-uniqueness.mjs }; Invoke-NativeGate 'ticket graph' { node scripts/check-ticket-graph-coverage.mjs }; Invoke-NativeGate 'dependency graph' { node scripts/check-dependency-graph.mjs }` |
+| `CLI-010` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F1a' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/capture-sandbox.test.ts src/__tests__/sandbox-listdir-binding.test.ts }; Invoke-NativeGate 'daemon boundary' { pnpm check:worker-daemon-boundary }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
+| `CLI-011` | ★ *Corrected 2026-09-21 (Codex, PR #526):* *this row was keyed `CLI-008-F1b`, which the sweep missed.* **Design ticket — no RED/GREEN.** Evidence is the §6-constraint table, the positive-control table, and an adversarial attack pass on the chosen option. ★ *Superseded text: "(including on §13's "do not build it", which has never had one)". Corrected 2026-09-20, verified at source: `tickets/CLI-008-unit-f-design.md:1367` records that attack as **run and completed**, and `:1424` records the founder ruling "close the fifth option as **SUPERSEDED**" — so it is neither a candidate option nor an attack F1b owes.* |
+| `CLI-012` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F3' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/export-request-producer.test.ts src/__tests__/supervisor-export-artifacts.test.ts src/__tests__/artifact-export-sequencer.test.ts }; Invoke-NativeGate 'enumerate wire' { pnpm --filter @armyofagents/provider-wire exec vitest run src/__tests__/driver-enumerate.test.ts }; Invoke-NativeGate 'enumerate route' { pnpm --filter @armyofagents/adapter-manager exec vitest run src/__tests__/server-enumerate.test.ts }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }; Invoke-NativeGate 'wire+route+provider typecheck' { pnpm --filter @armyofagents/provider-wire --filter @armyofagents/adapter-manager --filter @armyofagents/sandbox-e2b-provider typecheck }` ★ *Corrected 2026-09-21 (Codex, PR #526):* *the command ran only worker-daemon tests, so the enumeration binding and route could be approved without being exercised or compiled.* |
+| `CLI-013` | `Invoke-NativeGate 'protocol build' { pnpm --filter @armyofagents/worker-protocol build }; Invoke-NativeGate 'F4' { pnpm --filter @armyofagents/worker-daemon exec vitest run src/__tests__/events-artifact-prepared.test.ts }; Invoke-NativeGate 'frozen v1' { pnpm check:frozen-worker-protocol-v1 }; Invoke-NativeGate 'worker typecheck' { pnpm --filter @armyofagents/worker-daemon typecheck }; Invoke-NativeGate 'worker build' { pnpm --filter @armyofagents/worker-daemon build }` |
+| `CLI-014` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'F5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-run-projector.test.ts src/__tests__/canary-terminal-projection.test.ts src/__tests__/canary-output-projection.integration.test.ts }; Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
+| `CLI-015` | `Invoke-NativeGate 'F6' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/e7-distributed-run-verifier.test.ts src/__tests__/e7-distributed-run-verifier-store.test.ts src/__tests__/e7-verifier-capability-fixture.test.ts }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` |
+| `CLI-016` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'C5' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/task-run-batch-workload.test.ts src/__tests__/mcp-run-currency-gate.test.ts src/__tests__/distributed-tool-surface-arming.integration.test.ts --reporter=verbose }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` ★ *Corrected 2026-09-21 (M1 Step 0, S0-4):* the environment variable only helps if the new integration test **honours** it — `describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`. With a bare `win32` skip (the `distributed-run-currency.integration.test.ts` shape) this command runs zero tests and exits 0. Record the **executed-test count**, and take the formal evidence from a Linux `verify` shard; the keyed +/- controls are a separate F8 dispatch. |
+| `CLI-018` | `$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'CLI-018' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-output-projection.integration.test.ts src/__tests__/distributed-artifact-retrieval.integration.test.ts --reporter=verbose }; Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }` ★ *Added 2026-09-24 with the ticket.* The integration test must honour `AOA_RUN_WIN_INTEGRATION`; with a bare `win32` skip this runs zero tests and exits 0. Record the executed-test count and take the formal evidence from a Linux `verify` shard. |
+| `E7-1-JOURNEY-ARM` | `Invoke-NativeGate 'gate clause wiring' { node scripts/check-gate-clause-wiring.mjs }; Invoke-NativeGate 'cp/am keypair' { pnpm verify:cp-am-keypair }; Invoke-NativeGate 'E7-1 verifier' { pnpm verify:e7-1-distributed-run }` |
+
+Test filenames not already on disk are **new files this plan authorizes**; the RED is the genuine
+absence of the behavior, never a missing import.
+
+---
+
+## 4. Ticket implementation tasks
+
+### `CLI-008` ledger — file the link-scoped successors and re-point what genuinely maps (S, ≤1 agent-day, M0)
+
+> ★★★ **EXECUTED 2026-09-21 (M0 unit 4). Two things changed from the task as written below, both
+> founder-ruled, and the heading no longer says "the ten findings" because that was not achievable.**
+>
+> **(D1) The ids are numeric.** `CLI-010`…`CLI-016` replace `CLI-008-F1a`…`CLI-008-C5`; the mapping
+> is in `program-design.md` immediately before the `CLI-010` node. The task's own blocking banner
+> below called this out and it is confirmed at source: `check-finding-ownership.mjs:423` tests an
+> exact `tickets.has(entry.ticket)` and `findTicketIds` (`:50`) derives ids with
+> `/^([A-Z]+-\d+)/`. There is also no `-LEDGER` result file, because `CLI-008-LEDGER-result.md`
+> would itself resolve to `CLI-008` and be the orphaning act; the work is recorded in
+> `docs/replatform/DECISION-cli-008-successor-id-scheme.md` instead.
+>
+> **(D5) Only TWO of the ten findings were re-pointed, not ten.** The ten do not correspond to the
+> six Unit F links. §1.6 of `CLI-008-unit-f-design.md` defines the links as the output return path
+> (emit → capture → export → announce → project → judge); the findings span argv-only capability
+> (`E7-F003`), a forgeable outputs endpoint (`E7-F015`), clause-4 secret-scanner scope (`E7-F023`,
+> `E7-F032`, `E7-F033`), log truncation (`E7-F024`), a grant-pairing bug (`E7-F017`) and codex's
+> trusted-directory refusal (`E7-F027`). Re-pointed on SUBJECT, verified at source:
+> **`E7-F026` → `CLI-011`** (a claim about an output-mechanism option) and **`E7-F016` → `CLI-015`**
+> (clause 6 **is** `countProducedOutputs`, `e7-distributed-run-verifier-store.ts:124`, which is
+> link 6). The other **eight remain on `CLI-008`**, which is safe: the parent has no `-result.md`,
+> so it is not in `completedTicketIds` and nothing is orphaned. Sweeping them into a link successor
+> would be a false claim of ownership — the exact thing the guard exists to stop.
+>
+> ★ **So the bar on a `CLI-008` parent result has NOT lifted.** Eight findings still name it.
+
+**Depends on:** nothing. **Disposition:** M's record precondition.
+
+**Current state, measured:** `CLI-008` has **no result doc** — the `tickets/` directory holds
+`CLI-008-design.md` and `CLI-008-unit-f-design.md` only. `scripts/finding-ownership.json` names it
+as `ticket` for exactly ten open findings. Its own design's Status line has been stale before and
+says so: *"If you are reading a Status line here, check it against `git log --oneline -- <this file>`
+and the GO-BOOK row before trusting it."*
+
+★★★ **RESOLVED 2026-09-21 by M0 unit 4 (founder D1): numeric ids `CLI-009`…`CLI-016` were
+allocated — option (a) below — and they parse cleanly under all three guards.** What follows is the
+**historical** statement of why the link-scoped ids could not be used, kept verbatim with its
+original `CLI-008-Fn` / `CLI-008-LEDGER` examples. ★ *Corrected 2026-09-21 (Codex, PR #526):* an id sweep in this PR renamed those
+examples to the new numeric ids, which turned this block into a false claim that the **enacted**
+scheme fails the guards (`/^([A-Z]+-\d+)/` parses `CLI-015` as `CLI-015`, and `#### CLI-015 —`
+matches the graph regex). Restored byte-for-byte from `docs/replatform-program`.
+
+★★★ **BLOCKING — THE `CLI-008-Fn` ID SHAPE CANNOT BE EXPRESSED TO THE GUARDS, AND USING IT WOULD
+SILENTLY COMPLETE THE PARENT.** *Added 2026-09-20 (ninth round), verified by reading the parsers.*
+This scheme must be resolved **before** `CLI-008-LEDGER` is assigned:
+
+| Guard | Code | What it does with `CLI-008-F6` |
+|---|---|---|
+| `check-finding-ownership.mjs:49` | `/^([A-Z]+-\d+)/` over ticket filenames | extracts **`CLI-008`** — `CLI-008-F6` is **not a known owner**, so re-pointing a finding to it yields `owner_ticket_missing` |
+| `check-finding-ownership.mjs:67` | `/^([A-Z]+-\d+).*-result\.md$/` | reads **`CLI-008-LEDGER-result.md` as a result for `CLI-008` itself** — ★★★ **which is precisely the act that orphans all ten findings**, and which this plan and the triage both forbid |
+| `ticket-graph-coverage.mjs:68` | `/^####\s+([A-Z]{2,5}-\d{3})\s/` | does **not** match `#### CLI-008-F6` (the id is followed by `-`, not whitespace), so the required graph node cannot be declared at all |
+
+★ **So the Outcome below is currently unreachable**, and the danger is not merely that the guards
+red — it is that the ledger's own result file **reads as the parent's**, turning the one forbidden
+act into the default outcome of following this ticket.
+
+**The fix is a decision, recorded in `decisions.md` before `CLI-008-LEDGER` is assigned:** either
+(a) allocate **distinct numeric ids** in the supported `CLI-0NN` shape for every link **and for the
+ledger**, keeping `CLI-008` as the narrative parent only; or (b) **schedule the parser changes
+first**, as their own unit with their own tests, and make the split depend on them. Option (a)
+needs no guard change and is the lower-risk default; option (b) must not be assumed to be a
+one-line regex edit, because all three guards and the graph contract move together.
+
+**Outcome (once the id scheme is decided):** the link-scoped ticket ids exist as `#### ID` nodes in
+`program-design.md` (which `check-ticket-graph-coverage.mjs` requires before any ticket file may
+exist), each open finding is re-pointed from `CLI-008` to the link that will close it, and the five
+drifted citations in §1 are corrected **by symbol**.
+
+★★★ **SUPERSEDED — DO NOT EXECUTE THIS TABLE.** ★ *Corrected 2026-09-21 (Codex, PR #526):* M0 unit 4 enacted
+the founder's subject-based ruling (D5): **only `E7-F016` → `CLI-015` and `E7-F026` → `CLI-011`
+moved.** `E7-F003`, `E7-F015`, `E7-F017`, `E7-F023`, `E7-F024`, `E7-F027`, `E7-F032` and `E7-F033`
+**stay on `CLI-008`**. The authority is `scripts/finding-ownership.json`, not this table. The
+"Proposed owner" column below is the pre-ruling proposal, kept as history; the id sweep in this PR
+had renamed its `CLI-008-Fn` cells to numeric ids, which made it read as an operative instruction
+to undo D5.
+
+**Proposed finding → link ownership** (*historical — pre-D5 proposal*; the reviewer confirms each against source; a wrong
+re-ownership is worse than none):
+
+| Finding | Severity | Proposed owner | Why |
+|---|---|---|---|
+| `E7-F003` | MEDIUM | **`CLI-008`** (parent, stays open) | It is the capability gap itself and spans tools + workspace + return path. It is why the parent may not carry a result yet. |
+| `E7-F015` | MEDIUM | `CLI-015` | The bar is forgeable by one board POST; the fix is a judge change. |
+| `E7-F016` | LOW | `CLI-015` | Clause 6's text misdescribes its own subject. |
+| `E7-F017` | LOW | **`CLI-008`** — retain, or file a named E7 successor | ★ *Superseded text: "**`DAT-009` slice 3** (already its owner) … Leave it." Corrected 2026-09-20 against the authoritative register:* `scripts/finding-ownership.json` records `"ticket": "CLI-008"` for `E7-F017`, and its `ownerStillOpen` says in terms that it is **"deliberately NOT fixed by the ticket that FOUND it: DAT-009 slice 3 is E5 work, and editing another unit's failure text inside an E5 PR is the drive-by that makes a diff unreviewable."** The defect is in CLI-008 Unit B's own module (`packages/worker-daemon/src/lease/staged-input.ts:252-258`). **Keep CLI-008 as owner, or file a named E7 successor — this plan must not re-point it to DAT-009.** |
+| `E7-F023` | MEDIUM | `CLI-015` | Clause 4's scanned set is composed at the call site. |
+| `E7-F024` | MEDIUM | `CLI-013` | The frozen `log` payload silently truncates at 65,536 chars and caps at 480 events — an announcement-surface property. |
+| `E7-F026` | LOW | `CLI-011` | It is a critique of the fourth candidate answer, which is F1b's subject. |
+| `E7-F027` | MEDIUM | **`CLI-008`** (parent) or a new `CLI-008-MX3` | codex's trusted-directory refusal. E7-D04 keeps it out of `M1b`; it must not be orphaned by the split. |
+| `E7-F032` | LOW | `CLI-015` | Clause 4 does not scan a sibling attempt's `job_events`. |
+| `E7-F033` | MEDIUM | `CLI-015` | The widened secret scanner's residual matchers. |
+
+**Ticket non-goals — and the first is the important one:**
+- **Do NOT create `tickets/CLI-008-result.md`.** `findCompletedTicketIds` counts a result's existence
+  as completion; ten findings would lose their owner in a single commit (§0).
+- Do not close, re-disposition, or downgrade any finding. Re-pointing an owner is not a closure.
+- Do not renumber an existing finding id (first-filed keeps the id).
+
+**Files:** `docs/replatform/program-design.md` (the new `#### CLI-010` … `#### CLI-015`,
+`#### CLI-016` nodes); `scripts/finding-ownership.json`; `findings.md` (owner lines only);
+`tickets/CLI-008-unit-f-design.md` (an **amendment note**, appended — the document's own convention
+— correcting the five drifted citations and recording that `E7-F014` is resolved). **No result
+file.** ★ *Corrected 2026-09-21 (Codex, PR #526):* this list ended with `tickets/CLI-009-result.md`. There is no `CLI-009` graph node, and
+`/^([A-Z]+-\d+)/` parses that filename as `CLI-009`, so creating it would mint an undeclared
+completed ticket and fail graph coverage. The ledger is **ENACTED** (M0 unit 4) and its record is
+`docs/replatform/DECISION-cli-008-successor-id-scheme.md`, which says there is *"deliberately no
+`-LEDGER-result.md`"*. (M0 had left this line pointing at `CLI-008-LEDGER-result.md`, contradicting its
+own decision; an id sweep in this PR then renamed it to the worse `CLI-009-result.md`.)
+
+**Interfaces:** none — record work.
+
+**Failure behavior:** a guard that reds after the edit stops the ticket. A finding whose proposed
+owner cannot be confirmed at source stays with `CLI-008` and is recorded as unconfirmed, not moved
+on a guess.
+
+**Migration/compatibility / rollback:** documentation + register only; revert the commit.
+
+**Observability:** all five record guards green **after the last edit**, re-counted. A register row
+and the thing it counts must never be edited in the same commit without a re-count.
+
+**RED → GREEN:** RED is `check-finding-ownership.mjs` failing on a deliberately undeclared new
+finding id (the positive control — a guard without one is a check that nothing runs); GREEN is all
+five guards passing with the successors declared.
+
+**Evidence / commit:** ★ **ENACTED — nothing further to commit.** The evidence is M0 unit 4's
+commit and `docs/replatform/DECISION-cli-008-successor-id-scheme.md`; there is no result file, for
+the reason given under **Files** above. *(Previously: `tickets/CLI-009-result.md`; see the correction
+above.)*
+
+---
+
+### `CLI-010` — prove the enumeration seam, and FENCE the byte-reading one (S, ≤1 agent-day, M1b)
+
+**Depends on:** the enacted ledger — `docs/replatform/DECISION-cli-008-successor-id-scheme.md`, ENACTED by M0 unit 4, so **already satisfied**; its graph edge is `CLI-008` (`program-design.md`). `CLI-009` names that ledger but has no graph node, ticket or result file by design, so it cannot itself be a satisfiable prerequisite. ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-009`.
+
+**Current state, measured:** `captureSandboxEntries`
+(`packages/worker-daemon/src/snapshot/capture-sandbox.ts:67`) is **built and tested**
+(`src/__tests__/capture-sandbox.test.ts`: happy path, multi-file ordering, empty root, escape
+refusal, unsafe-path refusal, determinism). It is **inert by construction** — `snapshot/index.ts`
+does not export it, and nothing calls it. Its header says why: *"because link 3 is still unbuilt."*
+
+★★★ **REWRITTEN 2026-09-20 (second review round). The original outcome was to export
+`captureSandboxEntries` and prove its `listDir`/`readFile` binding against `E2bTransport` — i.e. to
+prove the exact binding F3 now forbids, because `readFile` + `sha256` pulls sandbox bytes through
+the daemon. Exporting it would have made the wrong tool reachable on the wrong lane, one ticket
+before the ticket that must not use it.** This was self-contradictory and is corrected here rather
+than left for someone to hit.
+
+**Outcome, two halves:**
+
+1. **Prove the ENUMERATION seam** — the half link 3 actually needs. `E2bTransport.listDir`
+   (`packages/sandbox-e2b-provider/src/real-transport.ts:466`) returns **absolute file paths, not
+   directories**, and that asymmetry is the one thing a consumer gets wrong silently. Bind and test
+   it **metadata-only**: no `readFile`, no hashing, no bytes.
+
+   ★ *Corrected 2026-09-21 (CLI-010 build, verified at source; decided as `E7-D09` in
+   `decisions.md` under founder delegation F2).* The claim above was true of `MockE2bTransport` only.
+   The real binding called `sandbox.files.list(path)` with no options — `e2b@2.30.5`
+   `Filesystem.list` defaults `depth` to 1 and returns files **and** directories — and kept only
+   `e.path ?? e.name`, discarding `type`: it returned the root's immediate children with directories
+   mixed in, and no nested file. `CLI-010` is **widened** to fix the seam: `listDir` is now files
+   only, recursive, absolute and bounded in both transports (one enforcer,
+   `packages/sandbox-e2b-provider/src/list-dir-contract.ts`), with named bound/malformed errors. The
+   live-sandbox behaviour stays unproven until `CLI-012`'s keyed real-run acceptance.
+2. **FENCE the byte-reading seam.** `captureSandboxEntries` stays **inert on the E2B and networked
+   lanes**. It is a local/desktop-lane tool — the sandbox analogue of DAT-001's local-FS walk — and
+   this ticket makes that explicit in its header rather than leaving a reader to infer it. If it is
+   exported at all, it is exported for the local lane only and carries a comment naming the
+   data-plane contract it would otherwise breach.
+
+**★ What this ticket does NOT do.** It gives the agent nothing to write. It is the capture half
+only; the emit half is `CLI-011` and remains undesigned. **Do not read this ticket's completion
+as a supply mechanism**, and no result doc may say capture landed as though output landed.
+
+**Ticket non-goals:** calling it (that is F3); a Unit-E workspace, git base, or ignore policy
+(E7-D05); a `WorkspaceManifestV1` (link 1b's assembly step, which brands via `.parse()`).
+
+**Files:** create `packages/worker-daemon/src/__tests__/sandbox-listdir-binding.test.ts` (the
+metadata-only enumeration proof); modify `packages/worker-daemon/src/snapshot/capture-sandbox.ts`
+(header only — state the lane restriction and the contract it would breach). ★ **Do NOT export
+`captureSandboxEntries` from `snapshot/index.ts` for the E2B/networked lanes.**
+★ *Widened 2026-09-21 by `E7-D09`:* also create `packages/worker-daemon/src/snapshot/enumerate-sandbox.ts`
+(the Interfaces' enumerator — the Files list omitted the module the Interfaces and RED name; it is **not**
+exported from `snapshot/index.ts` or the package barrel) and
+`packages/sandbox-e2b-provider/src/list-dir-contract.ts` +
+`src/__tests__/list-dir-files-only.test.ts`; modify `transport.ts`, `real-transport.ts`,
+`mock-transport.ts` and `index.ts` in `packages/sandbox-e2b-provider`.
+
+**Interfaces:** a metadata-only path enumerator — `(listDir, root) => readonly string[]`, with the
+same fail-closed relativisation and `isSafeWorkspacePath` refusal the capture helper uses. **No
+`readFile`, no digest, no bytes.** The digest and size the frozen grant schema requires come from
+the provider's `digestArtifact`, which returns `{sha256, sizeBytes}` and no content.
+
+**Failure behavior:** fail-closed, unchanged: a listed path not under `root`, or whose relativised
+form fails `isSafeWorkspacePath`, **throws**. A capture that silently dropped or mangled a path
+would commit an artifact that misrepresents the sandbox.
+
+**Migration/compatibility:** additive export. The daemon boundary checker must stay green — the
+module imports only `@armyofagents/worker-protocol` and relative modules, touching no `node:*` API
+and no provider package (E4-D01).
+
+**Observability:** none added; capture is a pure data producer.
+
+**Rollback/disablement:** delete the enumeration test and the header note; nothing was exported,
+so there is no export to revert.
+
+**RED → GREEN:** RED — a binding test in which `listDir` returns directory entries rather than
+absolute file paths must fail loudly rather than silently enumerate nothing; RED — the
+metadata-only enumerator does not exist today; GREEN — both, plus the daemon boundary check and
+worker typecheck/build.
+
+★★★ **THE OLD BARREL-EXPORT ASSERTION IS REMOVED, AND THAT IS THE POINT OF THE CORRECTION.**
+*Corrected 2026-09-20 (ninth round).* An earlier revision required *“the barrel export is absent
+today”* to go GREEN by adding it, and the commit message ordered *“export the sandbox capture
+half”* — while this same ticket's Outcome §2 and Files section say `captureSandboxEntries` must
+stay **inert on the E2B and networked lanes** and must **NOT** be exported from `snapshot/index.ts`
+for them. An implementer following the acceptance test would have breached the data-plane contract
+the ticket exists to fence. Fixing the Outcome and leaving the acceptance test is how the rejected
+instruction survives.
+
+**Evidence / commit:** `tickets/CLI-010-result.md`; one commit
+`test(worker-daemon): pin the metadata-only listDir enumeration seam and fence the byte-reading one`.
+
+---
+
+### `CLI-011` — the emit half: DESIGN ONLY, founder-ruling gated (≤3 agent-days, M1b, **NOT ASSIGNABLE AS BUILD**)
+
+**Depends on:** the enacted ledger — `docs/replatform/DECISION-cli-008-successor-id-scheme.md`, ENACTED by M0 unit 4, so **already satisfied**; its graph edge is `CLI-008` (`program-design.md`). `CLI-009` names that ledger but has no graph node, ticket or result file by design, so it cannot itself be a satisfiable prerequisite, like `CLI-010` — **not** on `CLI-010`. ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-009` (the ledger). ★ *Corrected 2026-09-21 (Codex, PR #526):* this read `CLI-010` (renamed from `CLI-008-F1a`), which serialized the mechanism review behind the enumeration seam and contradicted the diagram that declares them independent. **Blocks:** `CLI-015`, and exit criterion 4 in full.
+
+**Current state, measured:** three mechanisms have been proposed and refuted — argv **shape**, argv
+**size**, then **the predicate itself**. The ruling of record is **measure first**
+(unit-F design §12), and all three probes have returned (run
+[`34087197668`](https://github.com/MeteoriteLabs/AoA/actions/runs/34087197668), recorded in
+[`tickets/W7U1-output-probe-result.md`](./tickets/W7U1-output-probe-result.md)): **(a)** a sandboxed
+`claude` under the exact production argv exits 0 and **writes nothing**, and **writes when the
+permission posture is added** — a single-variable differential; **(b)** the template pre-fills
+nothing; **(c)** both streams deliver. The stop condition's **clause 1 is discharged** (the posture
+shipped 2026-09-11, `E7-F021` resolved); **clause 2 still stands** (`E7-F027`, codex).
+
+★★★ **THE FIFTH OPTION IS CLOSED, AND THIS TICKET MUST NOT REOPEN IT.** *Corrected eleventh round,
+verified at source.* §13 of the Unit F design records the fifth option — *“do not build it”* — and
+§13's ratification line records the founder ruling in terms: **“RATIFIED 2026-09-20 — the founder
+RULED this recommendation: close the fifth option as SUPERSEDED.”** An earlier revision of this
+ticket still described it as *“never adversarially attacked”* and scheduled that attack as F1b work.
+That is a **ratified disposition being reopened by a task list**, which is the thing the programme's
+own decision rules forbid — and it would have spent F1b's founder ruling on a question already
+ruled.
+
+★ **F1b's live question is the output MECHANISM only**, per the Outcome below. The
+attack/readoption branch is removed.
+
+**Outcome:** exactly one of — (i) a fourth candidate mechanism that survives §6's constraint list
+and the §4 refutation pattern, priced and sized, `claude_local`-only per E7-D04; or (ii) a
+★★★ **[REMOVED — twelfth round] — an earlier revision offered here a recommendation to adopt §13's option *“with the adversarial attack pass it has never had”*. §13 is **RATIFIED** (*“close the fifth option as SUPERSEDED”*) and §13.4 records the attack as **completed**, so both halves of that clause were false and it is not an available outcome.** Or
+(iii) a recorded statement that neither is reachable, naming what would change it — **two live
+outcomes, not three**, since (ii) is removed above. A founder ruling follows; **this ticket makes
+neither choice binding on its own.** ★ *Superseded text: "none of the three choices". Corrected
+2026-09-20 alongside the (ii) removal.*
+
+**★ The bar this ticket must clear, stated so it cannot be quietly lowered.** A fourth mechanism
+proposed before it survives §6 will be refuted for the same reason the first three were (E7-D02).
+The specific trap: round 3's repair collapsed because dropping the forgeable arm converted a
+forgeable gate into an **unpassable** one, which forced the widening that §4.3 refutes. **That
+pressure is real and remains unrelieved** — a proposal that does not address it is not a proposal.
+
+**Ticket non-goals:** **any product change.** No literal in `task-run-sandbox-invocation.ts`, no
+argv, no template, no test edit. ★ **Amended 2026-09-23** (M1 planning session, under ruling
+F2), on Codex's PR #579 finding that the ticket changed `e2b/e2b.Dockerfile` against this line.
+**One template change is authorized, and only this one:** pinning
+`@anthropic-ai/claude-code@2.1.251`, the version every arm of the F7 measurement ran against.
+The reason is recorded in `decisions.md` `E7-D11` ("Accidental drift → the version is PINNED"):
+the ruling's four model arms were measured on `claude 2.1.251` while the template installed the
+package **unpinned**, so a rebuild could have silently invalidated the evidence the ruling rests
+on. The pin is evidence-integrity for this ticket's own measurement, not product work; it changes
+no product literal, no argv and no test. Any further template change stays forbidden. No adapter-agnostic mechanism. No keyed dispatch **other than the
+`files.read` probe**, which founder ruling F8 authorizes for this review on a named candidate.
+
+★ *Amended 2026-09-21 (M1 Step 0, S0-4), from the approved M1 plan
+(`docs/replatform/qa/2026-09-21-m1-execution-plan.md` §2 F7/F8 and §4 Track B). Superseded text:
+"No keyed dispatch." The M1 plan's review scope is: the writer census (Unit F §9.1), the keyed
+`files.read` probe (§9.2), the §6-constraint table, the positive-control table, an adversarial pass,
+and the pins moved; and it **must price the `WRK-018` stdout channel as an input**, because that
+channel makes the "captured transcript" option cheaper. The review's result feeds founder ruling
+**F7**, which is recorded separately in `decisions.md`; this ticket still makes neither choice binding
+on its own.*
+
+★ *Amended 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §3.2 and §13 item 1, verified
+at source: the core of the "`files.read` probe (§9.2)" named above **has already run**. Run
+`33856478690`, job `keyed-e2b-dat-009-export`, conclusion `success`, 4/4 tests: case "digests a file
+the SANDBOX produced, and exports its bytes byte-identically"
+(`packages/sandbox-e2b-provider/src/__tests__/keyed-dat-009-artifact-export.test.ts`) writes a file by
+a redirected `sh -c` through `RealE2bTransport.runCommand` and reads it back byte-identically through
+`sandbox.files.read(path, { format: "bytes" })`. What stays open is Unit F §9.2's sub-cases (a) and
+(b), which the review's §10 designs as the probe still owed.*
+
+**Files, in order (the review-then-ruling flow actually used):**
+1. **The review document — DONE:** `tickets/CLI-011-review.md` (the evidence for ruling F7: writer
+   census, §6-constraint table, positive-control table, adversarial pass, pins moved, and the
+   `WRK-018` channel priced as an input).
+2. **The probe:** the `files.read` probe the review designs (its §10), dispatched only inside the F8
+   envelope on a named candidate.
+   ★ **DONE and PRESERVED IN THE REPOSITORY:** run
+   [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162), job `probe`,
+   `success`, head `499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0`, `disposition: measured`. The durable
+   record is committed as `tickets/CLI-011-probe-record.json` with a reading in
+   `tickets/CLI-011-probe-record.md`. *The review's §10.3 named that file `CLI-011-probe-result.md`;
+   that name would make `findCompletedTicketIds` read `CLI-011` as shipped, so the copy uses
+   `-probe-record`. The review's wording is quoted, not edited.* Committing it is the point: the
+   workflow's artifact carries `retention-days: 90`, so a record living only in a job log expires
+   under the decision it justifies (`E7-F025`'s lesson; Codex P1, PR #575).
+3. **The ruling — DONE:** founder ruling **F7**, recorded as **`E7-D11`** in `decisions.md` (this
+   epic) on 2026-09-23, under founder delegation F2. It rules **option 2, a conventional output root**
+   `/home/user/aoa-output`, placement **SD-1b**, **SD-5 required**, option 1b deferred, `A-O2-8`
+   accepted as a named residual — decided on the P-011 probe run
+   [`35833717162`](https://github.com/MeteoriteLabs/AoA/actions/runs/35833717162) (job `probe`,
+   `success`, head `499ec4d1c3c3aab7324dcf0ca98ea34872fe18a0`, record `disposition: measured`). The
+   ruling files the emit build as **`CLI-017`**.
+4. **The result:** `tickets/CLI-011-result.md`, written after the ruling.
+   ★★★ **NOT YET WRITTEN, and it is not a simple write.** Creating that filename makes
+   `findCompletedTicketIds` (`scripts/check-finding-ownership.mjs`, `/^([A-Z]+-\d+).*-result\.md$/`)
+   treat **`CLI-011` as shipped**, and `CLI-011` **owns the still-open `E7-F026`** — so
+   `check-finding-ownership` reports `owner_ticket_already_complete` **and** `successor_missing` for
+   `E7-F026`. Measured 2026-09-23 by positive control: with a stub
+   `tickets/CLI-011-result.md` present, the guard prints both problems; with it absent, the full guard
+   set is green. **Resolving it is a decision, not a formality** — either declare `ownerStillOpen`
+   plus a `successor` for `E7-F026` in `scripts/finding-ownership.json` (which asserts who inherits
+   that residual), or dispose of `E7-F026` on the record. Neither is implied by ruling F7, and the
+   session that filed `CLI-017` deliberately did not guess.
+
+**No source files.** The review is the decision request; no separate `DECISION-REQUEST-…` file is
+written, and where this task (Observability) and plan step T3 say "decision request" they mean the
+review document. ★ *Amended 2026-09-21 (M1 corrections batch 1), per `CLI-011-review.md` §13 item 7.
+Superseded text: "an amendment to `tickets/CLI-008-unit-f-design.md` (appended, per that document's
+own convention — a refuted plan left standing in a design document gets built, so nothing is deleted
+and nothing is silently demoted); a `DECISION-REQUEST-cli-008-unit-f-emit.md` under
+`docs/replatform/`; `tickets/CLI-011-result.md`." An appended Unit F amendment remains available
+if the F7 ruling calls for one; it is no longer a required file of this task.*
+
+**Interfaces:** none.
+
+**Failure behavior:** if no option survives, the ticket records **that**, with citations, and `M1b`
+is reported as blocked with a named cause. *"A bounded, cited 'not yet, and here is exactly what
+blocks it' is the outcome."* That is a successful ticket, not a failed one.
+
+**Migration/compatibility / rollback:** none — no code.
+
+**Observability:** the decision request must name, for each candidate, which §6 constraint it
+satisfies and which positive control would prove it — not a narrative.
+
+**Evidence / commit:** `tickets/CLI-011-review.md` (done), the F7 entry in `decisions.md`, and
+`tickets/CLI-011-result.md`. ★ *Amended 2026-09-21 (M1 corrections batch 1), with Files above.
+Superseded text: "`tickets/CLI-011-result.md`; one documentation commit `docs(e7): CLI-008 Unit F
+link 1b — candidate analysis and decision request`."*
+
+---
+
+### `CLI-012` — the producer: capture → export requests → the sequencer (M, ≤3 agent-days, M1b)
+
+**Depends on:** `CLI-010`; **E5's `DAT-009-3c` and `DAT-009-3d` must be `complete`** at recorded
+reviewed revisions (they supply `SupervisorDeps.resolveExportArtifacts` and its composition).
+
+**Current state, measured:** the sequencer exists with zero production callers
+(`packages/worker-daemon/src/lease/artifact-export.ts:264`); `resolveExportArtifacts` does not exist
+at this tip; the daemon's HTTP client declares `artifactCommit`
+(`packages/worker-daemon/src/transport/client.ts:294,643`) and **no production code calls it** —
+`patch/result-commit.ts:25` names it only in a comment. DAT-009's own design assigns this link
+explicitly: *"Slice f — NOT DAT-009's. The producer, the kind, and the counter… That is CLI-008 Unit
+F. DAT-009 must not absorb it."*
+
+**Outcome:** a producer that, on attempt completion, **enumerates the output root METADATA-ONLY —
+never bytes** — turns each regular file into an `ArtifactExportRequest` with an **explicit declared
+`kind`**, and hands the list to the sequencer through the E5 hook — so that one file the sandbox
+produced becomes a `committed` `job_artifacts` row under a worker-minted grant.
+★★★ *Corrected 2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575). **Superseded text:** "a producer
+that, on attempt completion, **enumerates paths only** under the designated output root, turns each
+path into an `ArtifactExportRequest`…".* **"Paths only" is the wrong axis and it is load-bearing.**
+The rule that matters is **no bytes** (the `GRANTS OUT, NEVER BYTES` contract). Per-entry **link
+metadata is required**, because without it a symlink is indistinguishable from a file and the
+symlink refusal `A-O2-4` demands is unimplementable — see the seam-widening block below, which
+measures it. Metadata-only ≠ paths-only.
+
+★★★ **IT MUST NOT CALL `captureSandboxEntries`, AND THIS IS A HARD CONSTRAINT, NOT A PREFERENCE.**
+That helper does `readFile` then `sha256(bytes)`, so every file's bytes would transit the worker
+daemon — against the sequencer's own contract in `packages/worker-daemon/src/lease/artifact-export.ts`:
+*"**GRANTS OUT, NEVER BYTES** … the bytes go sandbox → provider → object storage and **never touch
+the daemon**, which is dependency-pinned (E4-D01) precisely so it does not handle them."*
+`captureSandboxEntries` is a **local/desktop-lane** tool; on the E2B and networked lanes it is the
+wrong tool and composing it here would reopen a locked data-plane boundary.
+
+★★★ **THE ROUTE IS NOT REACHABLE FROM THE WORKER TODAY, AND SAYING IT “already exists” WAS TOO
+STRONG.** *Corrected eleventh round, verified at source.* `listDir` exists on the **E2B transport**,
+behind the provider's **private `#transport`** field (`packages/sandbox-e2b-provider/src/e2b-provider.ts`),
+while the worker's `SandboxProvider` port (`packages/worker-daemon/src/supervisor/provider.ts`)
+exposes **no enumeration operation at all** — and neither do the effect authority, the network
+driver or the adapter manager. `CLI-010` schedules a test and a header note; `CLI-012` schedules
+producer and composition changes; `DAT-009-3e` supplies digest and export only. **`CLI-012` now
+owns the port** (see its graph node in `program-design.md`) — ★ *Corrected 2026-09-21 (Codex, PR #526):* this said “Nobody schedules
+the port”, which was true before the post-M0 regroom assigned it.
+
+★ **So this ticket owes, before it is assignable: a fenced metadata-only enumeration operation on
+the `SandboxProvider` port and its network binding** — or an explicitly named alternative source of
+output paths. The shape below is right; what is missing is the seam that reaches it.
+
+★ **The digest/export half of the contract does already exist.** Enumerate with a metadata-only `listDir`;
+let the sequencer's provider-backed `digestArtifact` (which returns `{sha256, sizeBytes}` and no
+bytes) supply the digest and size the frozen grant schema requires, and `exportArtifact` do the
+upload. The daemon sees paths and metadata, never content.
+
+★★★ **AND IT MUST WIDEN THE SEAM ENOUGH TO REFUSE A SYMLINK — `listDir` AS BUILT CANNOT.**
+*Added 2026-09-23 (ruling F7, `decisions.md` `E7-D11`; Codex P1, PR #575), verified at source.*
+`RealE2bTransport.listDir` returns `readonly string[]`: it asks the SDK for typed entries, then passes
+them through `filesOnlyFromListing` (`packages/sandbox-e2b-provider/src/list-dir-contract.ts`), which
+uses `type` only to drop directories and **discards `symlinkTarget`**. The `CLI-011` P-011 probe
+measured the consequence on a live sandbox (run `35833717162`, arm `S-P5`): the SDK reports
+`type: "file"`, `symlinkTarget: "/home/user/.aoa-run-prompt.md"` for the planted link `l1`, while the
+transport's own output carries `includesL1: true` among 5 plain paths — **the link is
+indistinguishable from a file** — and `readFollowsLink=true`, so digesting it reads the target. So a
+paths-only port **cannot** apply the symlink refusal `A-O2-4` requires, and building it that way would
+export the run's own staged prompt (`R/l1 → .aoa-run-prompt.md`) or its environment
+(`→ /proc/self/environ`) as "output". This ticket owes the widened per-entry metadata (at minimum a
+link marker) through the transport and the port, and a test in which a symlink under the root is
+**refused, never digested** (review PC-5). ★ *This does not reopen `E7-D09`: files-only, recursive,
+absolute and bounded all stand; what is added is the per-entry marker the refusal needs.*
+
+★★★ **AND `size` RIDES THE SAME ENTRY, SO THE SD-6 BOUNDS ARE ENFORCED BEFORE ANY READ — THIS
+TICKET OWNS `E5-F009`.** *Added 2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575).*
+`E2bSandboxProvider.#readArtifactBytes` materialises the **whole** tenant-controlled file in the
+shared adapter-manager process; `exportArtifact` checks `grant.maxBytes` only **after** that read and
+`digestArtifact` has no size guard at all, while the server ceiling
+(`DEFAULT_MAX_ARTIFACT_BYTES`, `server/src/services/artifact-size-ceiling.ts`) is in gigabytes. That
+is `E5-F009`, filed by `DAT-009-3e`, whose own *"what would close it"* names an E7/CLI ticket — this
+one. **`E5-F009`'s stated blocker is measured gone:** it assumed a pre-read refusal needed a new
+`stat`-shaped or streaming op on `E2bTransport`, but the P-011 probe's `S-P6` arm measured
+`files.list` already reporting a correct size on a live sandbox (`listSize` 3,145,728,
+`listSizeMatches: true`). So the size rides the entry the port is already being widened for, and no
+new transport operation is needed. This ticket must therefore enforce the review's **SD-6** bounds —
+**per file ≤ 25 MiB, per attempt ≤ 100 MiB, ≤ 64 files, depth ≤ 8** — **from the listing metadata,
+before `digestArtifact`**. ★★★ *Corrected 2026-09-23 (Codex P2, PR #575), verified at source.
+**Superseded text:** "with the grant's `maxBytes` equal to the per-file cap".* **The grant carries the
+EXACT digested size, not the cap** — the shipped sequencer already does this and says why:
+`packages/worker-daemon/src/lease/artifact-export.ts` sets `maxBytes: described.sizeBytes`, commented
+*"the EXACT size, not a ceiling … declaring more than the file is only a wider orphan bound with
+nothing to gain"*. A cap-sized grant would let a file that **grew after digest** be read and retained
+up to the cap before the hash mismatch rejected it. The 25 MiB per-file limit stays an **independent
+admission check** applied from listing metadata before the read; the review's SD-6 wording is
+superseded by shipped behaviour (`E7-D11`, *What this ruling does NOT decide*). Each refusal
+classified (`output_too_large` / `output_limit_exceeded` / `output_symlink_refused`) and per-file
+(`E5-D07`: one refusal never drops the others). Control **PC-6**: drop the pre-digest check and the
+provider reads the whole file → red.
+
+★★★ **AND THE LISTING CHECK ALONE DOES NOT CLOSE `E5-F009` — THE READ ITSELF MUST BE BOUNDED.**
+*Added 2026-09-23 (Codex P1, PR #575).* The listing size is a **snapshot**, exactly like the link
+marker: a background writer the agent left running can leave a file inside 25 MiB at enumeration and
+grow it to gigabytes before `digestArtifact`, and the pre-digest check then passes while
+`#readArtifactBytes` still materialises the enlarged file in the shared adapter-manager. The symlink
+recheck below does not cover it — that is replacement, this is growth. So this ticket owes a **bounded
+or streaming read**: `#readArtifactBytes` must **stop and refuse** once the cap is exceeded, rather
+than materialising the file and measuring afterwards, on **both** the digest and the export path.
+Control: a fake transport whose file **grows between enumeration and digest** → the read refuses
+(classified) and **never allocates the oversized buffer**; remove the bound and the whole file is
+materialised → red. **`E5-F009` is closed by the bounded read, not by the pre-digest check** — the
+pre-digest check is the cheap arm that avoids the read at all in the common case. ★ Flipping
+`E5-F009` to `resolved` happens in the same commit as the code that earns it, and its manifest entry
+flips to `owned: CLI-012` as soon as this ticket has a ticket file (see that entry).
+
+★★★ **THE LINK MARKER IS A SNAPSHOT — RECHECK AT THE READ BOUNDARY.** *Added 2026-09-23 (Codex P2,
+PR #575).* Enumeration metadata is taken at one instant, and `W7`/`A-O2-9` already establish that a
+background process the agent started can keep writing after it. So a regular file can be **replaced
+by a symlink between enumeration and digest**, and because the probe measured `readFollowsLink=true`,
+`digestArtifact` would then hash the **target** and `exportArtifact` read the same stable target — so
+the existing re-hash TOCTOU check **passes** and the staged prompt is exported as output. An
+enumeration-time marker alone does not close `A-O2-4`. ★★★ **AND THE ANSWER MUST BE ATOMIC — A SEPARATE CHECK PLUS A READ IS NOT ENOUGH.** *Corrected
+2026-09-23 (Codex P1, PR #575). **Superseded text:** "This ticket owes a **provider-side no-follow
+check (or an equivalent atomic file-handle design) applied at digest and at export**, and a test with
+the mutation **between enumeration and digest**."* A standalone recheck before the read just moves
+the window: the background process can swap the file **after the check and before `files.read`**, and
+checking at both digest and export creates **two** new windows rather than closing one. So this ticket
+owes **one atomic operation** — an `O_NOFOLLOW`-style open bound to a file handle that the digest and
+the export both read through, or an equivalent single operation that resolves and reads without a gap
+— **not** a check-then-read pair.
+
+★★★ **OPEN DESIGN QUESTION, TO BE MEASURED WHEN THIS TICKET BUILDS — DO NOT GUESS IT.** *Filed
+2026-09-23 (ruling F7, `E7-D11`; raised by Codex on PR #575 and deliberately left unresolved).*
+**Does the installed `e2b` SDK expose any no-follow primitive at all?** The reviewer reports that
+`e2b@2.30.5`'s `FilesystemReadOpts` carries gzip and timeout options and **no** no-follow flag; **that
+was not verifiable from the authoring worktree** (no `node_modules/e2b`), so it is recorded as a
+question and not as a fact. The first act of this ticket's TOCTOU work is to **measure it against the
+installed SDK**:
+- **If a no-follow / handle-bound primitive exists**, use it: that is the atomic operation above, and
+  there is nothing further to decide.
+- **If it does not**, the atomic read is unreachable through the plain SDK — and **the outcome is
+  PRE-AUTHORIZED, so this ticket is NOT blocked.** ★ *Ruled 2026-09-23 by the planning session under
+  F2, recorded in `E7-D11`.* The `A-O2-4` refusal is then implemented **by a second means: a
+  per-entry `lstat`**, which the `CLI-011` review already priced at **about +1 agent-day** (§10.5's
+  contingency row). Take it, record that you took it, and carry the +1 day. **Do not** ship a
+  check-then-read pair and call it atomic.
+- **STOP and report only if BOTH** the primitive is absent **and** a per-entry `lstat` proves
+  unavailable too. That is the one state neither branch covers.
+- **Either way, record which branch was taken and the measurement behind it** in the ticket's result.
+
+★★★ **THE `lstat` BRANCH LEAVES A RACE, AND IT IS A NAMED, BOUNDED RESIDUAL — NOT A REASON TO STOP.**
+*Ruled 2026-09-23 by the planning session under F2 (`E7-D11`), after Codex raised it on PR #575.*
+A per-entry `lstat` is the **check** half of the check-then-read pair forbidden above: it inspects a
+path, the later read **re-resolves** it, a swap between them wins, and the stable target makes the
+re-hash refusal pass. **This ticket proceeds anyway, on a stated bound:**
+
+- the sandbox is **per-run and single-tenant** (a fresh `randomUUID` idempotency key per supervisor
+  op, so `E2bSandboxProvider.create` never reuses one across attempts — review `A-O2-12`), so a
+  successful swap reads a file in the **tenant's own** sandbox, never another tenant's;
+- the one materially damaging outcome — **a redeemed secret reaching durable storage** — is what
+  **`SD-5` refuses**, and SD-5 is ruled **IN and REQUIRED** before `M1b`'s campaign (`E7-D11` §3).
+  **The bound IS that clause:** if SD-5 is ever descoped or weakened, this residual is no longer
+  bounded and the in-sandbox atomic read becomes **required**.
+
+★ **So this ticket's real-run acceptance carries a DELIBERATE SYMLINK-SWAP ATTEMPT**, with exactly
+two acceptable outcomes: **(i)** the `lstat` check refuses it, or **(ii)** it exports and **SD-5's
+scan refuses the bytes**. ★★★ **A swap that produces a STORED artifact containing the planted canary
+is a FAIL of this ticket, not a residual.** That case is the whole difference between a bound and a
+hole, so it must be run and recorded, not reasoned about.
+
+★ **The closure route, recorded and NOT required now:** an in-sandbox `O_RDONLY|O_NOFOLLOW`
+open-and-read-from-the-file-descriptor through `runCommand`, so the inode inspected is the inode read.
+**It is UNVERIFIED** — proposed from the template's `python3` and `runCommand`'s existence, not
+measured — and its cost is real: running an interpreter inside the tenant's sandbox during export,
+plus encoding and bounding a byte path that is a direct provider PUT today. Whether it breaches
+`E7-D06` is **open**: that decision's operative rule is *"No payload crosses the dependency-pinned
+daemon"*, and `digest_artifact`/`export_artifact` already materialise bytes in the **adapter-manager**
+(`packages/adapter-manager/src/server.ts` — that is `E5-F009`'s subject), so it is **not obviously** a
+breach. **Measure it if the route is taken; do not assert it either way.**
+  ★ *This replaces an earlier revision of this bullet which said any second means is "a design
+  change, not a wording fix: STOP and report it" — that would have made `CLI-012` unassignable on an
+  unmeasured SDK detail, which the planning session ruled against: the branch is authorized in
+  advance, and only the doubly-negative case stops.*
+This question is shared with `CLI-017` only in the sense that both depend on the same SDK; the work
+and the answer are `CLI-012`'s. Its test must mutate **between the recheck and the read**, because a
+mutation only between enumeration and digest **passes a vulnerable implementation** and would be a
+check that proves nothing.
+
+★ **This ticket owes a test that FAILS if the crossing returns** — a composition assertion that the
+producer's dependency surface contains no byte-returning read. No existing guard catches it:
+`check-worker-daemon-boundary` passes a violation because it enforces a *dependency* boundary while
+the data-plane rule lives in a docstring.
+
+**★ The `kind` decision is this ticket's, and it decides whether the QUALIFYING ARTIFACT counter
+(arm 1) moves** — not the RECEIPT-BACKED OUTPUT counter (`taskOutputs`, arm 2), which is F5's
+(E7-D03).
+`countProducedOutputs` arm 1 filters `kind = 'workspace_patch'` and is attempt-scoped as of
+`E7-F031`. A `kind` outside that filter produces a real, attributable, committed artifact that the
+verifier **does not count**. Both of those are defensible and they are different products: the
+former needs the Unit-E `workspace_patch` route (XL, out of `M1b` per E7-D05); the latter needs
+link 6 to decide what it counts. **This ticket must state which it chose and why, in `decisions.md`
+(E7-D08), and must not silently pick the one that makes a number go up.**
+
+**Ticket non-goals:** telling the agent to write anything (F1b); the announcement (F4); the
+projection (F5); changing the counter (F6); a Unit-E workspace.
+
+**Files:** create `packages/worker-daemon/src/lease/export-request-producer.ts`; modify
+`packages/worker-daemon/src/index.ts` (barrel); pass the real producer into the composition point **that `DAT-009-3d` builds** in
+`packages/worker-daemon/src/lifecycle/dispatch-runtime.ts`, replacing the "nothing" `DAT-009-3d`
+leaves there — a one-argument change at an existing seam, **not** building the composition, which is
+and stays `DAT-009-3d`'s. ★ *Corrected 2026-09-21 (Codex, PR #526):* Codex read the previous wording as assigning the composition to
+this ticket. It never did; but removing this edit, as suggested, would leave the producer
+unconnected, so the edit stays and its scope is now stated exactly; create `packages/worker-daemon/src/__tests__/export-request-producer.test.ts`; append to
+`decisions.md`. ★ **And the enumeration port** — modify
+`packages/worker-daemon/src/supervisor/provider.ts` (the `SandboxProvider` port gains a fenced,
+**metadata-only** enumeration operation: **no bytes**, and **per-entry an absolute path, a link
+marker and a byte SIZE** — ★ *corrected 2026-09-23, Codex P1 ×2, PR #575; superseded text: "paths
+only, no bytes", which would have made the required symlink refusal unimplementable, and then
+"…plus a link marker", which still left the size to `digestArtifact` and so to a whole-file read*);
+modify
+`packages/sandbox-e2b-provider/src/e2b-provider.ts` (implement it over the private
+`#transport.listDir`, **and bound `#readArtifactBytes`**); ★★★ **and the TRANSPORT itself, which this
+list was missing** — *added 2026-09-23 (Codex P1, PR #575), verified at source: changing
+`e2b-provider.ts` alone cannot make `#transport.listDir` return a marker or a size, because
+`E2bTransport.listDir` is **declared** `Promise<readonly string[]>` in `transport.ts` and
+`real-transport.ts` sends the SDK's typed entries through `filesOnlyFromListing`
+(`list-dir-contract.ts`), which throws away everything but the path. The bounded read needs the real
+transport too, since `readFile` returns whole bytes today* — so **modify
+`packages/sandbox-e2b-provider/src/transport.ts`** (the `listDir` return type gains the per-entry
+marker and size; a bounded/streaming read shape is added), **`packages/sandbox-e2b-provider/src/list-dir-contract.ts`**
+(`filesOnlyFromListing` preserves `symlinkTarget`/`type` and `size` instead of discarding them —
+**files-only, recursive, absolute and bounded are unchanged**, so `E7-D09` is **not** reopened),
+**`packages/sandbox-e2b-provider/src/real-transport.ts`** (carry the SDK metadata through; use the
+SDK's streaming/bounded read rather than a whole-byte read) and
+**`packages/sandbox-e2b-provider/src/mock-transport.ts`** (the mock must model the **same** contract —
+`E7-F014`'s class is a mock modelling the opposite one); and update
+`packages/sandbox-e2b-provider/src/__tests__/list-dir-files-only.test.ts` plus the transport tests
+that pin the old `string[]` shape. modify `packages/provider-wire/src/driver.ts` (the networked-lane binding,
+which has no enumeration today — **its shape carries the per-entry marker too, not a bare
+`string[]`**); modify `packages/adapter-manager/src/server.ts` (the matching
+op route **and** its ownership gate — the server answers any op outside `GATE_REQUIRED_OPS` or its
+raw-handler map with `404 operation not available in this slice`, so a driver-only change is
+unreachable on the networked lane); create
+`packages/provider-wire/src/__tests__/driver-enumerate.test.ts` and
+`packages/adapter-manager/src/__tests__/server-enumerate.test.ts`;
+★★★ **and modify `packages/worker-daemon/src/lease/artifact-export.ts` and its tests** — *added
+2026-09-23 (ruling F7, `E7-D11`; Codex P1, PR #575), verified at source. **Superseded Files text:** the
+list ended at `server-enumerate.test.ts`, omitting the sequencer.* `createArtifactExportSequencer`
+loops `for (const request of requests)` and **every `fail(...)` throws `ArtifactExportFailedError`**,
+so it is **all-or-throw**: one refused file drops every valid output after it — and an agent can make
+a secret-bearing or oversized file sort first. This ticket's own `E5-D07` amendment already says *"The
+per-file failure policy is this ticket's … Changing that changes the sequencer's return contract, and
+that change belongs here"*, so the omission made the ticket unable to do what its own decision
+assigns it. **Acceptance row:** a refused first file is classified and the remaining valid outputs
+still export — a mutant that restores the throw reds it. Enumeration is a
+**single-sandbox owned op**: route it through `gateOwnedOp` like `stage_files` (E7-F011), never a
+keyless raw handler. **Non-goal:** changing the frozen `PROVIDER_OPERATIONS` vocabulary in
+`@armyofagents/worker-protocol` — the export ops `DAT-009-3e` added are wire routes outside it,
+and this one follows the same pattern. ★ *Corrected 2026-09-21 (Codex, PR #526):* the adapter-manager half was missing; this
+section mirrors `DAT-009-3e`'s file list, which includes `server.ts` and a server test for the same
+reason. *Added (Codex, PR #526): the port was assigned to this ticket in
+its graph node but authorized by no file list, so it would have stayed unimplemented. The sequencer
+composition surface stays with `DAT-009-3c`/`3d`, which this ticket already waits on.*
+
+★ *Amended 2026-09-21 (E5-D07, accepted by the planning session under founder delegation F2; see
+`docs/replatform/epics/E5-workspaces-secrets/decisions.md`):*
+- **Files also: modify `packages/worker-daemon/src/supervisor/effect-authority.ts`.** The
+  enumeration is fenced, so it goes through `EffectAuthority`'s guard, like `digestArtifact` and
+  `exportArtifact`. Otherwise it becomes a second, unguarded door to the sandbox.
+- **Files also: modify `packages/worker-daemon/src/supervisor/supervisor.ts`.** The producer is
+  composed at the boot root and has no sandbox of its own. The supervisor passes it a per-run view
+  bound to this run's sandbox and `run.effect`, as an additive field on `resolveExportArtifacts`'s
+  input, which is `{handoff, exec}` today.
+- **This ticket promotes `E5-2-fenced-object-commit-worker-half` to `wired`** (E5-D07 ruling 4), in
+  the commit that connects the production producer: `scripts/gate-clause-wiring.json`, with the
+  caller cited by symbol. `DAT-009-3d` does not promote it.
+- **The per-file failure policy is this ticket's, gated on ruling F7** (E5-D07 ruling 7). The
+  sequencer as built aborts at the first failing file. The `CLI-011` review expects every file to
+  succeed or fail on its own, with each refusal classified. Changing that changes the sequencer's
+  return contract, and that change belongs here.
+- The "The composition point that `DAT-009-3d` builds" above is `SupervisorDeps.exportArtifacts`
+  plus `resolveExportArtifacts`. This ticket passes the producer as `resolveExportArtifacts`.
+
+**Interfaces:** `createExportRequestProducer(deps: {capture, outputRoot, kind, contentTypeFor,
+retention}) => (input: {handoff, exec}) => Promise<readonly ArtifactExportRequest[]>` — the exact
+shape `SupervisorDeps.resolveExportArtifacts` expects. The object key stays **derived**, never a
+caller field: `${expectedAttemptObjectPrefix(...)}${artifactId}` with `artifactId` derived from
+(jobId, attempt, path), so a retry is a replay rather than a second artifact.
+
+**Failure behavior:** an empty output root produces `[]` and **makes no HTTP call and does not even
+fetch the session** (the sequencer's anti-vacuity property, already pinned by its own test — this
+ticket must not break it). A capture throw is best-effort per E5-D07: log, `emitOp failed`, truthful
+terminal, **attempt not failed** — the work is already done and must not be discarded because its
+evidence could not be filed. A grant refusal surfaces its reason (`stale_fence` must survive to the
+error message) and never fabricates a reference.
+
+**Migration/compatibility:** additive, worker-only, behind the default-OFF distributed flag. No
+schema, no route, no frozen-protocol change.
+
+**Observability:** `emitOp` with the closed `digest_artifact` / `export_artifact` labels. **No path,
+byte, grant URL, or file content in any log line or metric label** — the port already classifies the
+grant URL as sensitive.
+
+**Rollback/disablement:** pass no producer at composition; `resolveExportArtifacts` goes back to
+unset and the lifecycle is byte-identical. The flag remains the operational off-switch.
+
+**RED → GREEN:**
+- RED: a fake sandbox with one planted file under the output root yields exactly one request whose
+  `sha256`/`sizeBytes` come from the digest step, and one `committed` reference back.
+- RED: an empty root yields `[]`, zero HTTP calls, and **zero session fetches** (anti-vacuity).
+- RED: a retried attempt presents the SAME `idempotencyKey` and the SAME `artifactId` — a replay,
+  not a second artifact.
+- RED: a path outside the root is refused at capture and never reaches the sequencer.
+- RED: the declared `kind` is the one `decisions.md` records — a mutant that swaps it reds.
+- RED: no thrown message, returned value, or logged field contains `grant.url`.
+- GREEN: all of the above plus protocol build and worker typecheck/build.
+
+**Evidence / commit:** `tickets/CLI-012-result.md`; one commit
+`feat(worker-daemon): produce artifact export requests from the sandbox output root`.
+Maps H-04, H-05.
+
+---
+
+### `CLI-013` — the announcement: `EventSequencer.artifactPrepared` (S, ≤1 agent-day, M1b)
+
+**Depends on:** `CLI-012` (there is nothing to announce before it).
+
+**Current state, measured:** `EventSequencer`
+(`packages/worker-daemon/src/supervisor/events.ts`) has emitters for `attemptStarted` (`:170`),
+`networkDenied` (`:178`), `log` (`:185`), `progress` (`:193`), `usage` (`:201`),
+`browserObservation` (`:232`), the five service emitters (`:269`–`:305`) and `terminal` (`:310`) —
+and **no `artifactPrepared`**. A repo-wide grep for `artifact_prepared`/`artifactPrepared` outside
+tests returns declarations only, never an emission.
+
+**★ And it is not blocked** (E7-D07): the event kind is frozen
+(`packages/worker-protocol/src/events.ts:358`), the payload schema is frozen (`:387`), it is already
+in the `job_events` CHECK (`packages/db/src/schema/job_events.ts:75`), and `EventSequencer` is daemon
+code **outside** the contract-bytes freeze. This is the link a planner is most likely to assume needs
+a custodian STOP. It does not.
+
+**★ And it flips NO counter.** `countProducedOutputs` reads `job_artifacts` directly and joins no
+events — **a committed artifact counts whether or not anything announced it**. What the emitter buys
+is that the artifact becomes visible in the control plane's evidence stream, which is what link 5
+projects onto the task. Any result doc claiming this moves `capabilityProven` is wrong.
+
+**Ticket non-goals:** the projection (F5); the counter (F6); any frozen-protocol edit; widening the
+`log` payload (`E7-F024` is a disposition here, not a payload change — the frozen `log` payload
+**silently truncates** at 65,536 characters and caps at 480 events, so a reconstructed transcript is
+corrupt rather than absent, and this ticket records that the artifact route does not inherit that
+defect because it carries a reference, not bytes).
+
+**Files:** modify `packages/worker-daemon/src/supervisor/events.ts`; place the emit on the
+**sequencer-completion / supervisor path** — the `DAT-009-3c` `SupervisorDeps.resolveExportArtifacts`
+hook site, where `createArtifactExportSequencer`'s returned `readonly ExportedArtifactRef[]` is in
+hand — **not** inside the F3 producer; create
+`packages/worker-daemon/src/__tests__/events-artifact-prepared.test.ts`; update `findings.md` for
+`E7-F024`'s disposition.
+
+★★★ **Superseded text: *"modify the F3 producer to emit after a successful commit"*.** *Corrected
+2026-09-20, verified at source — this placed a POST-commit emission inside a PRE-commit component.*
+The F3 producer's own declared interface (above, `CLI-012` §Interfaces) returns
+`Promise<readonly ArtifactExportRequest[]>`: it describes what SHOULD be exported and then returns.
+The commit belongs to the **sequencer**: `createArtifactExportSequencer`
+(`packages/worker-daemon/src/lease/artifact-export.ts:264`) **consumes** those requests as an input
+field (`:269`), calls `deps.client.artifactCommit` (`:383`), checks `outcome === "committed"`
+(`:425-427`), and only then pushes an `ExportedArtifactRef` and returns the committed set (`:438`).
+By the time a successful commit exists the producer is no longer on the stack, so it cannot emit
+"after" one. **Two placements are admissible and this ticket takes the first:** (a) emit on the
+sequencer-completion/supervisor path, over the returned committed references — additive, touches no
+E5-owned signature; or (b) thread an **explicitly designed successful-commit callback** from the
+sequencer into the producer's deps, which is a change to the `DAT-009-3c`/`3d` seam **E5 owns** and
+is therefore out of this ticket's scope. What is NOT admissible is asserting the producer emits
+post-commit with no such callback designed.
+
+**Interfaces:** `artifactPrepared(input: ArtifactPreparedPayloadV1): Promise<WorkerEventV1>` —
+contiguous `seq`, per-event `eventDigest` via `canonicalEventDigestInputV1` + `node:crypto`, into
+the injected sink, exactly like every sibling emitter.
+
+**Failure behavior — ★★★ NOT best-effort, and an earlier revision of this ticket said it was.**
+*Corrected 2026-09-20 (fifth round), verified at source.*
+
+`EventSequencer.#emit` increments `#seq` **before** awaiting the sink
+(`packages/worker-daemon/src/supervisor/events.ts:139` allocates, `:164` awaits), so a failed
+`artifact_prepared` emit has **already consumed its sequence number**. The terminal then carries
+the next seq while that one never reached the durable outbox — a **hole**. The control plane
+classifies exactly that as a gap: `createJobEventIngestService` returns
+`"accepted" | "gap" | "hash_mismatch" | …` with an `acceptedThroughSeq`
+(`server/src/services/job-events.ts:125,275`), so nothing past the hole is accepted.
+
+★ **So “log and continue to a truthful terminal” cannot work: the terminal is precisely what would
+not land.** The old wording promised the one outcome the mechanism forbids.
+
+**This ticket therefore owes a DECISION before it is assignable as build**, recorded in
+`decisions.md`, choosing between:
+
+1. **Fatal** — a sink failure fails the attempt. Simple and honest; costs an attempt for a
+   post-commit bookkeeping event.
+2. **Allocate-on-success** — the sequencer assigns `seq` only after the sink accepts, so a failed
+   emit leaves no hole. This changes a **shared** sequencer used by every sibling emitter, so it
+   needs its own review and cannot be smuggled in under this ticket.
+3. **Durable retry before the terminal** — the emit is retried until it lands or the attempt
+   fails; the terminal never overtakes an unlanded event.
+
+★ **What it may NOT do is keep the current wording**, which describes a best-effort path whose
+stated success condition the ingest contract rejects. The artifact is already durable either way —
+the commit is never retracted; the open question is only how the event stream stays contiguous.
+
+**Migration/compatibility:** additive. `check:frozen-worker-protocol-v1` must stay green — the
+frozen package is not edited.
+
+**Observability:** the event itself is the observable. Sequence contiguity and digest validity are
+asserted.
+
+**Rollback/disablement:** remove the emit call; the commit is unaffected.
+
+**RED → GREEN:** RED — the emitter does not exist; RED — the emitted event validates against the
+frozen `artifactPreparedPayloadV1Schema` and its digest verifies; RED — `seq` stays contiguous with
+the surrounding emitters; **RED — the sink-failure assertion that the recorded contiguity decision
+selects** (see *Failure behavior* above); GREEN — all of the above plus the frozen-consumer check
+and worker typecheck/build.
+
+★★★ **THE SINK-FAILURE ASSERTION IS WRITTEN AFTER THE DECISION, NOT BEFORE IT.** *Corrected
+2026-09-20 (sixth round).* This list read *“RED — a sink throw does not fail the attempt”*, and
+because GREEN requires **every** listed assertion, it **mandated the very best-effort behaviour the
+corrected *Failure behavior* section rejects** — two of the three permitted options (fatal, and
+retry-until-land-or-fail) make a terminal sink failure fail the attempt, so an implementer choosing
+either could not turn this ticket green. Fixing the prose and leaving the acceptance test is how a
+rejected contract survives: **the test is the instruction.** Write this assertion to match the
+option recorded in `decisions.md`, and keep the contiguity assertion above unconditional — no
+option is allowed to leave a hole in the stream.
+
+**Evidence / commit:** `tickets/CLI-013-result.md`; one commit
+`feat(worker-daemon): emit artifact_prepared after a fenced commit`.
+
+---
+
+### `CLI-014` — the projector: make the artifact visible on the task (M, ≤3 agent-days, M1b)
+
+**Depends on:** `CLI-013`.
+
+**Current state, measured:** `foldAttemptEvidence` hard-codes `detectedFiles: []`
+(`server/src/services/canary-terminal-projection.ts:256`), and
+`createCanaryRunProjector.projectTerminal` (`server/src/services/canary-run-projector.ts:156`) runs
+four steps — events, terminal, `finalizeRun` (`:219`) and the run-summary comment (`:238`, via the
+**same** `postRunSummaryComment` writer heartbeat and crew use) — **none of which writes
+`task_outputs`**.
+
+**Outcome:** a committed artifact for the attempt becomes visible to the founder on the task:
+`detectedFiles` is folded from the `artifact_prepared` events rather than hard-coded, and the
+projector writes the corresponding `task_outputs` row.
+
+**★ The collision this ticket must not cause, stated up front.** `gate-clause-wiring.json`'s
+`E3-17-output` (`jobOutputBridge`, JOB-014) **owns the general distributed-job → `task_outputs`
+projection**. ★★★ **AND THE RESOLUTION IS NOT A SCOPED SECOND WRITER — IT IS THAT THERE IS ONLY
+ONE WRITER.** *Corrected twelfth round.* Two things in the superseded framing below are wrong:
+the bridge is an **`M1a` prerequisite** (D-8), not something pending M2 — what is M2 is the **sink
+cutover** — and scoping a second writer by `execution_owner = distributed` does **not** separate two
+writers, because F5's runs are distributed too. The bridge writes the row **and** its
+`output_projection` receipt in one tenant transaction under the live fence, and the capability
+verifier admits *“exactly one writer”*; so F5 must **route through it**, not write beside it.
+
+★★★ **AND ROUTING THROUGH IT MOVES A COUNTER — the second of E7-D03's two.** *Corrected
+2026-09-20, verified at source.* `projectAcceptedOutput` writes the `task_outputs` row **and** its
+`output_projection` receipt in ONE tenant transaction, and `countProducedOutputs` **arm 2** counts
+exactly those receipted rows, bound on `job_id` **and** `attempt_id`
+(`server/src/services/e7-distributed-run-verifier-store.ts:579-606`). ★ *Superseded text: "links 4
+and 5 flip NO counter" (the earlier E7-D03 wording).* Link 4 flips none; **this ticket's bridge
+write moves the RECEIPT-BACKED OUTPUT counter (`taskOutputs`).** It still does **not** move the
+QUALIFYING ARTIFACT counter (arm 1, committed `kind = 'workspace_patch'` `job_artifacts`) — that
+remains link 3's — and moving arm 2 by writing a legitimate receipt is **not** a predicate change,
+which stays F6's.
+
+*Superseded framing, retained for the record:* it is `unwired` pending **M2 sink cutover** —
+*“task_outputs is still written by the legacy path”* — a second writer landing in M1 would make two
+mechanisms own one row, and the rule was that
+this projector writes only for a run whose `execution_owner` is `distributed` and whose attempt it
+is projecting, and the result doc must state the boundary against `jobOutputBridge` in the words of
+the register entry**, so that M2's cutover inherits a stated seam rather than a surprise.
+
+**★ And the removed arm's cost, priced rather than rediscovered.** Today the question *"can a
+distributed run produce a `task_output`"* is enforced by a clause a verify run **reads and prints**.
+Moving enforcement into unit tests plus an acceptance criterion is weaker in a specific way: a unit
+test reds in CI, but no `verify:e7-1-distributed-run` invocation would ever report *"the artifact
+committed and the founder still cannot see it on the task"*. That trade is recorded here so this
+ticket prices it rather than re-deriving it.
+
+**Ticket non-goals:** the **clause-6 predicate** and the **QUALIFYING ARTIFACT counter** (F6) —
+★ note this ticket **does** move the RECEIPT-BACKED OUTPUT counter (`taskOutputs`, arm 2) by
+routing through the bridge, which is a legitimate receipt, not a predicate change (E7-D03); the
+sink cutover (M2); the legacy write path; forking `postRunSummaryComment`.
+
+★★★ **NOT ASSIGNABLE AS BUILD UNTIL ITS CONTRACT IS DESIGNED — the files and interfaces below are
+the SECOND half of this ticket, not the first.** *Corrected 2026-09-20 (second review round): an
+earlier revision listed only the projector edits, which reads as ordinary work and is not.*
+
+**The blocker, measured.** `artifactPreparedPayloadV1Schema` is `{artifactId, kind}` and `.strict()`
+— **it carries no path** — and the projector says so itself: *"`artifact_prepared` carries an
+artifactId and a kind, never a path … so there is no honest file list to build."* Worse, that id
+identifies a **`job_artifacts`** row, while `task_outputs.artifactId` references the **separate
+`artifacts`** table. Following a projector-only task from here forces either an invented path or an
+unlinked metadata-only row — both dishonest.
+
+**So F5's FIRST deliverable is a design, recorded in `decisions.md`, covering:**
+
+1. **Lookup** — `job_artifacts` row → a durable relative path, scoped by tenant, job, attempt and
+   status. The frozen v1 wire will not carry the path, so the path's **provenance must be durable
+   at commit time**, not reconstructed at projection time.
+2. **Materialization** — `job_artifacts` → `artifacts`, **idempotent** under retry and re-projection,
+   including the viewable version/reference rows `task_outputs` consumers expect.
+3. **Ordering and failure** — where materialization sits relative to the terminal, and what happens
+   when it fails after the terminal is durable.
+4. **What it must NOT do** — mint a path the sandbox never reported, or write a `task_outputs` row
+   whose `artifact_id` resolves to nothing.
+
+★★★ **F5 MUST NOT ADD A FIFTH, POST-TERMINAL `task_outputs` WRITER — an earlier revision of this
+build step did exactly that, and it cannot work.** *Corrected 2026-09-20 (tenth round), verified at
+source.*
+
+`jobOutputBridge.projectAcceptedOutput` is **the sole distributed-output writer**, and it writes
+the row **plus an `output_projection` receipt in ONE tenant transaction** while *“the attempt stays
+RUNNING”* (`server/src/services/job-output-bridge.ts:11`). It is fence-bound: once the attempt is
+finalized the active-fence guard throws **`attempt_terminal`** (`:18`). And the capability
+verifier's admission is explicit that there is *“exactly one writer”*
+(`server/src/services/e7-distributed-run-verifier-store.ts:539`).
+
+So a projector ordered **after** the terminal has only two outcomes, and both are wrong:
+
+1. it calls the bridge and **fails with `attempt_terminal`**, because the fence is already closed; or
+2. it bypasses the bridge and writes directly — producing an **uncounted row with no
+   `output_projection` receipt**, which the verifier does not admit, and leaving **two writers
+   overlapping the same distributed-run scope** at the M2 cutover.
+
+★ **The build must therefore materialize the artifact and invoke
+`jobOutputBridge.projectAcceptedOutput` while the attempt's fence is still OPEN.**
+
+★★★ **AND “EARLIER INSIDE THE CANARY PROJECTOR” DOES NOT ACHIEVE THAT — a previous revision of
+this correction said “before terminal projection” and was still wrong.** *Corrected eleventh round,
+verified at source.* The canary projector is a **post-terminalization hook**: `job-events.ts`
+documents it as *“fired AFTER the tenant transaction commits, when this ingest **terminalized the
+attempt**”*, and it *“must never be called inside `runInTenant`”*. So **every** step in that
+projector — first or fifth — already runs after the attempt is terminal and after the fence the
+bridge locks has closed. Re-ordering steps inside it cannot fix an ordering problem that is
+structural to the hook.
+
+★ **So the design this ticket owes is projection BEFORE ATTEMPT TERMINALIZATION**, not before one
+step of a post-terminal projector — i.e. on the ingest path that still holds the live fence, with
+the artifact and terminal events arriving in the same batch. **The owed integration case is exactly
+that batch**: `artifact_prepared` and the terminal event ingested together, asserting one
+`task_outputs` row with its `output_projection` receipt and no `attempt_terminal` throw. Until that
+design is recorded, F5 is not assignable as build.
+
+**Only once that design is recorded** does the build half apply — and ★★★ **ITS FILE LIST IS NOT
+THE TERMINAL PROJECTOR'S.** *Corrected twelfth round.* A previous revision of this very correction
+kept the build confined to `canary-terminal-projection.ts` and `canary-run-projector.ts` while the
+text above it said “before attempt terminalization” — the same instruction-versus-description
+failure the correction was written to fix, committed inside the fix.
+
+Those two modules are reached **only** through `onAttemptTerminal`, which `job-events.ts` awaits
+**after** the ingest transaction has committed and terminalized the attempt. **No edit to either
+file can run inside the live fence**, so `projectAcceptedOutput` would still throw
+`attempt_terminal` for every F5 projection.
+
+★ **The build therefore needs an accepted-artifact hook BEFORE terminalization** — and ★★★
+**`job-events.ts` IS STILL ONE LAYER TOO LATE, which a previous revision of this correction got
+wrong.** *Corrected twelfth round, verified at source.* That service calls
+`repos.jobControl.acceptEvent(…)` **once**, and `acceptEvent` does the whole thing inside a single
+repository transaction: its own comment is *“Fence FIRST (throws stale_fence / attempt_terminal),
+then durable append”*, with `guardActiveFence` holding the attempt row `FOR UPDATE` so *“no
+concurrent appender can interleave”*. So:
+
+- a hook placed **before** that call would act on **unaccepted** input — events that may yet be
+  rejected as `gap` / `hash_mismatch` / `stale_fence`; and
+- a hook placed **after** it sees the attempt **already terminal**.
+
+★ **And calling today's `jobOutputBridge` from inside that window does not work either**, because
+`projectAcceptedOutput` opens its **own** `runInTenant` transaction
+(`server/src/services/job-output-bridge.ts:261`), which cannot acquire the row locks the outer
+transaction is holding.
+
+★ **So the owed design is one of exactly two shapes, and it must name which:**
+
+1. **A transaction-aware callback inside `acceptEvent`**, fired after the append and before the
+   terminal transition, receiving the live repository transaction; or
+2. **A bridge operation that accepts an existing repository transaction** — `projectAcceptedOutput`
+   refactored so the tenant transaction can be supplied by the caller rather than opened by it.
+
+Until one is chosen and recorded, **the same-batch projection this ticket promises is not
+implementable**, and no file list is meaningful. The two post-commit projectors may still change to
+**read** what the new path wrote; they may not be where the write happens.
+
+**Owed test:** `server/src/__tests__/canary-output-projection.integration.test.ts`, ingesting
+`artifact_prepared` **and** the terminal event **in the same batch**, asserting one `task_outputs`
+row with its `output_projection` receipt and **no `attempt_terminal` throw** — the case that fails
+against any design that writes from the post-commit hook, which is exactly why it is the owed one.
+
+**Failure behavior:** ★ *to be set by the ordering decision above — a write that happens **before
+attempt terminalization** cannot be described as “ordered last-but-one”, and a bridge call that fails inside the live
+fence is not the same event as a post-terminal projector failing.* The surviving invariants: a
+projection failure must not retract a durable terminal, must not silently produce a row without its
+`output_projection` receipt, and must not block the run-summary comment. A run
+with no `artifact_prepared` events projects nothing and writes no row — asserted, because a
+projector that writes an empty row on every run is the vacuity trap.
+
+**Migration/compatibility:** additive; no schema change (`task_outputs` exists and is the unified
+product index). No route change. Legacy and distributed never own the same run simultaneously.
+
+**Observability:** the `task_outputs` row itself, plus a log line carrying opaque ids only. No file
+bytes, no path content beyond the declared relative path, no grant URL.
+
+**Rollback/disablement:** ★★★ **REMOVE THE CHOSEN TRANSACTIONAL HOOK — there is no “fifth step”
+left to remove, and naming one would leave the real writer ACTIVE.** *Corrected 2026-09-20
+(fifteenth round).* This ticket's write moved out of the post-commit projector and into either a
+transaction-aware callback inside `acceptEvent` or a bridge operation taking the existing
+repository transaction (see the ordering decision above). Disablement is therefore the removal of
+**whichever of those two was built** — the callback and its composition, or the bridge integration.
+An instruction to “remove the fifth step” would have claimed disablement while `task_outputs` rows
+and `detectedFiles` kept being produced by the pre-terminal writer: a rollback that does not roll
+back. The distributed flag remains the outer off-switch.
+
+**RED → GREEN:**
+- RED: a run with one `artifact_prepared` event yields one `task_outputs` row and a non-empty
+  `detectedFiles` — the row written **through `jobOutputBridge.projectAcceptedOutput` with its
+  `output_projection` receipt**, so `countProducedOutputs` arm 2 (`taskOutputs`) counts it.
+- RED: a run with none yields **no row** and `detectedFiles: []` (anti-vacuity).
+- RED: **the projection-failure case selected by the ordering decision above** — ★★★ *not a fixed
+  “throw leaves the terminal intact”, corrected fifteenth round.* Once the write is inside the ingest
+  transaction the two admissible behaviours diverge and the test must follow the decision, not
+  preempt it: an **uncaught** error aborts that transaction **before** terminalization (nothing
+  commits; the batch is retried), while **catching** it lets the artifact event and the terminal
+  commit **without** the required row and receipt and forecloses the retry — permanent,
+  founder-visible output loss. Asserting the second here would have hard-coded exactly that loss,
+  and would make the fail-and-retry design impossible to satisfy.
+- RED: a run whose `execution_owner` is not `distributed` is **not** projected by this path (the
+  `jobOutputBridge` boundary).
+- GREEN: all of the above plus the wiring checker, server typecheck and server build.
+
+**Evidence / commit:** `tickets/CLI-014-result.md`; one commit
+`feat(server): project committed artifacts onto the task for distributed runs`.
+
+---
+
+### `CLI-015` — the judge: clause 6 and the four scanner findings (M, ≤3 agent-days, M1b)
+
+**Depends on:** `CLI-011`'s **ruling**, `CLI-012`, and **`CLI-017`** (the emit build). **This ticket
+may not be assigned before the ruling**, because round 3 proved that changing the predicate without
+knowing what supplies the output converts a forgeable gate into an unpassable one.
+★ *Amended 2026-09-23 (ruling F7, `decisions.md` `E7-D11`): the ruling is taken, and the emit build it
+files is `CLI-017`, which this line now names. **Superseded text:** "`CLI-011`'s **ruling** and
+`CLI-012`." The ruling itself changes nothing this ticket counts — it counts through arm 2's existing
+predicate (SD-3, P-A unchanged) — so this stays a text/attribution fix (`E7-F016`), not a predicate
+change.*
+
+**Current state, measured:** `E7ProducedOutputCounts` is two numbers
+(`server/src/services/e7-distributed-run-verifier.ts:130-133`). Clause 6 is the module's **only**
+`capabilityFailures.push` (`:657`). Arm 1 counts committed `workspace_patch` `job_artifacts`,
+attempt-scoped as of `E7-F031`; **arm 2 counts an applied `output_projection` receipt on `job_id`
+*and* `attempt_id = run.distributed_attempt_id` — it is ATTEMPT-scoped too, also as of `E7-F031`.**
+Verified at source: the predicate carries `eq(jobProjectionReceipts.attemptId, attemptId)`
+(`server/src/services/e7-distributed-run-verifier-store.ts:596`), the store's linkage census row #10
+records it as `PRECISION | attempt` (`:71`), and the `countProducedOutputs` header opens with
+**"BOTH ARMS BIND TO THE RUN'S ATTEMPT, NOT ITS JOB (E7-F031)"** (`:427`).
+
+★★★ *Superseded text: "arm 2 counts an applied `output_projection` receipt on `job_id`,
+job-granular by deliberate choice". Corrected 2026-09-20, verified at source.* That was true only in
+the window between `E7-F020` and `E7-F031`; `:71` still carries the sentence "E7-F020 fixed its
+linkage and **left it** job-granular" as a description of the state `E7-F031` then closed, and
+`:436-439` records why — a patch or an output produced by attempt 2 was printing
+`capability: PROVEN` for a run bound to attempt 1.
+
+★ **And the `:297` warning does not say what this ticket was told it says.** It is headed
+**DO NOT "MAKE THIS CONSISTENT" WITH `countProducedOutputs`** and it sits at the **clause-4 secret
+scanner's** call site. It distinguishes the **SCANNER** (`listRunSecretScanSurfaces`, which wants
+RECALL and is deliberately union-linked and job-wide) from the **CAPABILITY COUNTER** (arm 2, which
+wants PRECISION and is receipt-linked and attempt-bound), and forbids reconciling **those two**:
+"narrowing this to the receipt join … would silently stop scanning every legacy platform writer …
+and widening the counter to this union would re-open E7-F020" (`:297-312`), restated in the census
+as "#7 and #10 read the same table for opposite purposes and MUST stay divergent ON BOTH AXES"
+(`:74`). **It says nothing about arm 1 versus arm 2** — those two are already consistent. This
+ticket must still read it before touching either arm, for the scanner/counter boundary it does
+state.
+
+**Outcome:** clause 6 asserts something both **provable** and **non-forgeable**, given whatever
+`CLI-011` ruled; and this ticket does the **work** the scanner/evidence findings below call for,
+with evidence.
+
+★★★ **OWNERSHIP IS NOT THIS TICKET'S TO MOVE.** *Corrected 2026-09-21 (M1 Step 0, S0-4), verified
+at source. Superseded text: "and the four scanner/evidence findings are dispositioned with
+evidence."* Under the founder's subject-based ruling **D5** (§ `CLI-008` ledger above), and in
+`scripts/finding-ownership.json`, `CLI-015` **owns only `E7-F016`**. `E7-F015`, `E7-F023`,
+`E7-F032` and `E7-F033` remain **owned by `CLI-008`**. This ticket may do the work each row below
+describes and record the evidence in its result, but a closing edit to any of those four — its
+`findings.md` `Status` and the deletion of its manifest key — is a `CLI-008`-owned closure and must
+say so; it may not re-point them to `CLI-015`. The heading's "four" also undercounts the table,
+which has five rows (four owned by `CLI-008`, one by this ticket).
+
+| Finding | Work this ticket does (owner per `scripts/finding-ownership.json`) |
+|---|---|
+| `E7-F015` (MEDIUM, narrowed) — owner CLI-008 | The `capabilityProven` flip is already closed; the **forged field still feeds clause 4's leak scan**. Either bound it or record why it is acceptable. |
+| `E7-F016` (LOW, two parts) — owner **CLI-015** | Part (a) — the structural attribution at `:509-515` — is repairable here. Part (b) is recorded. |
+| `E7-F023` (MEDIUM) — owner CLI-008 | Clause 4 **does** scan `job_events`, and its scanned set is composed at the call site: a hard-fail gate reads model-influenced content. Bound it. |
+| `E7-F032` (LOW) — owner CLI-008 | Clause 4 does not scan a sibling attempt's `job_events`, so a retried job's leak can reach a clean verdict. |
+| `E7-F033` (MEDIUM) — owner CLI-008 | The residual over-matching hard matchers (`provider_key`, `e2b_api_key_assignment`) and the standing precision-AND-recall suite obligation. |
+
+**Ticket non-goals:** re-opening `E7-F031`'s attempt-scoping; ★★★ **reconciling the clause-4
+SECRET SCANNER (`listRunSecretScanSurfaces`) with the capability COUNTER in either direction — THAT
+is the pair the store forbids in terms** (`server/src/services/e7-distributed-run-verifier-store.ts:297-312`,
+census `:74`); widening arm 1 off `kind = 'workspace_patch'` **unless** F1b's ruling
+supplies a supply mechanism whose output the widened arm cannot be satisfied by — the staged input
+bundle satisfies the naive widening on every run (§4.3), and that refutation stands until a ruling
+displaces it.
+
+★★★ *Superseded text: "making arms 1 and 2 ‘consistent’ (the store forbids it in terms)".
+Corrected 2026-09-20, verified at source.* The store forbids making the **scanner** consistent with
+the **counter**; it does not forbid — and has no reason to forbid — consistency between the two
+counter arms, which `E7-F031` already made consistent (both attempt-bound:
+`e7-distributed-run-verifier-store.ts:427` states it, `:596` is arm 2's `attemptId` conjunct).
+Carrying the old wording as a non-goal would have fenced off a state the source already occupies and
+pointed an implementer at the wrong warning.
+
+**Files:** modify `server/src/services/e7-distributed-run-verifier.ts` and
+`-store.ts`; extend the pinned capability fixture; `findings.md` for the five dispositions.
+
+**Interfaces:** `E7VerifyResult.capabilityProven` / `.capabilityFailures` keep their separation from
+`ok`. **`ok` is not touched** — it means *the distributed journey was corroborated*, it is what the
+D1 40/40 evidence proved, and folding capability into it would destroy the one distinction Unit A
+bought.
+
+**Failure behavior:** the verifier fails **closed** on capability: unproven is the default and
+`--require-capability` is the flag that enforces it. A clause that cannot be evaluated is reported
+as unevaluated, never as passed.
+
+**Migration/compatibility:** verifier-only. `pnpm verify:e7-1-distributed-run` output shape changes,
+so every consumer of the RESULT line must be re-read.
+
+**Observability:** the RESULT line carries **both** verdicts, so a reader who sees only it cannot
+come away with a single word.
+
+**Rollback/disablement:** `--require-capability` stays off by default; a revert restores the prior
+predicate.
+
+**RED → GREEN:** RED — the pinned fixture proving the verifier currently blesses a context-free run
+must still red under the new predicate; RED — a forged `task_outputs` row must not satisfy the
+clause; RED — the sibling-attempt leak (`E7-F032`) is caught; RED — the two over-matching matchers
+have precision **and** recall cases; GREEN — all of the above plus server typecheck and build.
+
+**Evidence / commit:** `tickets/CLI-015-result.md`; one commit
+`fix(server): make the E7 capability clause provable and non-forgeable`.
+
+---
+
+### `CLI-016` — arm the distributed tool surface behind the fence-bound gate (M, ≤2 agent-days, M1b)
+
+**Depends on:** **E5's `DAT-007-S3` `complete`** at a recorded reviewed revision.
+
+**Current state, measured:** Unit C is **RULED + ENACTED** (2026-09-19) and slices 1–4 are merged
+**live-but-inert**: `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`
+(`server/src/config/distributed-execution.ts:29`) threads through
+`server/src/services/job-placement.ts:387`, `run-execution-owner.ts:269-275`,
+`execution-secret-handle-mint.ts:214,230` and `heartbeat.ts:5304`, and the claude argv emits
+`--mcp-config "$N" --strict-mcp-config --allowedTools mcp__aoa`
+(`server/src/services/task-run-sandbox-invocation.ts:218`). `scripts/finding-ownership.json` calls it
+*"tool surface, SHIPPED inert"*. **`E7-F003`'s tools row legitimately stays open** — the flag is off.
+
+★★★ **PER ORGANIZATION (founder ruling F10, 2026-09-21).** *Amended at M1 Step 0 (S0-4).*
+`readDistributedToolSurfaceFlag(process.env)` is read once, deployment-wide, at its only direct
+caller (`server/src/services/heartbeat.ts`, ~:5311) and threaded as `toolSurfaceAuthorized` through
+`run-execution-owner.ts`, `job-placement.ts`, `heartbeat-distributed-rollout.ts` and the run-JWT
+mint — **no per-Organization dimension exists**, so arming it for one tenant arms it for all. This
+ticket therefore keys the tool surface on the **per-Organization rollout policy**
+(`server/src/config/distributed-execution-rollout-source.ts`, `OrganizationRolloutPolicy`) as well:
+the deployment flag stays a kill switch, and a run gets the surface only if its Organization is also
+enabled for tools. **A tenant not enabled for tools is denied even when another tenant is enabled.**
+
+**Outcome:** the tool surface is armed for the **named set of Organizations, via the per-Organization
+rollout policy** (★ *superseded text: "the flag is armed for the named internal Organization only"*),
+and the arming is **proven to be gated at USE**: a run whose lease has expired is **denied at MCP authorization and refused at
+redemption**, which is exactly what DAT-007 item #1's resolver decides.
+
+★★★ **NOT “emitted only when fence-current” — that is an emission-time gate this ticket cannot
+build.** *Corrected twelfth round, and this is the fourth site for one rule.* `mintRunJwtHandleForPlacement`
+(`server/src/services/execution-secret-handle-mint-runner.ts:165`) takes **no lease and no clock**,
+and `decideRunJwtHandle` gates on deployment, principal, adapter and flag — not currency. The argv
+and the handle are produced at dispatch, before any currency check exists; the currency gate lives
+at **use**. The acceptance list was corrected earlier and this Outcome was not.
+
+**★ Why this cannot precede `DAT-007-S3`.** The founder ruling's own words: DE-08 leaves **no network
+backstop** for the run credential at the managed-shared tier, so the run-JWT cannot be fenced at the
+network layer, and **DAT-007 item #1 is the only thing that scopes that credential to a live lease**.
+The rejected option — *"turn it on without item #1"* — accepts a company-scoped tool surface
+reachable by a stale or replaced sandbox for the run-JWT's lifetime. That is not a sequencing
+preference; it is the ruling.
+
+**Ticket non-goals:** codex (`E7-F027`, E7-D04 — the approved first-milestone adapter set is
+`claude_local`; a codex `CODEX_HOME` MCP staging sub-unit is **out of M1** and stays with the parent
+ticket); re-opening the DE-08 ruling; any egress allowlist (mechanism B was rejected); enabling the
+tool surface for any Organization outside the named set.
+
+**Files:** `server/src/config/distributed-execution-rollout-source.ts` (a per-Organization tools
+dimension on `OrganizationRolloutPolicy`, validated by `assertDistributedExecutionRolloutSourceValid`);
+`server/src/services/heartbeat.ts` (the one read site of `readDistributedToolSurfaceFlag`, now combined
+with the run's Organization policy); deployment configuration for the named set; create
+`server/src/__tests__/distributed-tool-surface-arming.integration.test.ts` — ★ **it must use
+`describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`**,
+the form the rest of `server/src/__tests__` uses; with a bare `win32` skip the Windows command in §3
+runs zero tests and exits 0; `findings.md` for `E7-F003`'s tools row (**narrowed, not closed**).
+★ *Superseded text: "deployment configuration for the named Organization; create …"* (S0-4).
+
+**Interfaces:** one new, config-level field — an optional per-Organization **`tools`** field on
+`OrganizationRolloutPolicy` (`server/src/config/distributed-execution-rollout-source.ts`), parsed by
+`parseDistributedExecutionRolloutMap` from the `organizations.<organizationId>` object of
+`AOA_DISTRIBUTED_EXECUTION_ROLLOUT` and validated by `assertDistributedExecutionRolloutSourceValid`
+(a non-boolean value fails the parse loudly, as a malformed `mode` or `sources` does). ★ **Absent
+means NOT enabled** — the opposite of the MIG-002 `sources` axis, where absent means all sinks. The
+tool surface is fail-closed per tenant: an Organization whose policy carries no `tools: true` gets no
+surface even when `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` is on. The deployment flag and the fence-bound
+gate already exist and are unchanged. *Recorded at M1 Step 0 (S0-8), a planning-session decision under
+founder delegation (ruling F2), to carry ruling F10 into this field. Superseded text: "none new — the
+flag and the gate both exist."*
+★ *Amended 2026-09-21 by `E7-D10` (decided by the `CLI-016` build under F2).* The sentence "The
+deployment flag and the fence-bound gate already exist and are unchanged" no longer holds for the
+flag's **accepted values**. `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED` now arms only on
+`per-organization`. The legacy truthy spellings are refused at startup, because an older binary
+reads them as "arm every tenant". The same per-Organization decision is also re-proven at `/mcp`
+authorization. The fence-bound gate itself is unchanged. The sentence stays above as written.
+
+**Failure behavior:** the gate denies a stale/replaced run with the **same coarse forbidden** as
+wrong-tenant, leaking no oracle; a resolver throw propagates and denies (fail-closed). With the flag
+off, nothing is emitted and nothing is minted — the default until this ticket.
+
+**Migration/compatibility:** a code change in the rollout source and its one consumer in
+`heartbeat.ts`, plus an additive, optional key in the per-Organization rollout JSON; **no database
+schema, route, or `packages/worker-protocol` wire change**. Every other deployment is unaffected (flag
+default false, and `tools` absent means off for every Organization). ★ An older binary's
+`parseDistributedExecutionRolloutMap` does not reject unknown keys, so it would silently ignore
+`tools` and fall back to the deployment-wide flag alone — roll the binary before setting the flag on a
+multi-tenant deployment. *Superseded text (S0-8): "configuration only in the product; no schema,
+route, or wire change." — it assumed the single named Organization, which needed no new field.*
+
+**Observability:** record, on the milestone candidate, that a run whose lease has expired
+**observably loses the surface — denied at MCP authorization, refused at redemption**. ★ *Not
+“emitted only for a fence-current run”: emission happens at dispatch and carries no currency check;
+the denial is the observable, corrected twelfth round.* A gate that is never observed to deny is a
+check that nothing runs.
+
+**Rollback/disablement:** unset `AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED`. Instant, config-only, and
+the rollback rehearsal exit criterion 6 requires must include it.
+
+**RED → GREEN:** RED — with the flag on and the run fence-current, the argv carries the MCP config
+and the handle is minted; RED — with the flag on and the lease expired, **the surface is denied at
+MCP authorization and redemption is refused**; RED — with the flag off, neither happens (the control proving the rows
+
+★★★ **“THE HANDLE IS NOT MINTED” IS REMOVED FROM THIS LIST, AND IT WAS THE THIRD SITE FOR ONE
+RULE.** *Corrected eleventh round.* `mintRunJwtHandleForPlacement`
+(`server/src/services/execution-secret-handle-mint-runner.ts:165`) takes **no lease and no clock**,
+and `decideRunJwtHandle` decides on deployment, principal, adapter and flag — not currency. A
+configuration-only ticket cannot add a mint-time check, so this RED could never go green. Currency
+is enforced where the gate actually runs: **MCP authorization**. The checklist entry was corrected
+earlier and this acceptance list was not — the same propagation failure, again.
+
+*(Superseded RED, retained for the record: “the handle is **not** minted”.)*
+measure the flag); RED — **two Organizations, one enabled for tools and one not**: the enabled one's
+run gets the surface and its call is admitted, the other's is denied (F10); **keyed real-E2B +/-
+controls** (inside the F8 envelope, on a named candidate): a tool call from an authorized run reaches
+AoA, and the same call from an unauthorized run id and from an expired lease is denied; GREEN — all of
+the above plus server typecheck and build, with the Linux executed-test count recorded.
+★ *Corrected 2026-09-21 (M1 Step 0, S0-4): the graph node required a keyed real-E2B case with
+negative controls and this task did not; the task now carries them, as the M1 plan's Track B row
+("Keyed? yes") and F8 ("`CLI-016` +/- controls") require.*
+
+**Evidence / commit:** `tickets/CLI-016-result.md`; one commit
+`feat(server): arm the distributed tool surface per Organization via the rollout policy`.
+Maps H-04, H-05. ★ *Superseded commit title (S0-8, ruling F10): "`feat(server): arm the distributed
+tool surface for the named internal Organization`".*
+
+---
+
+### `CLI-017` — the EMIT build: the output-root directive (SD-1b), one source of truth for `R`, and the export secret refusal (SD-5) (M, **two slices, each inside the three-day cap**, M1b)
+
+★★★ **SIZING — TWO SLICES, AND THE WHOLE IS NEVER ASSIGNED AS ONE.** *Corrected 2026-09-23 (Codex P2,
+PR #575), verified at source.* This section first read *"S–M, ≤2 agent-days +1–1.5 for SD-5"*, which
+permits **3.5** agent-days, and `program-design.md`'s **Definition of Ready** caps every implementation
+ticket at *"no more than three agent-days; otherwise split it"* — with a **closed** exemption list
+(MIG-002/004/005/008, JOB-010…JOB-014, REL-001…REL-005) that does not include `CLI-017`, and which is
+explicitly **not transitive**. So the ticket is split, on the same WRK-008 / DAT-009 pattern the
+programme already uses:
+
+| slice | scope | size |
+|---|---|---|
+| **`CLI-017-A`** | SD-1b's directive + **PC-12**; `R`'s two constants + SD-4's `policy` equality check; acceptance rows **1, 3, 4** and the directive half of row 5 | **≤2 agent-days** |
+| **`CLI-017-B`** | SD-5's sandbox-scoped secret handoff + its **full** lifecycle (cleanup purge **and** the TTL-bound expiry) + the export refusal; acceptance rows **2, 6, 6b, 7, 8** and the export half of row 5 | **≤1.5 agent-days** |
+
+★ *Corrected 2026-09-23 (Codex P2, PR #575): the `CLI-017-B` row first read "acceptance rows 2, 6, 7
+and the export half of row 5", which left rows **6b** (purge on TTL expiry with no cleanup call) and
+**8** (the encoded/split characterisation) assigned to **neither** slice — so both slice records could
+be approved, and the aggregate written, with two required security checks never run. Every acceptance
+row is now owned by exactly one slice: **A** owns 1, 3, 4 and the directive half of 5; **B** owns 2,
+6, 6b, 7, 8 and the export half of 5. A slice record that does not carry every row in its column is
+not complete, and the aggregate may not be written.*
+
+`CLI-017-B` depends on nothing in `CLI-017-A` and may run in parallel. **Both slices are required
+before `M1b`'s campaign** — SD-5 is ruled REQUIRED (`E7-D11` §3), so a green `CLI-017-A` alone does not
+satisfy this ticket. The graph keeps one `CLI-017` node, exactly as `WRK-008` and `DAT-009` do.
+
+★★★ **THE SLICES DO NOT WRITE `-result.md` FILES, AND THAT IS THE POINT.** *Corrected 2026-09-23
+(Codex P2, PR #575).* An earlier revision of this block said each slice writes
+`tickets/CLI-017-A-result.md` / `-B-result.md`. Those names **both** match
+`findCompletedTicketIds`' `/^([A-Z]+-\d+).*-result\.md$/` and resolve to **`CLI-017`** — so landing
+slice A alone would mark the whole ticket shipped while the **security** slice did not exist. That is
+the same hole the `CLI-008-F1a` renumbering was done to close (`scope-triage.md`, the M0 unit-4
+note), reproduced one level down.
+
+- Each slice writes **`tickets/CLI-017-A-record.md`** / **`tickets/CLI-017-B-record.md`** — RED/GREEN,
+  mutations, reviewed revision, CI jobs and executed counts, in the normal result format. They are
+  **records, not results**, and a distinct reviewer approves each.
+- **One aggregate `tickets/CLI-017-result.md` is written only after BOTH slice records are approved**,
+  and it does nothing but name them and their reviewed revisions — **and assert that every acceptance
+  row 1–8 is carried by one of them**, which is the check that stops a row falling between the
+  slices. Its existence is the single signal
+  that `CLI-017` shipped, which is exactly what the regex reads.
+- **Do not rename the slices to independent ticket ids.** `CLI-018`/`CLI-019` would give two graph
+  nodes for one outcome and lose the "both required" edge that `CLI-015` depends on.
+  ★ *Note added 2026-09-24: those two ids were **hypothetical** when this was written, and `CLI-018`
+  has since been minted for a different ticket — the founder-reachable artifact (`### CLI-018`, owning
+  `E7-F047`). The instruction is unchanged and the ids above keep their original wording; read them as
+  the numbers this sentence refused to use, not as a reference to that ticket.*
+
+**Depends on:** **ruling F7**, recorded as `E7-D11` in this epic's `decisions.md` — already satisfied.
+Its graph edge is `CLI-011` (`program-design.md`, `#### CLI-017`). **Blocks:** `CLI-012`'s real-run
+acceptance and `CLI-015`.
+
+**Filed 2026-09-23 by ruling F7** (`decisions.md`, `E7-D11`, decided under founder delegation F2).
+This is the ticket the `CLI-011` task and graph node deliberately left unnamed — *"the emit-half BUILD
+has no id yet … it is filed after this ruling, because what it builds depends on which mechanism is
+chosen."* The mechanism ruled is **option 2, a conventional output root**; the placement is **SD-1b**.
+
+**Current state, measured at `499ec4d1c`:**
+
+- **Nothing tells the agent where to write.** `buildSandboxInvocation`
+  (`server/src/services/task-run-sandbox-invocation.ts`) stages three flat files under
+  `STAGED_INPUT_DIR = "/home/user"` and emits a claude script whose tail is
+  `exec "$0" --print - --dangerously-skip-permissions --output-format stream-json --verbose … < "$1"`.
+  There is no cwd change and no output-location directive anywhere in it.
+- **The caller-side seam exists and is unpinned.** `server/src/services/heartbeat.ts`'s canary block
+  passes `currentTaskMarkdown` (and `instructions`, and `aoaMcpConfig`) into
+  `buildTaskRunBatchWorkload`. The `CLI-011` review's §6 pin census found **no test asserting the
+  staged prompt bytes at that call site** — which is why acceptance 1 below exists.
+- **`R` has no constant.** Verified at source: **no production `aoa-output` literal exists** in
+  `server/src/`, `packages/worker-daemon/src/` or `packages/sandbox-e2b-provider/src/`. The path
+  appears only in the probe apparatus (`scripts/lib/cli-011-output-probe.mjs`, which production code
+  must not import) and, already, as a **test fixture path** in two worker-daemon suites —
+  `dispatch-runtime-export-composition.test.ts` and `supervisor-export-artifacts.test.ts` both use
+  `/home/user/aoa-output/…`. Those fixtures anticipate the root; they do not define it, and this
+  ticket must not make them the source of truth.
+- **`exportArtifact` inspects size and hash only.** `E2bSandboxProvider.exportArtifact`
+  (`packages/sandbox-e2b-provider/src/e2b-provider.ts`) reads bytes through `#readArtifactBytes`,
+  re-hashes and refuses a mismatch. **It never looks at content**, and the run's env reaches the same
+  provider as `envVars: spec.env` at `create` — so the provider is the only component holding both
+  the bytes and the secret values (review §3.5).
+- **The probe measured the hazard as real:** run `35833717162`, arm `S-P7`, verdict
+  `nonce-exported-in-file-bytes`, decision-table row **R4** fired on `noncePresent=true`.
+
+**Outcome:**
+
+1. **SD-1b — the directive.** A `claude_local`-only directive, appended at the **distributed caller**
+   (the `heartbeat.ts` canary block, to the task markdown it passes into
+   `buildTaskRunBatchWorkload`), telling the agent to write every deliverable file under `R` and to
+   create `R` if it does not exist. `codex_local` is untouched (`E7-D04`), and a non-distributed run
+   is unchanged.
+2. **SD-2 / SD-4 — one `R`, provably.** `R = /home/user/aoa-output`, as a named constant, with the
+   server-side directive and the worker-side `outputRoot` (`CLI-012`'s
+   `createExportRequestProducer` input) provably equal.
+   ★ **The "one shared constant" route is not available**, verified at source: the only
+   `@armyofagents/*` package both `server/package.json` and `packages/worker-daemon/package.json`
+   depend on is `@armyofagents/worker-protocol`, which is **frozen** (`E7-D07`). So SD-4 is
+   implemented as the review's second form — **two constants plus an equality check that runs in the
+   `policy` job** — modelled on the probe pack's own `default-template-mismatch` assertion
+   (`scripts/lib/cli-011-output-probe.mjs`). A new `scripts/check-*.mjs` must be declared in
+   `scripts/guard-inventory.json` (`check-guard-inventory.mjs`) and wired into `pr.yml`'s `policy`
+   job, or it is a check that nothing runs.
+3. **SD-5 — the export secret refusal, WITH the sandbox-scoped secret handoff it needs.**
+   `E2bSandboxProvider.exportArtifact` refuses bytes carrying any **secret-classified** value of the
+   run's own `env`, with a classified refusal, **before** the PUT. Ruled **REQUIRED before `M1b`'s
+   campaign** by `E7-D11` §3 on the probe's R4.
+
+   ★★★ **A content check on `exportArtifact` alone CANNOT deliver this, and a test that pretends
+   otherwise is a check that nothing runs.** *Added 2026-09-23 (Codex, PR #575), verified at source.*
+   `E2bSandboxProvider.create` forwards `spec.env` to the transport as `envVars` and retains only
+   `{sandboxId, resourceLabels}` in its idempotency map — deliberately, per the `[Cred-1]` comment
+   (DEP-012 slices 4+5): the tenant env must not reach durable E2B metadata. And
+   `exportArtifact(sandboxId, path, grant, ctx)` takes **no env**. So this ticket owes a
+   **sandbox-scoped, in-memory secret handoff with a stated lifecycle**, and the design is part of the
+   deliverable, not an implementation detail:
+   - **populated** at `create` from `spec.env`, keyed by `sandboxId`, in process memory only —
+     **never** in E2B metadata, never in a log, never in durable storage (`[Cred-1]`, Decision #104);
+   - **purged** on `destroy`/`reconcileCleanup` and on the same paths that drop the sandbox, so a
+     terminated run leaves no secret set behind — **and, independently, on a provider-local expiry
+     bound to the sandbox's own TTL.** ★ *Added 2026-09-23 (Codex P2, PR #575).* `create` installs an
+     E2B TTL (`setTimeout`) and the sandbox can end on that TTL **without either cleanup method being
+     called on this provider instance**, so a map purged only on explicit cleanup would hold the run's
+     credentials in memory indefinitely after the sandbox is gone. The expiry must be **replaced or
+     cancelled safely** when explicit cleanup does happen (no double purge, no resurrected entry, no
+     leaked timer);
+   - **fail-closed when absent.** An export for a `sandboxId` with **no registered secret set** is
+     **refused**, never allowed through unchecked. This is the arm that makes an adapter-manager
+     restart safe: after a restart the map is empty, and the honest behaviour is refusal, not a
+     silent unscanned export. **It is a required acceptance row (row 6), with its own mutant.**
+   - **no port or wire change.** The handoff lives inside the E2B provider, between two of its own
+     operations. If the build finds it cannot be done without a port or wire change, that is a
+     **STOP and report**, not an improvisation — `E7-D07` freezes the protocol.
+
+   ★★★ **WHAT SD-5 DOES NOT DO, STATED SO NOBODY READS IT AS CLOSING EXFILTRATION.** *Added
+   2026-09-23 (Codex P1, PR #575).* SD-5 is a **literal-value** refusal. An agent with shell access
+   can `base64`- or `hex`-encode `$ANTHROPIC_API_KEY`, reverse it, or split it across several files —
+   and the per-file policy (`E5-D07`, each file refused or exported on its own) means no single
+   exported file then contains the literal value, so **every PUT proceeds**. PC-11 measures a verbatim
+   canary in one file and **nothing more**, and this ticket must not claim more.
+   - **What SD-5 genuinely buys:** it closes the case the probe actually measured — `S-P7`, a
+     **verbatim** env value written to a file and read back out (`noncePresent=true`). That is the
+     accident and the naive-agent case, and today nothing at all stops it.
+   - **What it does not buy:** it is **not** a secure boundary against a hostile agent, and it does
+     **not** by itself enforce Decision #104's artifact invariant. `E7-D01` already holds that
+     provenance is not productivity; the same discipline applies here — a refusal is not a proof of
+     containment. **Filed as `E7-F038`.**
+   - **Acceptance row 8 (adversarial, required):** the encoded and split cases are **written as tests
+     that assert the CURRENT behaviour — they pass through**. They are characterisation tests, not
+     aspirational ones: they exist so the gap is in the suite rather than in nobody's head, and so a
+     later boundary design has its RED already written.
+   - **The residual is FILED, with a declared owner status — not left as narrative.**
+     ★ *Corrected 2026-09-23 (Codex P2, PR #575): an earlier revision claimed it was "named and owned"
+     while naming no finding, ticket or owner, so no guard or backlog edge would have kept it visible
+     after this ticket completed.* It is **`E7-F038`** (`findings.md`), MEDIUM, **open**, declared
+     **`unowned`** in `scripts/finding-ownership.json` with its closure path written out. It is
+     `unowned` on purpose: `CLI-017` must **not** be named its owner, because this ticket
+     *characterises* the gap as passing rather than fixing it — and because `CLI-017`'s aggregate
+     result doc would then mark the owner shipped and orphan the finding, which is the exact hole
+     `check-finding-ownership` exists to catch. Closing it needs a different boundary (an egress/DLP
+     design over the artifact path, or removing the credential from the sandbox environment
+     altogether). **That is out of `M1b` and needs its own ruling** — this ticket must not improvise
+     one, and **`E7-F038` is not closed by `CLI-017-B` shipping.**
+
+**Acceptance (each row names the mutant that must red it):**
+
+| # | acceptance | positive control / mutant |
+|---|---|---|
+| 1 | **PC-12 — the directive reaches the agent.** A pin at the SD-1b site asserts the **exact** directive text in the staged prompt bytes for a distributed `claude_local` run | **delete the directive → red.** This row is not optional: the review recorded SD-1b's "moves no pin" as *"a search result, not a proof … an unpinned directive can be deleted silently"* |
+| 2 | **PC-11 — a secret does not reach the store.** A planted canary env value written into `R/x` makes `exportArtifact` **REFUSE with a classification** | **a provider without the check exports it** — run the same case against the pre-change path and see the bytes exported |
+| 3 | **`R` cannot drift.** The server-side and worker-side constants are equal, checked in `policy` | **change one constant → the check reds** (and it is declared in `guard-inventory.json`, so it demonstrably runs) |
+| 4 | **`codex_local` is untouched** and a `codex` run's `R` stays absent | **the codex shape pins (census rows 4 and 7) stay green unedited**; a mutant that appends the directive for codex reds them |
+| 5 | **Cross-tenant (F10).** Two Organizations dispatching concurrently each get the directive in their own run's prompt, and neither run's directive, root or refusal reads the other's state. **The secret handoff is keyed by `sandboxId`**, so Organization A's secret set is never consulted for Organization B's export | swap the Organization on the second run's context → the assertion on the first run's prompt must not move; feed sandbox B's export against sandbox A's registered set → it must not match, and must not refuse on A's secrets; `R` is a per-sandbox path (review `A-O2-12`) |
+| 6 | **The handoff is fail-closed.** An export for a `sandboxId` with **no registered secret set** (the adapter-manager-restart state) is **refused with a classification** | **make the absent case fall through to an unchecked export → red.** Without this row the whole of SD-5 is bypassable by restarting a process, and `create`'s own state is not durable |
+| 6b | **The secret set expires with the sandbox.** Advance the clock past the sandbox's TTL **without** calling `destroy` or `reconcileCleanup` → the entry is gone, and a later export for that `sandboxId` hits the fail-closed arm (row 6) | **remove the TTL-bound expiry, keeping only cleanup-path purging → red.** Explicit cleanup must still purge, and must not leave a stale timer or resurrect the entry |
+| 7 | **The secret set is not durable and does not leak.** It is in process memory only — absent from E2B metadata, from `inspect`/`list`, from every log line and from every thrown message | assert against the transport's recorded `metadata` and the op's emitted labels; a mutant that writes it into `metadata` reds, and re-proves `[Cred-1]` (DEP-012 slices 4+5) and Decision #104 |
+| 8 | **The encoded and split cases are characterised, not claimed closed.** A base64/hex/reversed canary, and a canary split across two files, are asserted to **export** — the current behaviour | it is a characterisation row: the mutant is a future boundary design, which must **flip** these two rows to refusals. A build that quietly makes them pass as refusals without a ruling has improvised a boundary |
+
+**Ticket non-goals:** the enumeration port, the producer, the `kind` decision (`E7-D08`) and the
+per-file failure policy — **all `CLI-012`'s**; the announcement (`CLI-013`); the projection
+(`CLI-014`); the counter or its text (`CLI-015`); **option 1b's stdout declaration**, which `E7-D11`
+records as feasible (probe row **R11**) and defers to a post-`M1b` refinement; any `codex_local`
+change (`E7-D04`); a workspace patch (`E7-D05`); any frozen-protocol edit (`E7-D07`).
+
+★★★ **IT MUST NOT REDIRECT OR PIPE THE CLAUDE PROCESS'S STDOUT.** A redirect or `tee` removes
+`WRK-018`'s usage parse (and so `JOB-016`/`E3-F037`) silently, breaks census pin 3, and a POSIX `sh`
+pipe loses `exec`'s exit code because it has no `pipefail` (review §7.1). The probe's `S-P4` arm also
+measured that an unwritable redirect target fails **before** the command runs
+(`commandRan=false`, `failedClosed=true`) — so a redirect route would not merely lose output, it
+would prevent the agent from starting.
+
+**Files:** modify `server/src/services/heartbeat.ts` (append the directive in the canary block, gated
+on `claude_local` **and** on the run targeting a sandbox); create the server-side `R` constant
+(alongside `STAGED_INPUT_DIR` in `server/src/services/task-run-sandbox-invocation.ts`, which is
+already the home of the sandbox path vocabulary — **note that editing this file auto-fires
+`keyed-e2b-unit-d.yml` on merge to `docs/replatform-program`, review §3.7; if that spend is not
+wanted, put the constant in a new server module instead and say so in the result**); create the
+server-side pin test for PC-12; modify
+`packages/sandbox-e2b-provider/src/e2b-provider.ts` (the sandbox-scoped secret handoff at `create`/teardown **and** `exportArtifact`'s refusal) and its unit tests;
+create the worker-side `R` constant where `CLI-012` composes `outputRoot`; create
+`scripts/check-<name>.mjs` for the SD-4 equality check plus its `scripts/lib/__tests__` positive
+control; modify `scripts/guard-inventory.json` and `.github/workflows/pr.yml` (`policy` job); create
+`tickets/CLI-017-A-record.md` and `tickets/CLI-017-B-record.md` (one per slice), and — **only after
+both are approved** — `tickets/CLI-017-result.md`, the aggregate. ★ The per-slice files are
+deliberately **not** `*-result.md`: see the sizing block above.
+
+**Interfaces:** no new port operation, no route, no schema, no wire change. The directive is prompt
+text; `R` is a constant; the refusal is internal to `exportArtifact`.
+
+**Failure behavior:** the directive is **additive text** — if it cannot be appended the run proceeds
+without it and produces no output, which under-claims (`E7-D11` §5, `A-O2-8`) rather than
+mis-attributing. ★ **Stated behaviour change:** under SD-1b the directive counts against
+`MAX_STAGED_FILE_BYTES` (`1_048_576`, `server/src/services/task-run-batch-workload.ts`), so a task
+within roughly 200 bytes of that ceiling which built before is now refused — a refusal, never a
+truncation. The SD-5 refusal is **per file** and classified; it refuses that file's export and does
+**not** fail the attempt (`E5-D07`, best-effort outward), and the refusal names no path, byte or
+content.
+
+**Migration/compatibility / rollback:** additive and behind the default-OFF distributed flag. Rollback
+is removing the directive append — the staged prompt returns byte-identical — and the SD-5 refusal is
+independent of it.
+
+**Observability:** the refusal surfaces through `emitOp`'s closed labels with a classification only.
+**No path, byte, grant URL, env-var name or file content in any log line or metric label**, and never
+the canary value itself.
+
+**RED → GREEN:**
+
+- RED: a distributed `claude_local` run's staged prompt contains the exact directive; deleting the
+  append reds it (PC-12).
+- RED: a `codex_local` run's staged prompt does **not** contain it, and the codex shape pins are
+  unedited.
+- RED: `exportArtifact` on bytes containing a planted canary env value refuses with a classification;
+  the same bytes without the canary export (PC-11 plus its negative half).
+- RED: the two `R` constants disagree → the `policy` check reds; agreeing → green.
+- RED: two Organizations, concurrent — each run's prompt carries its own directive and neither reads
+  the other's (F10).
+- GREEN: all of the above, plus server and `sandbox-e2b-provider` typecheck and build, the full guard
+  set, and the Linux `verify` shard's executed test count recorded (non-zero).
+
+**Real-run acceptance — it PAIRS WITH `CLI-012`, and neither may claim the other's evidence.** A real
+run produces a file under `R` only once this directive ships, and the directive is only observable
+once `CLI-012` enumerates `R` and commits what it finds. So the keyed real-run half is **one joint
+case** recorded in both results: a distributed run whose agent writes under `R`, one `committed`
+`job_artifacts` row for that file, and the SD-5 refusal exercised on a planted canary in the same
+lane. Until that case runs, `CLI-017` is proven against unit pins and `CLI-012` against a fixture
+sandbox, and **both results must say so**. ★ Keyed dispatch here is not authorized by this task: it
+needs a named F8 entry and a planning-session instruction.
+
+**Evidence / commit:** per slice — `tickets/CLI-017-A-record.md` with
+`feat(server): direct distributed claude runs to the conventional output root`, and
+`tickets/CLI-017-B-record.md` with
+`feat(sandbox-e2b-provider): refuse exporting artifacts that carry the run's own secrets`.
+**Then**, once both slice records are approved by a distinct reviewer, the aggregate
+`tickets/CLI-017-result.md`, which names them and their reviewed revisions and adds nothing else —
+its existence is the only signal that `CLI-017` shipped. Maps H-04, H-05.
+
+---
+
+### `CLI-018` — the founder-reachable artifact: make a distributed run's committed bytes retrievable (M, ≤3 agent-days, M1b)
+
+**Depends on:** `JOB-017` (shipped — `projectAcceptedOutputCore` / `applyAcceptedOutputEvent`, the
+in-transaction projection this rides). **Blocks:** `M1b` **exit criterion 4**.
+**Owns:** `E7-F047` (HIGH).
+
+**Filed 2026-09-24 by the M1 planning session** under founder delegation **F2**, on a measurement
+already made and verified at source at `c6107c760c`. Ticket pointer: `tickets/CLI-018-design.md`.
+
+★★★ **THIS TASK DELIBERATELY DOES NOT CHOOSE BETWEEN ITS TWO OPTIONS.** Both are specified below;
+the choice is **a later ruling**, and a build agent that picks one without it has exceeded the
+ticket. That is not tidiness: option (b) changes **who can reach tenant-scoped bytes**, and the
+analysis that would decide it **has not been done**.
+
+**Current state, measured at `c6107c760c` — unreachable by ANY founder-available route.** Seven
+routes were checked, **negatives included**, because a negative audit is only as good as the set it
+enumerates:
+
+| # | Route | Measured |
+|---|---|---|
+| 1 | `server/src/routes/task-outputs.ts` | `GET /issues/:issueId/outputs` (+ its `/task-outputs` alias), `GET /task-outputs/:id`, one `POST`, one `PATCH /task-outputs/:id`. **No content, download, bytes or stream handler exists at all**; zero `jobArtifacts` references. |
+| 2 | `OutputRefTabBody` (`ui/src/components/viewers/refBodies.tsx`) | dispatches `output.artifactId` → `output.assetId` → `output.url`; all null → `OutputDetailCard`, *"No preview is available for this output."* |
+| 3 | `server/src/routes/artifacts.ts` | **zero** `jobArtifacts` references — and no `artifacts` row is ever created, since `applyAcceptedOutputEvent` leaves `artifactId` null, so these routes have nothing to return. |
+| 4 | `server/src/routes/assets.ts` | **zero** `jobArtifacts` references; no asset row is minted. |
+| 5 | `server/src/mcp/` | **zero** `jobArtifacts` references. The MCP artifacts resource reads the **product** table, so an MCP client is in the UI's position — this is not a UI-only gap. |
+| 6 | `server/src/routes/worker-control.ts` | the **only** route reading `job_artifacts`. Its download path — `POST /worker-control/artifact-transfer-grants` → `createArtifactTransferGrantService` — requires an `authorization` header **and** `deviceProofHeaders(req)` **and** a signed raw body. **A founder/board session cannot satisfy it.** It is a **worker credential surface**. |
+| 7 | `ui/src` | **zero** references to a transfer grant, a job artifact, or any download path for one. |
+
+★ **A founder cannot even learn the storage key.** The projected `task_outputs` metadata
+(`applyAcceptedOutputEvent`) carries `jobArtifactId`, `artifactIdentifier`, `artifactKind`,
+`versionNumber` and `eventId` — and **not `objectKey`**.
+
+★★★ **The nuance that shapes the fix: the download grant is ALREADY BUILT AND WORKS.**
+`createArtifactTransferGrantService`'s `operation === "download"` branch is recorded in its own source
+as *"fence-independent, but tenant-scoped + object"*-checked, and binds `expectedAttemptObjectPrefix`
+against the committed key before granting. So the capability to mint a founder-usable URL **exists**;
+what is missing is any founder-facing **caller with appropriate authorization**. This is a
+**wiring-and-authorization gap, not an unbuilt mechanism** — which is exactly why option (b) is on
+the table, and exactly why its authorization analysis is a precondition.
+
+#### Option (a) — materialize into the product tables
+
+Promote the committed `job_artifacts` row into a product `artifacts` row plus an `artifact_versions`
+row (and, if the viewer path needs bytes rather than a link, an `assets` row), and set
+`artifactId`/`artifactVersionId` on the projected `task_outputs` row. **Existing routes and
+`OutputRefTabBody` then work unchanged** — the dispatch enters `ArtifactTabBody`.
+
+Constraints, each already measured on `E7-F047`:
+
+- **Idempotency is not optional.** The seam re-drives pending receipts (`redrivePendingProjection`),
+  so a second pass must find the existing product artifact rather than mint a second version.
+- **`artifacts` is company-scoped with no `organizationId` and no RLS** (`E2-D03`, LOCKED), so the
+  tenant check is the **caller's**, exactly as `projectAcceptedOutputCore` already does it.
+- **`artifacts.createdById` is `NOT NULL`** and a worker has no user. What identity a machine-authored
+  product artifact carries is a **real question**, not a cast.
+- Artifact versions are **immutable** (project rule 7), so re-projection must never rewrite one.
+
+#### Option (b) — a founder-facing read route that mints a download grant
+
+A board-authenticated read route that resolves the `task_outputs` row's `jobArtifactId` to its
+committed `job_artifacts` row and mints a **download** grant through the existing machinery, returning
+a bounded, tenant-scoped URL. No product-table row is created; the viewer gains an `output.url` path
+or a dedicated download control.
+
+★★★ **ITS AUTHORIZATION ANALYSIS IS A PRECONDITION OF THE OPTION, NOT AN AFTERTHOUGHT, AND IT HAS NOT
+BEEN DONE.** The grant path is today a **worker credential surface** — `authorization` header, device
+proof, signed raw body. Exposing it to a **board actor** changes who can reach tenant-scoped bytes.
+The analysis must answer, at source and in writing, before any code:
+
+1. Which **actor sources** may call it (`board`, `mcp`, `agent` — `server/src/mcp/server.ts`'s three),
+   and what each is denied. An external MCP key is not a founder.
+2. What **RBAC** decides it (`founder` / `team_lead` / `team_member`, department-scoped), and whether a
+   `team_member` may retrieve bytes their task shows.
+3. How the **company↔Organization** boundary is checked, given `artifacts`/`task_outputs` are
+   company-scoped while `job_artifacts` is Organization-scoped — the two scopes are not the same key.
+4. Whether the minted grant's **bound and TTL** are appropriate for a human-held URL, and whether the
+   URL leaks the object key or tenant identity to anywhere it is logged.
+5. Whether admitting a board actor **weakens the worker-credential refusals** that share the service
+   (a new caller path must not become a bypass for the device-proof arm).
+
+**Files (option-independent):** `server/src/services/job-accepted-output-projection.ts` (option (a)'s
+promotion site) **or** `server/src/routes/task-outputs.ts` (option (b)'s read route);
+`server/src/services/job-output-bridge.ts` (the transaction the promotion would join);
+`ui/src/components/viewers/refBodies.tsx` (the dispatch that must reach a content branch);
+`docs/replatform/epics/E7-coding-e2b/findings.md` + `scripts/finding-ownership.json` (close `E7-F047`
+in the **same commit** as the code that earns it); new tests named under **Acceptance**.
+
+**Interfaces:** option (a) adds **no** new interface — it fills existing `task_outputs` columns.
+Option (a) may need a decision recorded for `artifacts.createdById`'s machine identity, which is an
+interface-level choice about the product model. Option (b) adds **one** founder-facing read route and
+a board-authorized call path into `createArtifactTransferGrantService`; that call path is the
+interface the authorization analysis is about. **Neither option changes
+`packages/worker-protocol`** — everything needed (`objectKey`, `sha256`, `sizeBytes`, `contentType`,
+`kind`, `versionNumber`) is already durable on the committed `job_artifacts` row, so **no frozen-v1
+fixture re-mint and no `protocolVersion` change**.
+
+**Failure behavior:** **fail closed**. An output with no committed `job_artifacts` row, a row whose
+tenant does not match the caller's, or a grant refusal, returns the **same coarse** not-found /
+forbidden as a wrong-tenant request — **no oracle** distinguishing "exists elsewhere" from "does not
+exist", which is the shape `createArtifactTransferGrantService` already uses. A projection or grant
+throw propagates and denies; nothing degrades to an unauthenticated or unscoped read. Under option (a)
+a re-drive that finds an existing product artifact is a **no-op**, never a second version.
+
+**Acceptance:**
+
+1. ★★★ **END-TO-END, and it is exit criterion 4 itself:** a **founder-available route** returns the
+   **bytes** of an artifact a **distributed run** produced. Not a receipt, not a row, not a metadata
+   block — the bytes, byte-identical to what the sandbox exported (`sha256` from the committed row).
+2. **Positive control for row 1:** removing the route (option (b)) or the promotion (option (a)) makes
+   that arm **red**. A test that passes against the defect proves nothing, and *asserting a
+   `task_outputs` row exists passes **today***.
+3. **Anti-vacuity:** the arm asserts the **viewer's dispatch reaches a content branch** — under (a),
+   `output.artifactId` is non-null and `OutputRefTabBody` enters `ArtifactTabBody`; under (b), the
+   download path is exercised — never merely that a row or a field is present.
+4. ★ **Cross-tenant denial (ruling F10):** a second Organization's committed row is **not** reachable
+   from the first Organization's task — not promoted onto it under (a), not granted under (b) — with a
+   **same-tenant positive control** in the same test proving the denial is not vacuous.
+5. **Idempotency (option (a)):** a second projection pass over the same receipt yields **one** product
+   artifact and **one** version, proven by re-driving `redrivePendingProjection`.
+6. **Option (b) only:** the **authorization analysis** above is committed as a written record before
+   the route exists, and each of its five questions is answered at source. A route landing without it
+   is a ticket violation, not a review comment.
+7. `E7-F047` is closed in `findings.md` **and** its key deleted from `scripts/finding-ownership.json`
+   in the **same commit** as the change that earns it.
+
+**Focused verify command:**
+
+```
+$env:AOA_RUN_WIN_INTEGRATION='1'; Invoke-NativeGate 'CLI-018' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/canary-output-projection.integration.test.ts src/__tests__/distributed-artifact-retrieval.integration.test.ts --reporter=verbose }; Invoke-NativeGate 'finding ownership' { node scripts/check-finding-ownership.mjs }; Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }; Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }
+```
+
+★ The new integration test **must** use
+`describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")`, the
+form the rest of `server/src/__tests__` uses. With a bare `win32` skip this command runs **zero** tests
+and exits 0. Record the **executed-test count** and take the formal evidence from a Linux `verify`
+shard.
+
+**Non-goals:** the display **path**/filename — that is `E7-F046`, descoped for `M1` by `E7-D13` (b),
+needing its own protocol or object-key-convention decision, and fixing this does not fix it; any
+`packages/worker-protocol` wire widening; re-opening `E7-D13`; `codex_local`; **and ruling between (a)
+and (b)** — the ticket presents both.
+
+**Evidence / commit:** `tickets/CLI-018-result.md` (written by the build, **not** by this filing — a
+`-result.md` is what `findCompletedTicketIds` reads as "shipped"); one commit, titled for the option
+the ruling chooses. Maps **exit criterion 4**.
+
+---
+
+### `E7-1-JOURNEY-ARM` — promote the coding-journey clause when its two preconditions ship (S, ≤1 agent-day, M1a)
+
+**Depends on:** **E6** — **`DEP-014`** (the adapter-manager image built, signed and admitted in CI)
+and **`DEP-015`** (the shipped CI boot lane, per founder ruling F3, that boots it and runs the
+journey). **This ticket builds neither.** It may not be assigned until both have committed passing
+evidence. ★ *Corrected 2026-09-21 (M1 Step 0, S0-4), verified at source. Superseded text: "(1) the
+adapter-manager image built and started in a **shipped CI boot**, and (2) **DEP-011 Slice 5**
+(disposition **M**) wiring the through-the-daemon consumer."* The consumer is already built
+(`packages/worker-networked-host/src/bin/networked-host.ts`, DEP-011 Slice 2b-ii, shipped inert);
+"Slice 5" is a slice name in the DEP-011 design (its deploy step), not a ticket, and the two real
+preconditions it stood for are now filed tickets.
+
+**Current state, measured:** `E7-1-coding-journey` is `unwired` with `expectedReferences: 4`; both
+construction seams exist (`packages/worker-keystore/src/bin/sandbox-provider.ts`;
+`packages/adapter-manager/src/bin/adapter-manager.ts:141`); the image is built only by the
+**operator-dispatched** `deploy-replatform-campaign.yml` (`:408-409`, `workflow_dispatch`), and the
+staging compose is render-only in CI. See §2 for the full statement.
+
+**Outcome:** the register entry flips to `wired` **with evidence**, and
+`pnpm verify:e7-1-distributed-run` is run on the milestone candidate with its verdict recorded —
+including, expectedly, `capabilityProven=false` if `M1b` has not landed.
+
+**★ `capabilityProven=false` is a PASS for `M1a`, and saying so is the point of the split.** The
+triage is explicit: *"`M1a` explicitly does NOT claim useful agent capability, and a record that
+reports `capabilityProven=false` satisfies it."* The result doc must say so in those terms, so no
+reader converts a mechanism verdict into a capability one.
+
+★★★ **This ticket's record is an `M1a-D2-MECHANISM` record, not an `M1-D2-CODING` one.** It is
+filed under that gate, its `Result` is the mechanism verdict, and it never contributes to the
+capability gate — whose `Result` a `capabilityProven=false` run **fails**.
+
+**Ticket non-goals:** building the image (`DEP-014`) or the boot (`DEP-015`) — the daemon consumer
+is already built; flipping any other clause; running a keyed E2B lane outside the F8 envelope.
+
+**Files:** `scripts/gate-clause-wiring.json` (`E7-1-coding-journey` → `wired`, cited **by symbol**);
+`tickets/E7-1-JOURNEY-ARM-result.md`.
+
+**Interfaces:** none.
+
+**Failure behavior:** if either precondition is absent, the ticket **does not run** — it is not a
+ticket that can partially succeed. If the wiring checker reports a reference count other than the
+typed-out 4, that is a finding, not an edit to the number.
+
+**Migration/compatibility / rollback:** register only.
+
+**Observability:** `node scripts/check-gate-clause-wiring.mjs` reports the clause `wired` with its
+caller count; `pnpm verify:cp-am-keypair` green at C0 before the canary; the E7-1 verifier's exit
+code recorded, and `capabilityProven` reported alongside it. ★ *Corrected 2026-09-20: “both
+verdicts recorded” described one record carrying two `Result`s, which the QA template does not
+allow — the verifier PRINTS both values, and the record’s single normative `Result` is the
+mechanism verdict.*
+
+★★★ **THE PROMOTION RED CANNOT FIRE FROM A DEPLOYMENT BOOT, and an earlier revision required it to.**
+*Corrected 2026-09-20 (ninth round), verified by reading the checker.* `gate-clause-wiring.mjs:106`
+emits `unwired_but_now_has_caller` **only when `count > expectedReferences`** — it counts source
+references and **never inspects a deployment boot**. This ticket also requires the reference count
+to stay at four, so evaluating the entry returns clean-and-`unwired` no matter what ships. A RED
+that no possible state produces is not a positive control; it is a checkbox nobody can tick.
+
+★ **Split the two jobs:** promote on **shipped-boot evidence** (the deploy record, which is what
+actually changes), and get the positive control from a **controlled checker fixture** that raises
+the reference count above `expectedReferences` — proving the checker still bites, without pretending
+the boot is what trips it.
+
+*Superseded text:* RED — the checker fires `unwired_but_now_has_caller` once the boot exists, before
+the register edit (the positive control); GREEN — checker green after it, with the verifier's run
+recorded.
+
+**Evidence / commit:** `tickets/E7-1-JOURNEY-ARM-result.md`; one documentation commit
+`docs(e7): promote E7-1-coding-journey on the shipped adapter-manager boot`.
+
+---
+
+## 5. Legacy parity mapping (FND-007 / frozen-main crosswalk)
+
+The distributed coding path is **net-new**. The legacy analogue is the in-process heartbeat/adapter
+execution path (`server/src/services/heartbeat.ts`, the adapter registry, and the legacy
+`claude-local` adapter that assembles `--settings`, `--allowedTools mcp__aoa`, `--model`,
+`--append-system-prompt-file`, `--add-dir` and delivers the prompt on stdin). It stays fully
+authoritative and untouched; nothing here replaces, wraps, or disables it.
+
+Two parity dimensions are **deliberately not yet bridged** and must not be recorded as passed:
+
+- **`--model`** is still absent from the distributed argv — open since Unit A's row.
+- **`--add-dir` / a workspace** is Unit E and is out of `M1b` (E7-D05).
+
+Cutover of any Organization from in-process execution to the distributed worker is an **E10 MIG**
+concern and is **M2**, not M1. Absence of a crosswalk row for a distributed coding capability is
+recorded as net-new, never as "parity passed."
+
+---
+
+## 6. Failure-mode coverage and observability
+
+| Code path | Realistic production failure | Ticket / test | Handling / signal |
+|---|---|---|---|
+| Capture | `listDir` returns directories, not files | `CLI-010` | Binding test fails loudly; no silent empty capture. |
+| Capture | A path escapes the output root | `CLI-010` | Throws — fail-closed; an artifact must not misrepresent the sandbox. |
+| Producer | Nothing was written by the agent | `CLI-012` | `[]`, zero HTTP calls, zero session fetches; no orphan grant. |
+| Producer | A retry double-commits | `CLI-012` | Same `idempotencyKey`, same derived `artifactId` — a replay. |
+| Producer | Export fails after successful work | `CLI-012` | Best-effort: `emitOp failed`, truthful terminal, attempt **not** failed. |
+| Producer | A grant URL reaches a log or a thrown message | `CLI-012` | Asserted absent — H-04, zero tolerance. |
+| Announcement | The event sink fails | `CLI-013` | ★ **Per F4's recorded contiguity decision — NOT “best-effort”.** The commit is already durable and is never retracted either way, but the emit consumed a `seq`, so a hole makes the control plane reject the tail as a `gap`. Fatal, allocate-on-success, or retry-until-land; the row follows whichever `decisions.md` records. |
+| Announcement | A reconstructed transcript is corrupt | `CLI-013` (addresses `E7-F024`; the finding stays owned by `CLI-008` under D5) | Recorded: the artifact route carries a reference, not bytes, so it does not inherit the `log` truncation. |
+| Projection | Two mechanisms write `task_outputs` | `CLI-014` | **There is one sanctioned writer:** `CLI-014` projects through `jobOutputBridge` inside `acceptEvent`'s transaction, per its corrected contract above; it adds no second writer. ★ *Corrected 2026-09-21 (Codex, PR #526):* *this row said the writers were separated by `execution_owner = distributed` with the `jobOutputBridge` boundary deferred to M2 — the superseded design, which would reintroduce an unreceipted, uncounted duplicate writer.* |
+| Projection | An empty row is written on every run | `CLI-014` | No events ⇒ no row (anti-vacuity). |
+| Judge | A board POST forges the bar | `CLI-015` (addresses `E7-F015`; owned by `CLI-008` under D5) | The `capabilityProven` flip is already closed; the clause-4 leak-scan feed is bounded here. |
+| Judge | A retried job's leak reaches a clean verdict | `CLI-015` (addresses `E7-F032`; owned by `CLI-008` under D5) | Sibling-attempt scan. |
+| Tool surface | A stale/replaced sandbox keeps calling tools | `CLI-016` + E5's `DAT-007-S3` | Denied by the fence-bound resolver with the coarse wrong-tenant forbidden — no oracle. |
+| Tool surface | Armed without the resolver | forbidden by the founder ruling | Not an implementable option. |
+| Gate clause | The register's reference count drifts above `expectedReferences` | `E7-1-JOURNEY-ARM` | ★ *corrected twelfth round: the row said “a boot appears and the register does not notice”, but `gate-clause-wiring.mjs` emits this only when the **source-reference count** exceeds `expectedReferences` and never inspects a deployment — so a boot could not trip it. Promotion rides shipped-boot evidence; this row is the controlled-fixture control.* `unwired_but_now_has_caller` fires; the typed-out count is the tripwire. |
+
+Metrics use bounded labels only and never an Organization, Company, job, path, grant URL, file
+content, secret, or session byte.
+
+---
+
+## 7. Gate traceability
+
+| Requirement | Owning evidence |
+|---|---|
+| D0-T01 focused acceptance | Every ticket's result ledger and the reviewer's rerun on the reviewed revision. |
+| D0-T03 validators | `CLI-013`'s digest/sequence assertions; `CLI-015`'s precision-and-recall matcher suite. |
+| D0-T04 protocol ownership | **N/A by measurement, not by assumption** — `artifact_prepared` is already frozen, already payload-schema'd, already in the DB CHECK (E7-D07). `check:frozen-worker-protocol-v1` is in the F4 row. |
+| D0-T05 hermetic inputs | `CLI-010`/`CLI-012`/`CLI-013` use an in-memory sandbox and a recording exporter; `CLI-014`/`CLI-015` use embedded PostgreSQL; only `CLI-016` and `E7-1-JOURNEY-ARM` touch a deployment, and neither dispatches a keyed lane without authorization. |
+| H-04 secret containment | No grant URL, file content, path content, or credential in any log, metric label, thrown message, or returned value — asserted in F3 and F4. Zero tolerance. |
+| H-05 sandbox boundary | Bytes leave by a direct provider→object-store PUT under a worker-minted grant; the control plane carries grants and references only (E7-D06). |
+| H-06 network boundary | **NOT claimed.** The DE-08 residual is accepted at the managed-shared tier and **none of the three partial gates — `M1-D1-SPINE`, `M1a-D2-MECHANISM`, `M1-D2-CODING` — may mark H-06 passed.** ★ *Corrected 2026-09-20 (fourth round): this said “neither partial gate”, which describes the old two-gate model and left the new mechanism record outside the prohibition entirely.* Metadata/control-plane reachability is recorded as an unresolved provider-boundary risk, not as denied. |
+| H-08 supply chain | No new runtime dependency; the daemon boundary checker stays green. |
+| H-10 evidence integrity | Append-only ticket results; the unit-F design is amended by appended note, never by deletion. |
+| Exit criterion 3 (**`M1a-D2-MECHANISM`**) | `E7-1-JOURNEY-ARM`, with `capabilityProven=false` explicitly acceptable. ★ *Corrected 2026-09-20 (third round): this row said “`M1-D2-CODING`, mechanism verdict”. There is no mechanism half of `M1-D2-CODING` — a QA record has ONE normative `Result`, which is why the companion change made the mechanism verdict its own gate. Recording this ticket under `M1-D2-CODING` would either falsely pass the capability gate or leave `M1a` unpassable.* |
+| **Exit criterion 4 (useful capability — `M1b` only)** | **`CLI-011` + `CLI-017` (both slices) + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015` + `CLI-018`, plus E5's `DAT-009-3c/3d`** — **and the `S-P0` (root empty) PLUS `A-neg` (a no-op run writes nothing under it) evidence for the template the campaign actually runs on** (`E7-D11`, *Conditions on the ruling*; `E7-F022`, HIGH). ★ The `A-neg` re-run is **authorized under F8** by ruling F7, once, before the campaign. This is the only criterion the split moves. ★ *Updated 2026-09-23 (ruling F7, `E7-D11`; Codex P2+P1, PR #575). **Superseded text:** "**`CLI-011` + `CLI-012` + `CLI-013` + `CLI-014` + `CLI-015`, plus E5's `DAT-009-3c/3d`.** This is the only criterion the split moves, and `CLI-011` is the one link with no design."* `CLI-011` now has its ruling, and the emit build it files is `CLI-017`; without it a run writes nothing under `R`, so every other row can pass with zero produced output. ★★★ **`CLI-018` added 2026-09-24** (M1 planning session, F2), on the `E7-F047` measurement: without it every other row can pass while the produced bytes are **unreachable by any founder-available route**, which is the criterion's own words failing. *Superseded text: the list above without `CLI-018`.* **The template row is an OPERATOR evidence edge, not a ticket** — nothing in the ticket set can discharge it, and a campaign that skips it can count template-owned files as agent output. |
+| Exit criterion 6 (rollback rehearsal) | `CLI-016`'s config-only disablement is part of the rehearsal. |
+
+**What no ticket here satisfies:** the E7 **epic** exit gate. `M1-D1-SPINE`, `M1a-D2-MECHANISM` and
+`M1-D2-CODING` are **all three** non-promoting partial gates; a passing milestone handoff changes no epic status and must not use
+`epic-completion` in its name.
+
+---
+
+## 8. Controller sequence and parallelization
+
+```text
+M0:    the ledger            DONE 2026-09-21 (M0 unit 4) — ids filed, 2 of 10 findings re-pointed
+
+M1a:   E7-1-JOURNEY-ARM          [gated on E6: DEP-014 (adapter-manager image in CI)
+                                  + DEP-015 (the shipped CI boot lane, F3); the daemon
+                                  consumer is already built — corrected M1 Step 0]
+
+M1b:   CLI-010 ──▶ CLI-012 ──▶ CLI-013 ──▶ CLI-014 ──▶ CLI-015
+                      ▲                                   ▲
+       DAT-009-3c ─▶ 3d                                   │
+                                                          │
+       CLI-011 ──(ruling F7 = E7-D11)──▶ CLI-017-A ─┐
+                                    └──▶ CLI-017-B ─┴──────────┘
+
+       ★ CLI-017 was "emit build [TO FILE]" until 2026-09-23; ruling F7 filed it (Codex P2, PR #575).
+         CLI-017-A (directive + R + SD-4 check) and CLI-017-B (SD-5 handoff + refusal) are
+         INDEPENDENT of each other and both required. CLI-012's REAL-RUN acceptance additionally
+         waits on CLI-017-A, since a run produces a file under R only once the directive ships.
+
+       ★ PRECONDITION, not a ticket: S-P0 (the root is empty) AND A-neg (a no-op run writes nothing
+         under it) on the template the campaign runs on — E7-D11 "Conditions on the ruling";
+         E7-F022, HIGH. Re-run BOTH on every template change or rebuild, and on any bump of the
+         pinned claude-code version (e2b/e2b.Dockerfile pins 2.1.251, the version A-neg was measured
+         against). The A-neg re-run is authorized under F8, once, before the M1b campaign, and is
+         the CAMPAIGN's to fire. No ticket can discharge it.
+
+       ★ CLI-010 (enumeration seam) and CLI-011 (mechanism review) are INDEPENDENT — neither
+         precedes the other. The emit build has no id until CLI-011 rules. CLI-012's REAL-RUN
+         acceptance also needs the emit build, because a run produces a file only once the agent
+         is told where to write; before that CLI-012 is proven on a fixture sandbox.
+       ★ Corrected 2026-09-21 (post-M0 regroom): the diagram drew CLI-010 ──▶ CLI-011, which
+         followed M0's mislabelling of CLI-010 as "the EMIT half" and let emit work precede the
+         review that chooses its mechanism.
+
+       CLI-016        [gated on E5: DAT-007-S3]   — parallel with the F chain
+
+       ★ RENUMBERED 2026-09-21. was: CLI-008-F1a/F1b/F3/F4/F5/F6/C5, in that order.
+         The link-scoped shape is unrepresentable to check-finding-ownership; see
+         program-design.md, immediately before the CLI-010 node, for the mapping.
+
+OUT OF M1, named so it is not read as dropped:
+       Unit E (workspace, XL), codex MX3 (E7-F027), the M2 sink cutover
+```
+
+`CLI-011` runs **in parallel** with `CLI-012`/`CLI-013`/`CLI-014` — that is the whole point of
+the split. The ordinary links are not blocked by the undesigned one; only `CLI-015` is. `CLI-016`
+shares no file with the chain. Parallel **PRs** are free; only **merges** serialize.
+
+### Commit/evidence boundaries
+
+- One implementer code commit per ticket; the reviewer's separate append-only result commit is the
+  only commit that completes it.
+- **Re-read every PR comment in the minute before merging** — `gh api repos/<owner>/<repo>/pulls/<n>/comments`,
+  not `gh pr view --json comments`. External review files after CI settles; this has caught unread
+  findings four separate times. Reply to every finding.
+- **Re-read the PR title against the diff** — a squash takes its permanent commit title from it and a
+  wrong one is unfixable.
+- Merge, then re-check the next PR's mergeability; merges break siblings.
+- A register row and the thing it counts are never edited in the same commit without a re-count
+  after the last edit.
+
+---
+
+## 9. Planner self-review
+
+- Every ticket is ≤3 agent-days; four are S. `CLI-008` as a whole was **UNSIZED**, and this is the
+  substantive change: the six links are sized individually and only one of them is unsizable.
+- Every ticket states its **current on-disk state from evidence** before saying what remains, cited
+  by symbol and measured at `e710d8b54`. §1 lists five published citations that have drifted.
+- The split is sequenced so it cannot orphan findings: `CLI-009` files the successors and
+  re-points ownership **before** anything else, and is explicitly forbidden from creating
+  `tickets/CLI-008-result.md` — the `findCompletedTicketIds` hazard that produced `MIG-010`'s
+  deadlock and `E5-F001`'s orphaned residual.
+- Dispositions are respected: `CLI-008` is **M** and is treated as build work; `CLI-007` is **N** and
+  owes nothing, and is named once to say so rather than silently omitted.
+- Link 1b is stated as undesigned, its three refutations are carried forward as binding, and the
+  design ticket's permitted outcomes include *"neither is reachable"*. No fourth mechanism is
+  proposed in this plan.
+- The **two** counters are stated separately (E7-D03): link 3 alone moves the **QUALIFYING
+  ARTIFACT** counter (arm 1) — that distinction is `E7-F016`'s substance — while link 5's bridge
+  route moves the **RECEIPT-BACKED OUTPUT** counter (`taskOutputs`, arm 2). Link 4 moves neither.
+  ★ *Superseded text: "Links 4 and 5 are stated as flipping no counter; only link 3 moves it."
+  Corrected 2026-09-20 against `server/src/services/e7-distributed-run-verifier-store.ts:579-606`.*
+- H-06 is not claimed; the DE-08 residual is carried explicitly; no keyed lane is dispatched without
+  founder authorization.
+- No frozen-protocol edit, no schema change, no new runtime dependency.
+- **What I could not establish:**
+  1. Whether the adapter-manager image is built in any **non-`workflow_dispatch`** lane. I found it
+     built only in `deploy-replatform-campaign.yml` (`:408-409`) under `workflow_dispatch`, and the
+     register says the staging compose is render-only in CI — but I did not audit every workflow
+     file, so `E7-1-JOURNEY-ARM`'s precondition must be verified by E6 rather than inherited here.
+  2. The exact remaining scope of **DEP-011 Slice 5**. Its design names Slice 5 as "deploy: the AM
+     image, the compose…" across several sections; I did not find a Slice 5 result doc, so I have
+     recorded it as unbuilt on the triage's authority (disposition **M**) and named it as an external
+     gate rather than sizing it.
+     ★ *Resolved 2026-09-21 (M1 Step 0, S0-3/S0-4), measured at `1cc7e2fdb`: the daemon consumer
+     is built (`networked-host.ts`, DEP-011 Slice 2b-ii, inert); the image-in-CI and the shipped boot
+     are filed as `DEP-014` and `DEP-015`. Items 1 and 2 are answered there.*
+  3. Whether a `CLI-008` Unit C slice **result doc** exists anywhere — the E7 `tickets/` directory
+     has none. The ruling, the commits and the shipped-inert code are all verifiable; the ledger is
+     not, and `CLI-009` should record that gap rather than this plan asserting its cause.
+
+---
+
+## 10. Implementation tasks
+
+Checkbox only after the named outcome is committed and independently reviewed; these tasks do not
+authorize implementation.
+
+- [x] **T1 (P1 STOP, S)** — `CLI-009` ★ **ENACTED by M0 unit 4** (numeric successors filed, two findings re-pointed on subject, no result file by design): file the link-scoped successors, re-point the ten
+  findings, correct the five drifted citations. Verify: five record guards green after the last
+  edit; **`tickets/CLI-008-result.md` does not exist**.
+- [ ] **T2 (P1, S)** — `CLI-010`: pin the **metadata-only** `listDir` enumeration seam and
+  **fence** the byte-reading one. ★ *Not “export the capture half” — corrected 2026-09-20 (ninth
+  round); `captureSandboxEntries` must stay inert on the E2B and networked lanes.* Verify: a
+  directory-returning `listDir` fails loudly; no `readFile`/digest in the enumerator's dependency
+  surface; boundary check green.
+- [ ] **T3 (P1 STOP, design)** — `CLI-011`: produce one of the **two** permitted outcomes —
+  (i) a surviving fourth candidate mechanism, or (iii) a recorded statement that neither is
+  reachable — with a decision request. Verify: every candidate is priced against §6 and given a
+  positive control. **No product change.** ★ *Superseded text: "one of the three permitted outcomes
+  … §13's option, if recommended, has had its first adversarial attack pass". Corrected 2026-09-20,
+  verified at source: option (ii) was REMOVED (twelfth round) because
+  `tickets/CLI-008-unit-f-design.md:1367` records the attack as completed and `:1424` records the
+  founder ruling "close the fifth option as SUPERSEDED". The paragraph was corrected first and the
+  operative lists were not — the same failure T5 records.*
+- [ ] **T4 (P1, M)** — `CLI-012`: the producer, plus the **E7-D08 `kind` decision** recorded in
+  `decisions.md`. Verify: anti-vacuity, replay-not-duplicate, escape refusal, no grant-URL leak.
+- [ ] **T5 (P2, S)** — `CLI-013`: `artifactPrepared`. Verify: frozen schema validates, digest
+  verifies, `seq` contiguous (**unconditional**), and **the sink-failure behaviour matches the
+  recorded contiguity decision**, frozen-consumer check green. ★ *Was “sink throw harmless” —
+  corrected 2026-09-20 (ninth round): two of F4's three permitted options make a sink failure fail
+  the attempt, so that checkbox mandated the very best-effort contract F4's Failure behavior
+  rejects. This is the third place that one assertion had to be fixed; the paragraph was corrected
+  first and the operative lists were not.*
+- [ ] **T6 (P2, M)** — `CLI-014`: the projection, **routed through
+  `jobOutputBridge.projectAcceptedOutput`** (one writer), with the `jobOutputBridge` boundary stated
+  in the register entry's own words. Verify: no events ⇒ no row; non-distributed runs not projected;
+  the written row carries its `output_projection` receipt, so `countProducedOutputs` arm 2
+  (`taskOutputs`) counts it. ★ *Superseded text: this checkbox inherited E7-D03's "links 4 and 5
+  flip no counter"; F5 moves the RECEIPT-BACKED OUTPUT counter and leaves only the QUALIFYING
+  ARTIFACT counter (arm 1) to link 3 — verified at
+  `server/src/services/e7-distributed-run-verifier-store.ts:579-606`.*
+- [ ] **T7 (P1 STOP, M)** — `CLI-015`: the judge, after F1b's ruling. Verify: the forged row no
+  longer satisfies; the sibling-attempt leak is caught; both matchers have precision and recall.
+- [ ] **T8 (P1, M)** — `CLI-016`: arm the tool surface after `DAT-007-S3`. Verify: an expired
+  lease observably **loses the surface** — denied redemption and denied `/mcp` access — plus the
+  flag-off control. ★★★ **NOT “mints no handle”: a configuration-only ticket cannot deliver a
+  mint-time lease check.** *Corrected 2026-09-20 (ninth round), verified at source:*
+  `mintRunJwtHandleForPlacement` (`server/src/services/execution-secret-handle-mint-runner.ts:165`)
+  takes **no lease or clock input**, and `decideRunJwtHandle`
+  (`server/src/services/execution-secret-handle-mint.ts:245`) decides on deployment, principal,
+  adapter and flag — **not currency**. Currency is enforced where the existing gate actually runs:
+  at **MCP authorization**. Requiring mint-time prevention from a ticket whose scope is
+  configuration made the checkbox unreachable; if mint-time prevention is genuinely wanted, it must
+  be **scheduled as its own implementation work**, not smuggled into an arming ticket.
+  ★ *Added at M1 Step 0 (S0-8):* since F10 the ticket is no longer configuration-only — it adds the
+  per-Organization `tools` field on `OrganizationRolloutPolicy` (see the task's **Interfaces**) — but
+  that field gates **which tenant gets the surface**, not currency, so the rule above stands: currency
+  is still enforced at use. Verify also the two-Organization case (tool-enabled tenant admitted, the
+  other denied).
+- [ ] **T10 (P1, S–M)** — `CLI-017`: the emit build, **filed 2026-09-23 by ruling F7** (`E7-D11`).
+  ★ **It is sequenced BEFORE T7**, because `CLI-015` now depends on it (`program-design.md`,
+  `#### CLI-015`); it is numbered T10 rather than renumbered in, so no existing checkbox id moves.
+  Verify: the PC-12 directive pin reds when the append is deleted; the PC-11 export refusal reds when
+  the check is removed; the SD-4 equality check is declared in `scripts/guard-inventory.json` and runs
+  in `policy`; the codex shape pins are unedited; **no stdout redirect or pipe**.
+- [ ] **T9 (P2, S)** — `E7-1-JOURNEY-ARM`: promote the clause once E6 ships both preconditions.
+  Verify: the positive control fired on a **controlled checker fixture** (not on the boot — ★ the
+  checker counts references and cannot see a deployment); promotion carried by shipped-boot
+  evidence; the `M1a-D2-MECHANISM` record committed with
+  `capabilityProven=false` printed and stated as an `M1a` pass — one record, one `Result`.

@@ -1,0 +1,92 @@
+{
+  "trees": {
+    "cli": {
+      "mode": "pinned",
+      "count": 14
+    },
+    "docker": {
+      "mode": "pinned",
+      "count": 6
+    },
+    "packages/adapter-manager": {
+      "mode": "floor",
+      "count": 21
+    },
+    "packages/adapter-utils": {
+      "mode": "floor",
+      "count": 29
+    },
+    "packages/adapters": {
+      "mode": "floor",
+      "count": 93
+    },
+    "packages/browser-runtime": {
+      "mode": "floor",
+      "count": 11
+    },
+    "packages/db": {
+      "mode": "floor",
+      "count": 63
+    },
+    "packages/plugins": {
+      "mode": "floor",
+      "count": 1
+    },
+    "packages/provider-capability": {
+      "mode": "floor",
+      "count": 1
+    },
+    "packages/provider-wire": {
+      "mode": "floor",
+      "count": 8
+    },
+    "packages/sandbox-e2b-provider": {
+      "mode": "pinned",
+      "count": 23
+    },
+    "packages/sandbox-fake-provider": {
+      "mode": "pinned",
+      "count": 11
+    },
+    "packages/sandbox-provider-contract": {
+      "mode": "pinned",
+      "count": 5
+    },
+    "packages/shared": {
+      "mode": "floor",
+      "count": 55
+    },
+    "packages/worker-daemon": {
+      "mode": "pinned",
+      "count": 175
+    },
+    "packages/worker-keystore": {
+      "mode": "pinned",
+      "count": 21
+    },
+    "packages/worker-networked-host": {
+      "mode": "floor",
+      "count": 1
+    },
+    "packages/worker-protocol": {
+      "mode": "pinned",
+      "count": 17
+    },
+    "scripts": {
+      "mode": "pinned",
+      "count": 78
+    },
+    "server": {
+      "mode": "floor",
+      "count": 1586
+    },
+    "tests": {
+      "mode": "pinned",
+      "count": 109
+    },
+    "ui": {
+      "mode": "floor",
+      "count": 555
+    }
+  }
+}

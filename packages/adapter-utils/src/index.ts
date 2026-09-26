@@ -168,6 +168,9 @@ export {
   containsAoaSecretPlaceholder,
   aoaSecretPlaceholderVars,
   aoaSecretPlaceholderFor,
+  brokeredAoaHttpEntry,
+  brokeredAoaMcpConfig,
+  type BrokeredAoaHttpEntry,
   stdioSpecCarriesSecretPlaceholder,
   withSynthesizedBearerHeader,
 } from "./mcp-server-spec.js";

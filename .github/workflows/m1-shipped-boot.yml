@@ -1,0 +1,545 @@
+name: M1 shipped CI boot (DEP-015)
+
+# DEP-015 — the SHIPPED CI BOOT lane, per founder ruling F3 (M1 plan §2):
+#
+#   a DISPATCH-ONLY CI job, never on push, bound to a NAMED FROZEN CANDIDATE, that on that
+#   candidate BUILDS the control-plane, worker and adapter-manager images from source, boots
+#   them together with a CI-GENERATED control-plane keypair, and runs the journey in that
+#   boot. NOT the operator campaign deploy. Boot-only is too weak: the gate asks for a journey.
+#
+# What one run does (every phase is `scripts/m1-shipped-boot/journey.mjs <phase>`):
+#   1. validates the candidate (40-hex, an ancestor of docs/replatform-program) and checks it out;
+#   2. builds + SBOMs + signs + ADMITS all three images from it (docker/images/{build,sbom,sign,
+#      admit}.sh — DEP-014's chain) and asserts each image's revision label IS the candidate;
+#   3. generates the control-plane ed25519 keypair INSIDE the job and runs
+#      `pnpm verify:cp-am-keypair` over it (mint with the control plane's code, verify with the
+#      adapter-manager's) — the runbook's mandatory pair check;
+#   4. boots docker-compose.staging.yml + docker/m1-boot/docker-compose.m1-boot.yml (the worker
+#      provider-URL overlay), after re-checking the REAL render against the DEP-015 manifest
+#      invariants (scoped admission green; the same render reds through the unscoped path);
+#   5. seeds the F10 tenant set — three Organizations through the API, two ENABLED through
+#      `AOA_DISTRIBUTED_EXECUTION_ROLLOUT` on BOTH control-plane replicas and one CONTROL absent
+#      from it — and asserts, on the render AND on each running replica, the exact set with
+#      `AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED` (and the tool surface) OFF (S0-8);
+#   6. provisions each Organization identically (target `aoa-canary-e2b`, ratified profile,
+#      enrolment, reconciliation, canary preflight) so the ONLY difference is the rollout;
+#   7. dispatches: KEYED — one assigned task per tenant; each enabled tenant must run distributed,
+#      name a real provider sandbox in its worker log, and pass `verify-e7-1-distributed-run`
+#      (capabilityProven=false is acceptable for M1a); the control must stay legacy with zero
+#      jobs and a control-plane-logged `rolloutState: "off"`. Audit, cost and failure-
+#      classification signals are recorded per tenant (journey.json).
+#      KEYLESS — only the control tenant is dispatched (it never reaches a provider), and the
+#      adapter-manager is never started, so no E2B call can happen.
+#   8. retains the redacted evidence bundle on pass AND fail; tears everything down.
+#
+# ★ TRIGGERS — E6-D001 (F3 clarified, planning session under F2, 2026-09-21). The lane RUNS only
+# on `workflow_dispatch`. GitHub will not dispatch a workflow that is not on the default branch
+# until it has run once, and the integration strategy forbids touching `main` before M5, so the
+# file also carries a REGISTRATION-ONLY push trigger: `docs/replatform-program`, paths = THIS
+# FILE ONLY (no code change can ever fire it), and the job is gated
+# `if: github.event_name == 'workflow_dispatch'`, so a push-created run executes ZERO steps and
+# touches ZERO secrets. F3's intent — the journey never runs and nothing spends on push — holds.
+# `scripts/check-m1-shipped-boot-shape.mjs` (pr.yml `policy`) enforces exactly this shape on every
+# PR: an unrestricted push, a widened paths list, an ungated job or any other trigger reds it.
+#
+# ★ SPEND. The keyed mode spends E2B + model tokens and runs only on the F8 named list, when
+# the planning session dispatches it. The two keys are exposed ONLY as
+# `inputs.mode == 'keyed' && secrets.X || ''`, so a keyless dispatch never holds them (also
+# enforced by the shape guard). The E2B key reaches ONLY the adapter-manager container.
+#
+# Not a required check (only `ci-required` is — scripts/lib/ci-lanes.mjs). Not watched by the
+# DEP-013 consumer: dispatch-only with a required human-supplied candidate, so no commit owes
+# it a run (scripts/workflow-verdict-manifest.json).
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: The frozen candidate — a full 40-character commit SHA on docs/replatform-program
+        required: true
+        type: string
+      mode:
+        description: keyless (boot, tenants, enrolment, control refusal; no provider call) or keyed (the journey; F8 spend)
+        required: true
+        default: keyless
+        type: choice
+        options:
+          - keyless
+          - keyed
+      e2b_template:
+        description: E2B template for the adapter-manager (keyed only)
+        required: false
+        default: aoa-base
+        type: string
+  # REGISTRATION ONLY (E6-D001): the job below is skipped on every push-created run.
+  push:
+    branches:
+      - docs/replatform-program
+    paths:
+      - ".github/workflows/m1-shipped-boot.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m1-shipped-boot
+  cancel-in-progress: false
+
+jobs:
+  shipped-boot:
+    # E6-D001: a push-created (registration) run skips this job — zero steps, zero secrets.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # EXPLICIT `bash` = `bash --noprofile --norc -eo pipefail`. The UNSPECIFIED default is
+        # `bash -e`, WITHOUT pipefail, so a phase that failed into a successful `tee` would be
+        # reported as a pass and the lane would carry invalid acceptance evidence (Codex P1).
+        shell: bash
+    timeout-minutes: 150
+    steps:
+      - name: Validate the named candidate
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::candidate must be 40 lowercase hex characters"; exit 1; }
+          [[ "$MODE" == "keyless" || "$MODE" == "keyed" ]] || { echo "::error::mode must be keyless or keyed"; exit 1; }
+          # The directory must EXIST before the first `tee` opens the job log in it: writing
+          # M1_OUT to $GITHUB_ENV creates nothing, and `prepare` only mkdirs after node starts,
+          # by which time the concurrently-launched tee has already failed ENOENT (Codex P1).
+          mkdir -p "${RUNNER_TEMP}/m1-shipped-boot"
+          echo "M1_OUT=${RUNNER_TEMP}/m1-shipped-boot" >> "$GITHUB_ENV"
+          echo "candidate ${CANDIDATE} (${MODE})"
+
+      - name: Check out the candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind the run to the candidate
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$CANDIDATE" ]] || { echo "::error::HEAD is not the candidate"; exit 1; }
+          git fetch --no-tags origin docs/replatform-program
+          git merge-base --is-ancestor "$CANDIDATE" FETCH_HEAD || {
+            echo "::error::$CANDIDATE is not an ancestor of docs/replatform-program (not a frozen candidate)"
+            exit 1
+          }
+          # ★ E6-F030 (Codex P1, PR #604). `docker/d1/minio.Dockerfile` is in this list because
+          # checkout REPLACES the workspace with the candidate, and that file was only added by
+          # `bafa11938`. A candidate before it — `3966a01f9f`, say, which carries every marker the
+          # control gate below enforces — would reach the object-store build step with no recipe and
+          # die there on a missing file, which is a confusing way to say "too old". Candidates are
+          # therefore restricted, here and explicitly, to revisions that contain the build recipe.
+          for f in docker/m1-boot/docker-compose.m1-boot.yml scripts/m1-shipped-boot/journey.mjs \
+                   docker/images/build.sh docker/images/admit.sh docker/adapter-manager/Dockerfile \
+                   docker/d1/minio.Dockerfile; do
+            test -f "$f" || { echo "::error::the candidate has no $f (it predates DEP-015/DEP-014)"; exit 1; }
+          done
+          # ★ THE CANDIDATE MUST CARRY THE CONTROLS IT WILL BE JUDGED BY (Codex P1, PR #574).
+          # Checkout replaces the workspace with the candidate, so an OLDER candidate would run its
+          # OWN driver: it would tee phase output into the new job log and then report clean with
+          # the evidence-only scanner that never reads it — defeating the control while looking
+          # green. These greps are the "predates the controls" gate; each names what is missing.
+          grep -q "CONTROL_PLANE_PUBLIC_KEY_PEM" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it does not register the public half of the keypair (missing CONTROL_PLANE_PUBLIC_KEY_PEM in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "maskDirectivesFor" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its driver does not mask registered secrets in the Actions log (missing maskDirectivesFor in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "stripMaskDirectives" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not read the job-log surface (missing stripMaskDirectives in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "KEY_MATERIAL_MARKERS" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it cannot scan for key material by shape (missing KEY_MATERIAL_MARKERS in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "createLineRedactor" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it has no redacting log filter, and every phase pipeline would die on the missing module (missing createLineRedactor in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "createLineRedactor" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor is per-line only, so a re-wrapped PEM body would be published (missing createLineRedactor in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "the job-log capture failed" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its log filter SWALLOWS a capture failure, so a truncated job log would be reported clean (missing the fail-closed arm in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "capture-failed" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its log filter leaves no durable trace of a capture failure (missing capture-failed in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "capture-failed" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not refuse after a failed capture (missing capture-failed in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "carry = joined.slice(" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its joined window keeps only the PREVIOUS line, so a prefix wrapped narrower than itself is never seen whole (missing carry = joined.slice( in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "ACCUMULATES: a prefix may span" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its SCAN's joined window does not accumulate, so a wrapped prefix is reported clean (missing ACCUMULATES: a prefix may span in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "LENGTH floor" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its DER latch has a length floor, so the final short line of a wrapped key is published (missing LENGTH floor in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "stripLogPrefix" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it judges compose-prefixed lines with the service prefix still in them, so a wrapped key in a worker log never joins (missing stripLogPrefix in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "LOG_TIMESTAMP" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it strips a timestamp only BEFORE the service prefix, while the lane collects `svc | <ts> payload`, so no wrapped key ever joins (missing LOG_TIMESTAMP in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "base64Payload" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it leaves JSON punctuation and escapes between wrapped fragments, so a framed key never forms its marker (missing base64Payload in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "job log is ABSENT" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan reads an ABSENT job log as an empty surface and passes, so a bundle without Actions-log coverage uploads (missing 'job log is ABSENT' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "log-filter] opened" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its filter does not bracket its own capture, so a filter killed mid-stream leaves a hole no later check can see (missing 'log-filter] opened' in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          # ★ DEP-020 (Codex P1, PR #593). The fault-matrix step below is MODE-GATED, not
+          # candidate-gated, and checkout replaces the workspace with the candidate — so a candidate
+          # that predates DEP-020 would reach that step with a driver that has no `fault-matrix`
+          # phase and a declaration whose three cases are still `pending`. It would fail, loudly, but
+          # only AFTER the images are built, the stack is booted and the KEYED journey has already
+          # spent E2B and model tokens. Rejecting it here costs nothing and saves the run.
+          grep -q "\"fault-matrix\": (args)" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates DEP-020: its driver has no fault-matrix phase, so the step below would fail after the keyed journey had already spent (missing the \"fault-matrix\" phase in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "REQUIRED_CREDENTIAL_REFUSAL_KINDS" scripts/lib/campaign-fault-matrix.mjs || { echo "::error::the candidate predates DEP-020: its fault-matrix verdicts do not carry the E5 clause-4 floor (missing REQUIRED_CREDENTIAL_REFUSAL_KINDS in scripts/lib/campaign-fault-matrix.mjs)"; exit 1; }
+          # ★ DEP-024 (Codex P1, PR #607), and the finding was right — verified at source: the
+          # `redaction` step below is MODE-gated, not CANDIDATE-gated, exactly like DEP-020's
+          # fault-matrix step, and `actions/checkout` replaces the workspace with the candidate. A
+          # candidate that predates DEP-024 would therefore reach that step with a driver that has no
+          # `redaction` phase and no modules behind it, and would die on `unknown phase` or a missing
+          # import — but only AFTER the images are built, the stack is booted and the KEYED journey
+          # has already spent E2B and model tokens. All three files are checked, not just the phase
+          # name: the phase dispatches into two modules the candidate may not carry either.
+          grep -q "  redaction: (args)" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates DEP-024: its driver has no redaction phase, so the step below would fail after the keyed journey had already spent (missing the redaction phase in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "runRedactionProbeCases" scripts/m1-shipped-boot/redaction.mjs || { echo "::error::the candidate predates DEP-024: it has no clause-5 redaction driver, and the phase would die on a missing import after the keyed journey had already spent (missing runRedactionProbeCases in scripts/m1-shipped-boot/redaction.mjs)"; exit 1; }
+          grep -q "evaluateRedactionProbeEvidence" scripts/lib/m1a-redaction-probe.mjs || { echo "::error::the candidate predates DEP-024: it has no clause-5 judge, so the phase could not refuse its own observations (missing evaluateRedactionProbeEvidence in scripts/lib/m1a-redaction-probe.mjs)"; exit 1; }
+          # The DEPLOYMENT half of DEP-024: a candidate whose overlay does not arm the probe would run
+          # the phase and find no scrubber marker on either stream, which is the expensive way to
+          # learn a missing line of configuration.
+          grep -q "AOA_WORKER_RUN_OUTPUT_PROBE" docker/m1-boot/docker-compose.m1-boot.yml || { echo "::error::the candidate predates DEP-024: its shipped-boot workers do not forward the run-output probe, so the clause-5 case would observe no scrubber marker on either stream after the keyed journey had already spent (missing AOA_WORKER_RUN_OUTPUT_PROBE in docker/m1-boot/docker-compose.m1-boot.yml)"; exit 1; }
+          grep -q "is TRUNCATED" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not check that every capture that opened also closed, so a truncated log is judged clean (missing 'is TRUNCATED' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "insidePemBlock = !PEM_END.test(payload)" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor returns early on a mask directive, so a PEM masked by its armour publishes its BODY (missing 'insidePemBlock = !PEM_END.test(payload)' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "directiveJoined" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its redactor does not run a mask directive PAYLOAD through the joined window, so a wrapped key masked by its first fragment publishes the rest (missing 'directiveJoined' in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
+          grep -q "randomUUID" scripts/m1-shipped-boot/log-filter.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its capture sentinels carry no unpredictable id, so a producer line can forge a close (missing 'randomUUID' in scripts/m1-shipped-boot/log-filter.mjs)"; exit 1; }
+          grep -q "never closed" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan counts sentinels instead of pairing them by id (missing 'never closed' in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          # ★ DEP-022. The `cross-tenant` step below is MODE-INDEPENDENT, and checkout replaces the
+          # workspace with the candidate — so a candidate that predates DEP-022 would reach it with
+          # no such phase. On a KEYED dispatch that is after the journey has already spent. These
+          # greps name the driver, its suppression arm, and the harness binding that lets the D1
+          # drivers address THIS stack; a candidate with the phase but not the binding would
+          # address a stack that is not running.
+          grep -q "crossTenant(loadState" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates DEP-022: its driver has no cross-tenant phase, so the step below would fail after the keyed journey had already spent (missing crossTenant(loadState in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "runCrossTenantCases" scripts/m1-shipped-boot/cross-tenant.mjs || { echo "::error::the candidate predates DEP-022: it has no cross-tenant driver (missing runCrossTenantCases in scripts/m1-shipped-boot/cross-tenant.mjs)"; exit 1; }
+          grep -q "suppressInjection" scripts/m1-shipped-boot/cross-tenant.mjs || { echo "::error::the candidate predates DEP-022: its cross-tenant driver has no suppression arm, so the lane's positive control would have nothing to invert (missing suppressInjection in scripts/m1-shipped-boot/cross-tenant.mjs)"; exit 1; }
+          grep -q "evaluateSuppressedRun" scripts/check-cross-tenant-suppression.mjs || { echo "::error::the candidate predates DEP-022 round 4: its suppression control accepts \"at least one marker\" instead of verifying every declared case (missing evaluateSuppressedRun in scripts/check-cross-tenant-suppression.mjs)"; exit 1; }
+          grep -q "composeBaseArgs" tests/d1/lib/e6f-harness.mjs || { echo "::error::the candidate predates DEP-022: its E6F harness hardcodes the D1 compose file, so every cross-tenant driver would address a stack that is not running (missing composeBaseArgs in tests/d1/lib/e6f-harness.mjs)"; exit 1; }
+          grep -q "HTTP_SERVICE" tests/d1/lib/e6f-harness.mjs || { echo "::error::the candidate predates DEP-022: its E6F harness dexecs every HTTP client into the D1-only test-runner service, which this stack does not have (missing HTTP_SERVICE in tests/d1/lib/e6f-harness.mjs)"; exit 1; }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Static preflight at the candidate
+        run: |
+          node scripts/check-staging-manifest.mjs
+          node scripts/check-m1-shipped-boot-shape.mjs
+
+      - name: Enable Docker containerd image store (attestation + --load)
+        run: |
+          # Same as d1-merge-train.yml: build.sh builds with `--provenance --sbom --load`.
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+
+      - name: Build, SBOM, sign and admit the three images from the candidate
+        env:
+          AOA_IMAGE_REVISION: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          # From SOURCE, at the candidate — never a pulled or operator-built image.
+          bash docker/images/build.sh
+          bash docker/images/sbom.sh
+          bash docker/images/sign.sh
+          bash docker/images/admit.sh
+          for key in CONTROL-PLANE WORKER ADAPTER-MANAGER; do
+            tag="$(grep -E "^${key}_IMAGE=" docker/images/digests.env | cut -d= -f2-)"
+            label="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$tag")"
+            [[ "$label" == "$AOA_IMAGE_REVISION" ]] || { echo "::error::$key image revision label '$label' is not the candidate"; exit 1; }
+            echo "$key $tag revision=$label"
+          done
+
+      # ★ E6-F030 — THE OBJECT STORE IS BUILT FROM SOURCE TOO.
+      #
+      # The overlay's MinIO used to resolve `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z`,
+      # which is withdrawn (401 from quay AND Docker Hub with pull-scoped tokens; mirror.gcr.io
+      # 404; dl.min.io 410 Gone; the GitHub release carries no binaries), so this lane died in
+      # `boot-core` before the journey ever ran. Route 2 was ruled over a registry mirror on
+      # principle: F3 says this lane BUILDS what it boots, and an object store pulled from a
+      # registry would be a weaker claim — one that would also have left the shape guard green,
+      # since that guard reads this workflow and never the compose file.
+      #
+      # `docker/d1/minio.Dockerfile` already performs this build and FAILS CLOSED on the release
+      # tag's peeled commit id (`refs/tags/<tag>^{}`, not the annotated tag object — the two are
+      # different ids and only one is what a checkout lands on). The version is not a free
+      # variable: a newer MinIO is stricter about presigning and broke the D1 presign cases.
+      #
+      # The tag is exported to $GITHUB_ENV so Compose resolves it from the PROCESS environment,
+      # which outranks `--env-file`. That is also what makes the repair effective against a
+      # candidate that predates it: checkout replaces the workspace, so an older candidate brings
+      # its own compose default, and a process-env value overrides it. A build failure is FATAL —
+      # a lane that skipped or tolerated a missing object store would convert a loud blocker into
+      # a silent hole.
+      # ★ THE VERSION IS PINNED BY THIS LANE, NOT BY THE CANDIDATE (Codex P2, PR #604). The step
+      # below runs the CANDIDATE's copy of the Dockerfile, whose `MINIO_VERSION` /
+      # `MINIO_SOURCE_COMMIT` defaults belong to the D1 harness and may legitimately move there.
+      # Without these `--build-arg`s the lane would build whatever the candidate defaulted to while
+      # still tagging and recording it as RELEASE.2025-09-07T16-13-09Z — silently running the newer,
+      # presign-stricter MinIO this whole change exists to avoid. The commit is the PEELED id of
+      # that tag (`refs/tags/<tag>^{}`), and the Dockerfile's own `test` aborts on a mismatch.
+      # `--version` is then read back off the built binary, because a build arg is what was
+      # REQUESTED and the binary is what was PRODUCED.
+      - name: Build the object store image from upstream source (E6-F030)
+        env:
+          AOA_M1_MINIO_IMAGE: "aoa-m1-minio:RELEASE.2025-09-07T16-13-09Z"
+        run: |
+          set -euo pipefail
+          # The release and its peeled commit are LITERAL here on purpose: the shape guard checks
+          # these exact pins, and an env indirection would hide them from it.
+          docker build -f docker/d1/minio.Dockerfile \
+            --build-arg "MINIO_VERSION=RELEASE.2025-09-07T16-13-09Z" \
+            --build-arg "MINIO_SOURCE_COMMIT=07c3a429bfed433e49018cb0f78a52145d4bedeb" \
+            -t "$AOA_M1_MINIO_IMAGE" docker/d1
+          # Prove the tag EXISTS locally before anything depends on it: a build that printed a
+          # warning and produced nothing would otherwise surface as a compose pull attempt.
+          docker image inspect "$AOA_M1_MINIO_IMAGE" >/dev/null
+          # …and prove the BINARY is the release the tag claims, not merely the one asked for.
+          built="$(docker run --rm --entrypoint /usr/bin/minio "$AOA_M1_MINIO_IMAGE" --version)"
+          echo "$built"
+          grep -Fq "RELEASE.2025-09-07T16-13-09Z" <<<"$built" || {
+            echo "::error::the built object store does not report RELEASE.2025-09-07T16-13-09Z — the tag would misdescribe it"
+            exit 1
+          }
+          echo "AOA_M1_MINIO_IMAGE=$AOA_M1_MINIO_IMAGE" >> "$GITHUB_ENV"
+          echo "object store $AOA_M1_MINIO_IMAGE built from upstream source"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+
+      - name: Install dependencies (for the keypair check)
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare — job secrets and the CI-generated control-plane keypair
+        env:
+          # Inputs reach the shell as env, never as `${{ }}` text spliced into a script.
+          CANDIDATE: ${{ inputs.candidate }}
+          MODE: ${{ inputs.mode }}
+          E2B_TEMPLATE: ${{ inputs.e2b_template }}
+          E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}
+        run: >-
+          node scripts/m1-shipped-boot/journey.mjs prepare --out "$M1_OUT"
+          --candidate "$CANDIDATE" --mode "$MODE" --e2b-template "$E2B_TEMPLATE" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Verify the control-plane / adapter-manager keypair
+        run: |
+          AOA_CONTROL_PLANE_SIGNING_KEY_FILE="$M1_OUT/keys/control-plane-signing-key.pem" \
+          AOA_ADAPTER_MANAGER_CONTROL_PLANE_PUBLIC_KEY_FILE="$M1_OUT/keys/adapter-manager-cp-pubkey.pem" \
+            pnpm verify:cp-am-keypair 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Boot the core (stores, migrate, both control-plane replicas)
+        env:
+          AOA_M1_SECRET_OWNER: "1000:1000"
+        run: node scripts/m1-shipped-boot/journey.mjs boot-core --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Seed the three Organizations through the API
+        env:
+          E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ inputs.mode == 'keyed' && secrets.ANTHROPIC_API_KEY || '' }}
+        run: node scripts/m1-shipped-boot/journey.mjs seed --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Apply the F10 tenant set to every control-plane replica
+        run: node scripts/m1-shipped-boot/journey.mjs apply-rollout --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Assert the tenant set and the must-be-off switches (render + running replicas)
+        run: node scripts/m1-shipped-boot/journey.mjs assert-tenants --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Provision each Organization's target and enrolment ticket
+        env:
+          AOA_M1_SECRET_OWNER: "1000:1000"
+        run: node scripts/m1-shipped-boot/journey.mjs provision-targets --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Boot the workers (keyed also boots the adapter-manager)
+        env:
+          E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
+        run: node scripts/m1-shipped-boot/journey.mjs boot-workers --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Await each worker enrolled on its own Organization's target
+        run: node scripts/m1-shipped-boot/journey.mjs await-workers --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Reconcile and preflight every Organization
+        run: node scripts/m1-shipped-boot/journey.mjs reconcile --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      # DEP-015 follow-up (keyed run 35601445269 failed at stage_files: the adapter-manager could
+      # not reach the presign store). A throwaway `compose run` of the adapter-manager SERVICE —
+      # its networks, CA env and mounts, the bin never started, so no E2B call — HEADs the
+      # presign endpoint. Free, and in BOTH modes, so the keyless rehearsal catches this class.
+      - name: Probe the presign store from the adapter-manager's seat
+        run: node scripts/m1-shipped-boot/journey.mjs probe-presign --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Run the journey
+        run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      # M1a HARNESS GAP 2 (DEP-022) — THE CROSS-TENANT DRIVERS.
+      #
+      # The E5 exit-gate audit `a2` failed criterion 7's R5 on one measured sentence: the profile
+      # *"declares nine `d2m.tenant.cross.*` cases and every one is `pending`"*. This step is their
+      # driver, plus the four legacy no-RLS tables, the cost surface and the E5 clause-4
+      # wrong-lease redemption refusal — fourteen cases, each with a SAME-TENANT POSITIVE CONTROL
+      # asserted BEFORE its denial is classified (ruling F10: denied, not merely empty).
+      #
+      # ★ BOTH MODES, DELIBERATELY. Nothing here touches a provider: the fixture seeds its own
+      # targets, enrols its own workers and drives the fenced worker-control surface directly. So
+      # the KEYLESS rehearsal exercises every driver end to end, and a keyed run is spent
+      # confirming rows rather than discovering that a driver does not boot.
+      #
+      # ★ AFTER `dispatch`: the tenants' REAL workers have finished, so this fixture cannot
+      # compete with the journey for an offer.
+      - name: Drive the M1a-D2-MECHANISM cross-tenant, cost, legacy-table and lease-binding cases
+        run: node scripts/m1-shipped-boot/journey.mjs cross-tenant --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      # M1a HARNESS GAP 1 (2026-09-24) — THE FAULT-MATRIX STEP THIS LANE NEVER HAD.
+      #
+      # The `M1a-D2-MECHANISM` QA record `a2` measured it: *"m1-shipped-boot.yml at the candidate
+      # has no fault-matrix step, and the uploaded artifact contains no fault-matrix bundle. The
+      # M1a-D2-MECHANISM profile in tests/d1/fault-matrix.json therefore stands at 23 declared,
+      # 23 pending, 0 fired."* Its §11.1 recommends exactly this step ("the lane exists, it works,
+      # and the declaration is already written; what is missing is a step that runs it").
+      #
+      # It emits rows ONLY for the three cases this journey's own observations decide — the two
+      # per-tenant journeys and the control tenant's refusal — and REFUSES rather than filing a
+      # row it cannot support. The other twenty declared cases need injections this lane does not
+      # yet perform and stay `pending` with their kind, reason and owner.
+      #
+      # KEYED ONLY: in keyless mode only the control tenant is dispatched, so the two enabled
+      # journeys have no observation at all and the phase fails closed rather than filing fewer
+      # rows in one mode than the other.
+      # DEP-024 - THE E5 CLAUSE-5 (REDACTION) PHASE. KEYED ONLY, and it carries BOTH of its arms.
+      #
+      # It seeds two worker-driven jobs for tenant A on its own ratified target. The FIRST withholds
+      # the plant; the SECOND plants a high-entropy canary AS THE REDEEMED VALUE of its own secret
+      # handle and echoes it from the tenant command behind the run-output probe tag. The canary must
+      # be ABSENT from both declared streams and from the OTHER tenant's whole event stream, while the
+      # scrubber's OWN replacement marker must be PRESENT on a line that also carries this run's tag
+      # on both - and the withheld-plant arm must produce NO marker. Neither arm passes alone: a clean
+      # stream with no marker may be a run that emitted the value nowhere, and a marker with the
+      # canary still present is a partial scrub.
+      #
+      # ★ THE PLANTED VALUE IS NEVER A REAL PROVIDER KEY. It is a token this phase mints seconds
+      # earlier and writes as the job's own Company secret, with no authority anywhere. Echoing a live
+      # key into a third-party sandbox's stdout would put it into E2B's own service logs, which no
+      # scrubber of ours reaches; the design does not rely on redaction for that, it never plants it.
+      #
+      # ★ NO SEPARATE SUPPRESSED STEP, deliberately. The two arms are one phase, one stack, one run,
+      # so a stale control bundle cannot stand in for a fresh one - which the cross-tenant phase's
+      # two-invocation arrangement cannot rule out. The phase refuses unless BOTH hold, and it retains
+      # `redaction-observations.json` on either outcome.
+      #
+      # BEFORE `fault-matrix`, which folds the row - but ONLY while the declaration says `required`:
+      # the matrix verdict refuses a bundle that reports evidence for a `pending` case.
+      - name: Drive the M1a-D2-MECHANISM clause-5 redaction case, both arms (keyed only)
+        if: inputs.mode == 'keyed'
+        run: node scripts/m1-shipped-boot/journey.mjs redaction --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      - name: Run the M1a-D2-MECHANISM fault matrix over the journey's observations (keyed only)
+        if: inputs.mode == 'keyed'
+        run: node scripts/m1-shipped-boot/journey.mjs fault-matrix --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+
+      # The matrix's own verdict, re-run as its own step over the retained bundle — the same shape
+      # the D1 lane's `m1-fault-matrix` job uses, so a reader comparing the two lanes sees one
+      # contract rather than two. The phase above already refuses on a violation; this step is what
+      # a QA owner can point at without reading the driver.
+      - name: The matrix's own verdict over the retained bundle (keyed only)
+        if: inputs.mode == 'keyed'
+        run: >-
+          node scripts/check-campaign-fault-matrix.mjs
+          --evidence "$M1_OUT/evidence/fault-matrix-bundle.json"
+
+      # ★ THE POSITIVE CONTROL IS THE POINT, and it is the same shape `d1-merge-train.yml` uses for
+      # `AOA_M1_FAULT_MATRIX_SUPPRESS_INJECTION`. With `--suppress-injection` every hostile arm is
+      # performed by the VICTIM's own identity: the controls still pass, every case still records
+      # and classifies, and every row carries `injectionFired: false`. If the phase still PASSED
+      # then, it would be measuring nothing — the failure class this whole exercise is about — so
+      # the lane runs exactly that and FAILS if it succeeds, and greps the evidence marker to prove
+      # the red came from the injection rather than from a bring-up failure.
+      #
+      # LAST, after the graded run and its verdict, so nothing this arm seeds can perturb them. It
+      # writes to its own `cross-tenant-suppressed.json`, never over the graded observations.
+      - name: POSITIVE CONTROL — with the cross-tenant injections suppressed, the phase MUST go red
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/m1-cross-tenant-suppressed.txt"
+          # The step's whole purpose is to run a phase that MUST exit non-zero, and the job shell is
+          # `bash -eo pipefail` (see `defaults.run.shell` above). Without `set +e` the expected
+          # failure aborts the step BEFORE `status="${PIPESTATUS[0]}"` is read, so the control dies
+          # on its own success condition and never reaches any of its four assertions -- observed
+          # live in run 36063928987, where the suppressed phase reded correctly with "14
+          # injection(s) did not fire, 14 not denied" and the step still failed. The `collect` step
+          # below already does this for the same reason. Re-enabled immediately after the capture,
+          # so every assertion that follows keeps failing the step as intended.
+          set +e
+          node scripts/m1-shipped-boot/journey.mjs cross-tenant --out "$M1_OUT" --suppress-injection 2>&1             | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt" | tee "$out"
+          status="${PIPESTATUS[0]}"
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::the cross-tenant phase PASSED with every injection suppressed — it is measuring nothing"
+            exit 1
+          fi
+          grep -F '[cross-tenant:evidence]' "$out" || {
+            echo "::error::the cross-tenant phase went red with the injections suppressed, but NOT on its own evidence verdict"
+            exit 1
+          }
+          grep -F 'injection_did_not_fire' "$out" || {
+            echo "::error::the suppressed run did not report an unfired injection — the observers are not deciding anything"
+            exit 1
+          }
+          # ★ PER CASE, not "at least one marker" (Codex P1, PR #600, round 4). The two greps above
+          # would both still match if ONE of the fourteen cases quietly executed its hostile arm
+          # during suppression: the other thirteen keep the phase non-zero and keep the markers
+          # flowing, and that case's non-vacuity would go undemonstrated. "At least one marker" is
+          # the same defect as "at least one test ran". This checker reads the suppressed bundle
+          # and requires EVERY case the declaration marks `required` and this driver owns to be
+          # present with `injectionFired: false` — derived from the declaration, so flipping a new
+          # case to `required` puts it under the control automatically. It fails closed on an
+          # absent or unparseable bundle.
+          node scripts/check-cross-tenant-suppression.mjs --evidence "$M1_OUT/evidence/cross-tenant-suppressed.json"
+          echo "positive control: a suppressed injection reds the cross-tenant phase, per case, as required"
+
+      - name: Collect the evidence (redacted)
+        id: collect
+        if: always()
+        run: |
+          # Collection stays best-effort — a failed journey must still upload what it has — but the
+          # FILTER's status is not swallowed with it (Codex P1): a capture that failed here would
+          # leave the leak scan judging a truncated job log and calling it clean.
+          if [ -f "$M1_OUT/state.json" ]; then
+            set +e
+            node scripts/m1-shipped-boot/journey.mjs collect --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+            [ "${statuses[1]}" -eq 0 ] || { echo "::error::DEP-015 the job-log capture failed during collect; the log surface is incomplete"; exit 1; }
+          fi
+
+      # HARD pre-upload check (ruled in under F2 after the distinct review of DEP-015): every job
+      # secret, by NAME, in raw / base64 / base64url form — and key material BY SHAPE — against
+      # every evidence file AND the job log every phase tees above. Review batch 3A (PR #569)
+      # measured that the log surface had no scanner and no mask at all: the gap was in the
+      # CONTROL, not in an observed leak. A match FAILS the run and deletes both; it reports the
+      # surface, the file and the secret NAME or marker, never the value.
+      - name: Scan the evidence AND the job log for job secrets and key material (fails the run on any match)
+        id: leak-scan
+        if: always()
+        run: |
+          if [ -f "$M1_OUT/state.json" ]; then
+            node scripts/m1-shipped-boot/journey.mjs leak-scan --out "$M1_OUT"
+          else
+            echo "leak-scan: no state (the job stopped before prepare); nothing was collected"
+          fi
+
+      # The gate names BOTH steps (Codex P1). A capture that failed during the best-effort collect
+      # step fails THAT step, not the scan, and the scan runs `if: always()`; gating on the scan
+      # alone would upload a bundle whose log surface was never fully captured. (The scan also
+      # refuses on the filter's durable marker — two independent arms, neither sufficient alone:
+      # this one covers a marker that could not be written, that one covers a later step's failure.)
+      - name: Upload the evidence bundle (on pass and fail)
+        if: always() && steps.leak-scan.outcome == 'success' && steps.collect.outcome != 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m1-shipped-boot-${{ inputs.mode }}-${{ github.run_id }}
+          path: ${{ env.M1_OUT }}/evidence/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Tear down (stack, volumes, keypair, secrets)
+        if: always()
+        env:
+          AOA_M1_SECRET_OWNER: "1000:1000"
+        run: |
+          if [ -f "$M1_OUT/state.json" ]; then
+            node scripts/m1-shipped-boot/journey.mjs teardown --out "$M1_OUT" || true
+          fi
+          sudo rm -rf "$M1_OUT/keys"
+          rm -f docker/images/trust-root.key
