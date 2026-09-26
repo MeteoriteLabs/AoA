@@ -1,6 +1,6 @@
 # WRK-018 Result - the usage producer: an optional stdout channel on the provider port and a composed `observeRun`
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-09-21`
 **Epic:** `E4-worker-daemon`
 **Plan task:** `E4 implementation-plan §4c WRK-018 - the usage producer (M1a Track A)`
@@ -248,6 +248,7 @@ Both gained the DAT-009 slice-3c export hook (`79961c97c`, `f5e2aff1f`). That is
 |---:|---|---|---|---|
 | 1 | M1 review-batch-2A independent reviewer (Claude Opus 5) | `ad4cdfdf28ddb8bb66b730a4b9f66f7de2e7785f` | `approved` | §0 true at source (argv both sides; real fixture's final result line). Run `35593307741` per job: `verify (2)` 15+11, `verify (3)` 28+5+7+11+5 — all match. Four Codex threads resolved, clean on the final heads. Focused rerun 65 + 7 + 5 + 5, boundary PASS. M2 (2 failed) and M1 (9 failed) reproduced. F10 real. **Acceptance 1 (keyed F8 run) OPEN**; not claimed met. |
 | 2 | M1 review-batch-4 independent reviewer (Claude Opus 5) | `99bff824d1c4fd641cea3b05ab7fe588f8255b96` | `approved` (code + record); **Status NOT flipped** | The 1(a)/1(b)/1(c) split's wording verified identical in this record, the E4 implementation plan, `E3-F037` in `E3-job-control/findings.md`, its `scripts/finding-ownership.json` reason, and `E4-F019` (open, MEDIUM, unowned). The withdrawn parser→ingest sentence is visibly withdrawn, not silently. `DEP-016-result.md`'s two stale hits are disclosed and correctly left to their owner. **Finding (non-blocking): `scripts/gate-clause-wiring.json` clause `E3-15-budget` still says promotion waits on "the one keyed E2B run proving the real claude_local usage parser" — a third, UNDISCLOSED home of the superseded expectation.** 1(a) pending ⇒ no flip, per the binding rule. |
+| 3 | M1a closeout independent reviewer (Codex) | `446d99f39c8f8f9bece2138252fe48c839fbc7a6` | `approved`; `Status` set to `complete` | The sole item left open by attempt 2, acceptance 1(a), is closed by successful keyed run `36187103782` on this exact candidate. Its retained evidence records exactly one accepted `usage` event for enabled tenant A (attempt `485147a7-fb39-4605-a34b-e74c21378fef`) and enabled tenant B (attempt `23e33a4f-9a2f-4bf1-895b-451815319817`), each bound to its tenant and persisted with duration/input/output counts, with `violations: []`; disabled control C records zero usage events and `storedUsage: null`. The merged `M1a-D2-MECHANISM` attempt-25 record (blob `af14519fba6e709d5333027ad293318e72fdf102`) and E5 exit-audit attempt-3 record (blob `04f68276825896b9f6f36f44b5b17369fa5a02cb`) independently retain the same closing facts. Acceptance 1(b) remains the binding F2 ruling (`NOT LIVE-PROVABLE`) and 1(c) remains fixture-only; neither was outstanding after attempt 2. Existing open findings remain non-blocking and unchanged. |
 
 ## Keyed acceptance 1 — the keyed run HAPPENED; acceptance 1 stays **PENDING** (added 2026-09-23, corrected the same day)
 
