@@ -1,4 +1,6 @@
 // -----------------------------------------------------------------------------
+
+import { evaluateM1FreezeExclusions } from "./m1-shipped-boot.mjs";
 // DEP-016 — the m1-spine campaign profile's tenant set and its VERDICT functions.
 //
 // Pure: no I/O, no Docker, no PostgreSQL. The LIVE profile (tests/d1/m1-spine.test.mjs) gathers
@@ -432,6 +434,24 @@ export function evaluateReplicaRollout(o) {
     out.push(violation("crew:switch_on", `${r}: AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED is on`));
   }
   return out;
+}
+
+/** The complete locked M1a exclusion ledger for one live D1 control plane. */
+export function evaluateReplicaFreezeExclusions(o) {
+  return evaluateM1FreezeExclusions({
+    env: {
+      AOA_DEPLOYMENT_MODE: o.deploymentMode,
+      AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED: o.crewRaw,
+      AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED: o.toolSurfaceRaw,
+      ...(o.excludedFlags ?? {}),
+    },
+    rolloutValue: o.rolloutRaw,
+    expectedTenants: {
+      enabled: M1_SPINE_TENANTS.enabled.map((tenant) => tenant.organizationId),
+      control: M1_SPINE_TENANTS.control.organizationId,
+    },
+    topology: { desktopServices: [], crossTargetMobilityRoutes: [], runningControlPlanes: RUNNING_REPLICAS.length },
+  });
 }
 
 // ── an enabled tenant ────────────────────────────────────────────────────────

@@ -43,7 +43,7 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -90,6 +90,7 @@ import {
   M1_SPINE_CONTROL_PLANE_REPLICAS,
   M1_SPINE_CANARY_TARGET_SLUG,
   evaluateReplicaRollout,
+  evaluateReplicaFreezeExclusions,
   evaluateEnabledTenantSpine,
   evaluateControlTenant,
   evaluateCrossTenantIsolation,
@@ -250,8 +251,16 @@ test("m1-spine: every control-plane replica carries the F10 tenant set, and the 
       toolSurfaceRaw: probe.toolSurfaceRaw,
       toolSurfaceArmed: probe.toolSurfaceArmed,
       organizationToolSurface: probe.organizationToolSurface,
+      excludedFlags: probe.excludedFlags,
     };
     violations.push(...evaluateReplicaRollout({ replica, ...probe }));
+    const freeze = evaluateReplicaFreezeExclusions({ replica, ...probe });
+    evidence.replicas[replica].freezeExclusions = {
+      categories: freeze.categories,
+      actualFlags: freeze.actualFlags,
+      sha256: createHash("sha256").update(JSON.stringify(freeze.categories)).digest("hex"),
+    };
+    violations.push(...freeze.violations.map((message) => ({ code: "freeze:excluded_surface", message: `${replica}: ${message}` })));
   }
   const digests = new Set(Object.values(evidence.replicas).map((r) => r.rolloutSha256));
   if (digests.size !== 1) violations.push({ code: "rollout:replicas_disagree", message: `rollout digests ${[...digests].join(", ")}` });

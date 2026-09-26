@@ -80,6 +80,7 @@ import {
   buildRolloutPolicy,
   evaluateTenantRollout,
   evaluateMustBeOffFlags,
+  evaluateM1FreezeExclusions,
   envLinesToMap,
   encodeEnrollmentTicket,
   providerConstraintProfileUnsigned,
@@ -103,6 +104,7 @@ import {
   shippedBootAgentCreatePayload,
   evaluateShippedBootEvidence,
 } from "../lib/m1-shipped-boot.mjs";
+import { readE2bSandboxBuildBinding, resolveE2bTemplateIdentity } from "../lib/m1-provider-identity.mjs";
 import { evaluateUsageCardinality, formatViolations } from "../lib/m1-spine-assertions.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -285,7 +287,7 @@ const secret = (bytes = 32) => randomBytes(bytes).toString("base64url");
 
 // --- phases ------------------------------------------------------------------------------------
 
-function prepare(args) {
+async function prepare(args) {
   if (!args.out) fail("--out <dir> is required");
   if (!/^[0-9a-f]{40}$/.test(String(args.candidate ?? ""))) fail("--candidate must be a 40-hex commit sha");
   if (args.mode !== "keyless" && args.mode !== "keyed") fail("--mode must be keyless or keyed");
@@ -310,7 +312,12 @@ function prepare(args) {
   const minioImage = String(process.env.AOA_M1_MINIO_IMAGE ?? "").trim();
   if (!minioImage) fail("AOA_M1_MINIO_IMAGE is not set — the lane must build the object store from source (docker/d1/minio.Dockerfile) and export its tag before `prepare` (E6-F030)");
   const e2bPackage = JSON.parse(readFileSync(path.join(repoRoot, "packages/sandbox-e2b-provider/package.json"), "utf8"));
-  const e2bSdkVersion = String(e2bPackage.dependencies?.e2b ?? "").replace(/^\^/, "");
+  const e2bSdkVersion = String(e2bPackage.dependencies?.e2b ?? "");
+  if (e2bSdkVersion !== "2.30.5") fail(`the shipped E2B SDK must remain pinned to 2.30.5; found ${JSON.stringify(e2bSdkVersion)}`);
+  const requestedTemplate = args.template || "aoa-base";
+  const resolvedProviderIdentity = args.mode === "keyed"
+    ? await resolveE2bTemplateIdentity({ apiKey: process.env.E2B_API_KEY, requestedTemplate })
+    : null;
   const configIdentity = Object.fromEntries([
     ".github/workflows/m1-shipped-boot.yml",
     "docker/m1-boot/docker-compose.m1-boot.yml",
@@ -373,7 +380,7 @@ function prepare(args) {
     AOA_M1_ADAPTER_MANAGER_IMAGE: tag("ADAPTER-MANAGER_IMAGE"),
     // Empty tenant set until the Organizations exist (`apply-rollout` writes the real one).
     AOA_M1_DISTRIBUTED_EXECUTION_ROLLOUT: JSON.stringify({ organizations: {} }),
-    AOA_M1_E2B_TEMPLATE: args.template || "aoa-base",
+    AOA_M1_E2B_TEMPLATE: resolvedProviderIdentity?.templateId ?? requestedTemplate,
     AOA_M1_CP_SIGNING_KEY_FILE: signingKeyFile,
     AOA_M1_CP_PUBLIC_KEY_FILE: publicKeyFile,
     ...ticketFiles,
@@ -387,12 +394,17 @@ function prepare(args) {
     mode: args.mode,
     providerIdentity: {
       provider: "e2b",
-      requestedTemplate: args.template || "aoa-base",
+      requestedTemplate,
+      resolvedTemplateId: resolvedProviderIdentity?.templateId ?? null,
+      immutableBuildId: resolvedProviderIdentity?.buildId ?? null,
+      buildStatus: resolvedProviderIdentity?.buildStatus ?? null,
+      envdVersion: resolvedProviderIdentity?.envdVersion ?? null,
       sdkPackage: "e2b",
       sdkVersion: e2bSdkVersion,
       serviceEndpoint: "api.e2b.dev",
       configSha256: configIdentity,
-      note: "Per-run E2B sandbox service identifiers are retained in journey.json under providerEvidence.sandboxIds.",
+      binding: args.mode === "keyed" ? "E2B sandbox event sandboxTemplateId + sandboxBuildId" : "not applicable: keyless mode creates no sandbox",
+      note: "The credential-free identity is resolved from E2B before boot; every created sandbox is later bound to this immutable build using E2B's own event API.",
     },
     envValues,
     boardToken,
@@ -578,6 +590,7 @@ function assertTenants(state) {
   const rendered = renderAndCheck(state, "post-rollout");
   const results = {};
   const violations = [];
+  const runningControlPlanes = CP_REPLICAS.filter((replica) => compose(state, ["ps", "-q", replica]).stdout.trim()).length;
   for (const replica of CP_REPLICAS) {
     // (a) the render
     const renderedEnv = rendered.services?.[replica]?.environment ?? {};
@@ -588,13 +601,21 @@ function assertTenants(state) {
     for (const [where, env] of [["rendered", renderedEnv], ["running", liveEnv]]) {
       const tenant = evaluateTenantRollout(env.AOA_DISTRIBUTED_EXECUTION_ROLLOUT, { enabled, control }).violations;
       const off = evaluateMustBeOffFlags(env).violations;
+      const freeze = evaluateM1FreezeExclusions({
+        env,
+        rolloutValue: env.AOA_DISTRIBUTED_EXECUTION_ROLLOUT,
+        expectedTenants: { enabled, control },
+        topology: { desktopServices: [], crossTargetMobilityRoutes: [], runningControlPlanes },
+      });
+      const freezeDigest = createHash("sha256").update(JSON.stringify(freeze.categories)).digest("hex");
       results[`${replica}:${where}`] = {
         tenantSet: tenant.length === 0 ? "exact" : tenant,
         crewRolloutEnabled: env.AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED ?? null,
         toolSurfaceEnabled: env.AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED ?? null,
         mustBeOff: off.length === 0 ? "off" : off,
+        freezeExclusions: { categories: freeze.categories, actualFlags: freeze.actualFlags, sha256: freezeDigest },
       };
-      violations.push(...tenant.map((x) => `${replica} (${where}): ${x}`), ...off.map((x) => `${replica} (${where}): ${x}`));
+      violations.push(...tenant.map((x) => `${replica} (${where}): ${x}`), ...off.map((x) => `${replica} (${where}): ${x}`), ...freeze.violations.map((x) => `${replica} (${where}): ${x}`));
     }
   }
   writeEvidence(state, "tenant-set-and-flags.json", { enabled, control, replicas: results });
@@ -658,10 +679,17 @@ report({ digest: createHash("sha256").update(Buffer.from(canonicalProviderConstr
   }])));
 }
 
-function bootWorkers(state) {
+async function bootWorkers(state) {
   const workers = TENANTS.map((t) => t.worker);
   if (state.mode === "keyed") {
     if (!process.env.E2B_API_KEY) fail("keyed mode: E2B_API_KEY is empty in the boot-workers step — the adapter-manager would refuse to boot");
+    const current = await resolveE2bTemplateIdentity({
+      apiKey: process.env.E2B_API_KEY,
+      requestedTemplate: state.providerIdentity.requestedTemplate,
+    });
+    if (current.templateId !== state.providerIdentity.resolvedTemplateId || current.buildId !== state.providerIdentity.immutableBuildId) {
+      fail(`keyed mode: E2B template alias changed after prepare (expected ${state.providerIdentity.resolvedTemplateId}/${state.providerIdentity.immutableBuildId}, got ${current.templateId}/${current.buildId}); refusing before sandbox spend`);
+    }
     compose(state, ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "300", "adapter-manager"], { timeout: 600_000 });
     compose(state, ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "300", ...workers], { timeout: 600_000 });
     console.log("boot-workers (keyed): adapter-manager healthy; three workers healthy");
@@ -912,6 +940,29 @@ async function dispatch(state) {
         rejected: evidence.rejected,
         polls,
       };
+      const bindings = [];
+      for (const sandboxId of evidence.sandboxIds) {
+        let binding;
+        const bindingDeadline = Date.now() + SANDBOX_EVIDENCE_DEADLINE_MS;
+        do {
+          binding = await readE2bSandboxBuildBinding({
+            apiKey: process.env.E2B_API_KEY,
+            sandboxId,
+            expected: { templateId: state.providerIdentity.resolvedTemplateId, buildId: state.providerIdentity.immutableBuildId },
+          });
+          if (binding.verdict.pass || Date.now() >= bindingDeadline) break;
+          await sleep(SANDBOX_EVIDENCE_POLL_MS);
+        } while (true);
+        const observed = binding.events.filter((event) => event.sandboxId === sandboxId).map((event) => ({
+          sandboxId: event.sandboxId,
+          sandboxTemplateId: event.sandboxTemplateId,
+          sandboxBuildId: event.sandboxBuildId,
+          eventType: event.eventType ?? event.type ?? null,
+          timestamp: event.timestamp ?? null,
+        }));
+        bindings.push({ sandboxId, observed, verdict: binding.verdict });
+      }
+      providerEvidence.buildBindings = bindings;
     }
     // The control plane's own account of the rollout decision for THIS run (either replica may
     // have executed it; the wake lands on whichever served the assignment).
@@ -952,6 +1003,10 @@ async function dispatch(state) {
     if (t.role === "enabled" && run && (!providerEvidence || providerEvidence.sandboxLogLines === 0)) {
       outcome.pass = false;
       outcome.reasons.push("no worker log line names a provider sandbox for this tenant (runbook §11: the verifier cannot tell a real provider from a fake)");
+    }
+    if (t.role === "enabled" && providerEvidence?.buildBindings?.some((binding) => !binding.verdict.pass)) {
+      outcome.pass = false;
+      outcome.reasons.push(...providerEvidence.buildBindings.flatMap((binding) => binding.verdict.violations.map((reason) => `provider build binding: ${reason}`)));
     }
     // DEP-017 — the live env-absence probe, read back from THIS attempt's own `job_events` (the
     // worker emitted it through the run's canary scrub, before the terminal). Every enabled tenant

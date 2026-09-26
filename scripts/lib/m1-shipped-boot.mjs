@@ -129,6 +129,53 @@ export function evaluateMustBeOffFlags(env) {
   return { violations: v };
 }
 
+const EXCLUDED_BOOLEAN_FLAGS = Object.freeze([
+  "AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED",
+  "AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED",
+  "AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED",
+  "AOA_ALLOW_UNSANDBOXED_MULTITENANT",
+  "AOA_0188_CUTOVER_OPT_IN",
+]);
+
+/** M1 plan section 6's conceptual exclusions, mapped to mechanisms that actually exist. */
+export function evaluateM1FreezeExclusions({ env = {}, rolloutValue, expectedTenants, topology = {} }) {
+  const violations = [];
+  const flagValues = {};
+  for (const name of EXCLUDED_BOOLEAN_FLAGS) {
+    const raw = env[name] ?? null;
+    flagValues[name] = raw;
+    try {
+      if (parseRolloutBoolean(name, raw)) violations.push(`${name} is ON`);
+    } catch {
+      violations.push(`${name} is unparseable (${JSON.stringify(raw)})`);
+    }
+  }
+  let toolArmed = false;
+  const toolRaw = env.AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED ?? null;
+  if (toolRaw !== null && String(toolRaw).trim() !== "" && ["0", "false", "no", "off"].includes(String(toolRaw).trim().toLowerCase()) === false) {
+    toolArmed = true;
+    violations.push(`AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED is armed or invalid (${JSON.stringify(toolRaw)})`);
+  }
+  const rollout = evaluateTenantRollout(rolloutValue, expectedTenants);
+  violations.push(...rollout.violations.map((v) => `rollout: ${v}`));
+  const desktopServices = Array.isArray(topology.desktopServices) ? topology.desktopServices : [];
+  const mobilityRoutes = Array.isArray(topology.crossTargetMobilityRoutes) ? topology.crossTargetMobilityRoutes : [];
+  if (desktopServices.length) violations.push(`desktop services are present: ${desktopServices.join(", ")}`);
+  if (mobilityRoutes.length) violations.push(`cross-target mobility routes are present: ${mobilityRoutes.join(", ")}`);
+  if (env.AOA_DEPLOYMENT_MODE === "cloud_auth") violations.push("AOA_DEPLOYMENT_MODE=cloud_auth exposes the hosted beta surface");
+  const categories = {
+    workload: { mechanism: "rollout_allowlist", state: rollout.violations.length === 0 ? "batch/task_run only" : "violation" },
+    desktop: { mechanism: "service_absence", state: desktopServices.length === 0 ? "absent" : "present", services: desktopServices },
+    mobility: { mechanism: "route_absence", state: mobilityRoutes.length === 0 ? "absent" : "present", routes: mobilityRoutes },
+    cutover: { mechanism: "canary_rollout_and_real_opt_in", state: flagValues.AOA_0188_CUTOVER_OPT_IN === null ? "off" : String(flagValues.AOA_0188_CUTOVER_OPT_IN) },
+    ha: { mechanism: "topology_observation", state: "not_claimed", runningControlPlanes: topology.runningControlPlanes ?? null },
+    beta: { mechanism: "deployment_mode", state: env.AOA_DEPLOYMENT_MODE ?? null },
+    crew: { mechanism: "AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED", state: flagValues.AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED ?? null },
+    tool: { mechanism: "AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED", state: toolArmed ? "armed" : "off", raw: toolRaw },
+  };
+  return { violations, categories, actualFlags: { ...flagValues, AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED: toolRaw } };
+}
+
 /** `KEY=value` lines (as `docker inspect … .Config.Env` prints them) → a map. */
 export function envLinesToMap(lines) {
   const out = {};

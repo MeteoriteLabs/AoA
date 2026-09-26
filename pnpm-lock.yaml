@@ -630,7 +630,7 @@ importers:
         specifier: workspace:*
         version: link:../worker-protocol
       e2b:
-        specifier: ^2.30.5
+        specifier: 2.30.5
         version: 2.30.5
       zod:
         specifier: 3.24.2
