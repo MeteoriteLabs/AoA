@@ -185,6 +185,19 @@ test("the M1 freeze exclusion ledger refuses real excluded switches and structur
   assert.notDeepEqual(evaluateM1FreezeExclusions({ ...base, topology: { ...base.topology, crossTargetMobilityRoutes: ["handoff"] } }).violations, []);
 });
 
+test("freeze topology observations come from rendered and running service names", async () => {
+  const { observeFreezeTopology } = await import("../m1-shipped-boot.mjs");
+  assert.deepEqual(observeFreezeTopology({
+    renderedServices: { "desktop-host": {}, "cross-target-handoff": {}, "control-plane": {} },
+    runningServices: ["mobility-router", "control-plane"],
+    runningControlPlanes: 1,
+  }), {
+    desktopServices: ["desktop-host"],
+    crossTargetMobilityRoutes: ["cross-target-handoff", "mobility-router"],
+    runningControlPlanes: 1,
+  });
+});
+
 test("envLinesToMap reads `docker inspect` Env lines, keeping '=' inside values", () => {
   const map = envLinesToMap(`A=1\nAOA_DISTRIBUTED_EXECUTION_ROLLOUT={"organizations":{"x":{"mode":"canary"}}}\nB=x=y\n`);
   assert.equal(map.A, "1");

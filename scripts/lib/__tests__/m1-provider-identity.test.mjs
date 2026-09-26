@@ -43,6 +43,8 @@ test("template resolution follows provider pagination before selecting an alias"
     },
   });
   assert.equal(identity.buildId, BUILD);
+  assert.equal(new URL(urls[0]).pathname, "/templates");
+  assert.equal(new URL(urls[1]).pathname, "/templates");
   assert.match(urls[1], /nextToken=page-2/);
 });
 

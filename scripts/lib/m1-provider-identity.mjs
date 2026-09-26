@@ -50,7 +50,7 @@ export async function resolveE2bTemplateIdentity({ fetchFn = fetch, apiUrl = "ht
   do {
     const query = new URLSearchParams({ limit: "100" });
     if (nextToken) query.set("nextToken", nextToken);
-    const response = await apiResponse(fetchFn, `${apiUrl}/v2/templates?${query}`, apiKey);
+    const response = await apiResponse(fetchFn, `${apiUrl}/templates?${query}`, apiKey);
     rows.push(...await response.json());
     nextToken = response.headers?.get?.("X-Next-Token") || null;
   } while (nextToken);

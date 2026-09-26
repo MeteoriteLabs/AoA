@@ -176,6 +176,16 @@ export function evaluateM1FreezeExclusions({ env = {}, rolloutValue, expectedTen
   return { violations, categories, actualFlags: { ...flagValues, AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED: toolRaw } };
 }
 
+/** Derive excluded structural surfaces from the rendered and running Compose service sets. */
+export function observeFreezeTopology({ renderedServices = {}, runningServices = [], runningControlPlanes = null } = {}) {
+  const names = [...new Set([...Object.keys(renderedServices ?? {}), ...(runningServices ?? [])])].sort();
+  return {
+    desktopServices: names.filter((name) => /desktop/i.test(name)),
+    crossTargetMobilityRoutes: names.filter((name) => /(?:cross[-_]?target|mobility|handoff)/i.test(name)),
+    runningControlPlanes,
+  };
+}
+
 /** `KEY=value` lines (as `docker inspect … .Config.Env` prints them) → a map. */
 export function envLinesToMap(lines) {
   const out = {};

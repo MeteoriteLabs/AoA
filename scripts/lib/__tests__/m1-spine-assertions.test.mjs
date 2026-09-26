@@ -165,13 +165,14 @@ test("a replica with the deployment flag off is refused (the profile would run n
 });
 
 test("D1 emits every locked freeze category and refuses a real excluded switch", () => {
-  const good = evaluateReplicaFreezeExclusions(goodReplica({ deploymentMode: "authenticated", excludedFlags: {} }));
+  const topology = { desktopServices: [], crossTargetMobilityRoutes: [], runningControlPlanes: 1 };
+  const good = evaluateReplicaFreezeExclusions({ ...goodReplica({ deploymentMode: "authenticated", excludedFlags: {} }), topology });
   assert.deepEqual(Object.keys(good.categories).sort(), ["beta", "crew", "cutover", "desktop", "ha", "mobility", "tool", "workload"]);
   assert.deepEqual(good.violations, []);
-  const bad = evaluateReplicaFreezeExclusions(goodReplica({
+  const bad = evaluateReplicaFreezeExclusions({ ...goodReplica({
     deploymentMode: "authenticated",
     excludedFlags: { AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED: "true" },
-  }));
+  }), topology });
   assert.match(bad.violations.join("\n"), /PUBLIC_SERVICE_INGRESS.*ON/);
 });
 

@@ -450,7 +450,7 @@ export function evaluateReplicaFreezeExclusions(o) {
       enabled: M1_SPINE_TENANTS.enabled.map((tenant) => tenant.organizationId),
       control: M1_SPINE_TENANTS.control.organizationId,
     },
-    topology: { desktopServices: [], crossTargetMobilityRoutes: [], runningControlPlanes: RUNNING_REPLICAS.length },
+    topology: o.topology,
   });
 }
 
