@@ -1268,7 +1268,10 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
       ...ids,
       target: deployed.target,
       workloadArgs,
-      seedSecret: plant,
+      // Both arms need a resolved handle because the run capability rides the resolve reply.
+      // Suppression changes only what the workload prints: the inert control canary below is
+      // deliberately not registered as secret material and must survive verbatim.
+      seedSecret: true,
       secretName: `provider:m1fm-canary-${randomBytes(6).toString("hex")}`,
       secretValue: canary,
     }), `${label} worker-driven seed`);
@@ -1288,7 +1291,9 @@ test("fault-matrix: a planted credential canary is SCRUBBED from both streams, a
     };
   };
 
-  // The withheld arm is a TRUE unseeded control: no Company secret and no job_secret_handles row.
+  // The withheld arm is unseeded with respect to the inert control canary. Its separate disposable
+  // run secret exists only to carry the capability required to reach the provider; the workload
+  // never prints that value.
   const suppressed = runArm({ label: "withheld", plant: false });
   // The campaign-wide suppression still withholds the graded plant, preserving that lane control.
   const graded = runArm({ label: "graded", plant: !SUPPRESS_INJECTION });

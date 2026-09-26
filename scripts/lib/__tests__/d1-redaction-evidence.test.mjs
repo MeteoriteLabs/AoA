@@ -30,6 +30,13 @@ test("DEP-027 exports the nonce-scoped D1 redaction evidence judge", () => {
   assert.equal(typeof moduleUnderTest.evaluateD1RedactionEvidence, "function");
 });
 
+test("DEP-027 both live arms retain the capability-bearing secret handle", () => {
+  const source = readFileSync(new URL("../../../tests/d1/m1-fault-matrix.test.mjs", import.meta.url), "utf8");
+  const runArm = source.slice(source.indexOf("const runArm ="), source.indexOf("const suppressed = runArm"));
+  assert.match(runArm, /seedSecret:\s*true/);
+  assert.doesNotMatch(runArm, /seedSecret:\s*plant/);
+});
+
 test("DEP-027 stale nonce lines cannot satisfy either arm", () => {
   const evaluate = moduleUnderTest.evaluateD1RedactionEvidence;
   assert.equal(typeof evaluate, "function");

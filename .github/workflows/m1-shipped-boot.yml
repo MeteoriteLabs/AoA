@@ -148,6 +148,8 @@ jobs:
           # the evidence-only scanner that never reads it — defeating the control while looking
           # green. These greps are the "predates the controls" gate; each names what is missing.
           grep -q "CONTROL_PLANE_PUBLIC_KEY_PEM" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it does not register the public half of the keypair (missing CONTROL_PLANE_PUBLIC_KEY_PEM in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
+          grep -q "sandboxBuildId" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate does not bind its E2B sandboxes to the pre-resolved immutable template build (missing sandboxBuildId evidence)"; exit 1; }
+          grep -q "evaluateM1FreezeExclusions" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate does not emit the complete M1a exclusion ledger from rendered and running configuration"; exit 1; }
           grep -q "maskDirectivesFor" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its driver does not mask registered secrets in the Actions log (missing maskDirectivesFor in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
           grep -q "stripMaskDirectives" scripts/m1-shipped-boot/journey.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: its leak scan does not read the job-log surface (missing stripMaskDirectives in scripts/m1-shipped-boot/journey.mjs)"; exit 1; }
           grep -q "KEY_MATERIAL_MARKERS" scripts/lib/m1-shipped-boot.mjs || { echo "::error::the candidate predates the DEP-015 log-surface controls: it cannot scan for key material by shape (missing KEY_MATERIAL_MARKERS in scripts/lib/m1-shipped-boot.mjs)"; exit 1; }
@@ -361,6 +363,8 @@ jobs:
         run: node scripts/m1-shipped-boot/journey.mjs probe-presign --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       - name: Run the journey
+        env:
+          E2B_API_KEY: ${{ inputs.mode == 'keyed' && secrets.E2B_API_KEY || '' }}
         run: node scripts/m1-shipped-boot/journey.mjs dispatch --out "$M1_OUT" 2>&1 | node scripts/m1-shipped-boot/log-filter.mjs "$M1_OUT/job-log.txt"
 
       # M1a HARNESS GAP 2 (DEP-022) — THE CROSS-TENANT DRIVERS.

@@ -2659,6 +2659,12 @@ try {
     toolSurfaceRaw,
     toolSurfaceArmed,
     organizationToolSurface,
+    excludedFlags: Object.fromEntries([
+      "AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED",
+      "AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED",
+      "AOA_ALLOW_UNSANDBOXED_MULTITENANT",
+      "AOA_0188_CUTOVER_OPT_IN",
+    ].map((name) => [name, process.env[name] ?? null])),
   });
 } catch (error) {
   report({ ok: false, error: String(error && error.message ? error.message : error) });

@@ -18,6 +18,7 @@ import {
   evaluateTenantRollout,
   parseRolloutBoolean,
   evaluateMustBeOffFlags,
+  evaluateM1FreezeExclusions,
   envLinesToMap,
   encodeEnrollmentTicket,
   providerConstraintProfileUnsigned,
@@ -148,6 +149,53 @@ test("evaluateMustBeOffFlags: false/unset passes; the crew switch or the tool su
   assert.ok(tools.some((x) => /AOA_DISTRIBUTED_TOOL_SURFACE_ENABLED is ON/.test(x)), tools.join("\n"));
   const junk = evaluateMustBeOffFlags({ AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED: "maybe" }).violations;
   assert.ok(junk.some((x) => /unparseable/.test(x)), junk.join("\n"));
+});
+
+test("the M1 freeze exclusion ledger covers every locked category with real mechanisms", () => {
+  const result = evaluateM1FreezeExclusions({
+    env: { AOA_DEPLOYMENT_MODE: "authenticated" },
+    rolloutValue: buildRolloutPolicy([A, B]),
+    expectedTenants: tenants,
+    topology: { runningControlPlanes: 2, desktopServices: [], crossTargetMobilityRoutes: [] },
+  });
+  assert.deepEqual(result.violations, []);
+  assert.deepEqual(Object.keys(result.categories).sort(), ["beta", "crew", "cutover", "desktop", "ha", "mobility", "tool", "workload"].sort());
+  assert.equal(result.categories.desktop.mechanism, "service_absence");
+  assert.equal(result.categories.mobility.mechanism, "route_absence");
+  assert.equal(result.categories.ha.mechanism, "topology_observation");
+});
+
+test("the M1 freeze exclusion ledger refuses real excluded switches and structural surfaces", () => {
+  const base = {
+    env: { AOA_DEPLOYMENT_MODE: "authenticated" },
+    rolloutValue: buildRolloutPolicy([A, B]),
+    expectedTenants: tenants,
+    topology: { runningControlPlanes: 2, desktopServices: [], crossTargetMobilityRoutes: [] },
+  };
+  for (const name of [
+    "AOA_DISTRIBUTED_CREW_ROLLOUT_ENABLED",
+    "AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED",
+    "AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED",
+    "AOA_ALLOW_UNSANDBOXED_MULTITENANT",
+    "AOA_0188_CUTOVER_OPT_IN",
+  ]) {
+    assert.notDeepEqual(evaluateM1FreezeExclusions({ ...base, env: { ...base.env, [name]: "1" } }).violations, [], name);
+  }
+  assert.notDeepEqual(evaluateM1FreezeExclusions({ ...base, topology: { ...base.topology, desktopServices: ["desktop-host"] } }).violations, []);
+  assert.notDeepEqual(evaluateM1FreezeExclusions({ ...base, topology: { ...base.topology, crossTargetMobilityRoutes: ["handoff"] } }).violations, []);
+});
+
+test("freeze topology observations come from rendered and running service names", async () => {
+  const { observeFreezeTopology } = await import("../m1-shipped-boot.mjs");
+  assert.deepEqual(observeFreezeTopology({
+    renderedServices: { "desktop-host": {}, "cross-target-handoff": {}, "control-plane": {} },
+    runningServices: ["mobility-router", "control-plane"],
+    runningControlPlanes: 1,
+  }), {
+    desktopServices: ["desktop-host"],
+    crossTargetMobilityRoutes: ["cross-target-handoff", "mobility-router"],
+    runningControlPlanes: 1,
+  });
 });
 
 test("envLinesToMap reads `docker inspect` Env lines, keeping '=' inside values", () => {

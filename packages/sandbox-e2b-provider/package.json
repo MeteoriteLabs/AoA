@@ -37,7 +37,7 @@
     "@armyofagents/sandbox-provider-contract": "workspace:*",
     "@armyofagents/worker-daemon": "workspace:*",
     "@armyofagents/worker-protocol": "workspace:*",
-    "e2b": "^2.30.5",
+    "e2b": "2.30.5",
     "zod": "3.24.2"
   },
   "devDependencies": {
