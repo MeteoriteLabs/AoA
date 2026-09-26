@@ -673,6 +673,7 @@ jobs:
           node --test scripts/check-cross-tenant-suppression.test.mjs
           node --test scripts/lib/__tests__/m1a-redaction-probe.test.mjs
           node --test scripts/lib/__tests__/dep-024-worker-driven-seed.test.mjs
+          node --test scripts/lib/__tests__/m1-provider-identity.test.mjs
 
       - name: CI lane routing invariants (DEP-004)
         run: |
