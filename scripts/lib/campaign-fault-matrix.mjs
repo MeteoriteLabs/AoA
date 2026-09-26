@@ -633,8 +633,26 @@ export function evaluateFaultMatrixEvidence(matrix, bundle) {
         v("evidence:redaction_suppressed_arm_undeclared", `case ${id}: the declaration does not say where the withheld-plant control lives (redactionCase.suppressedArm.scope must be one of ${REDACTION_SUPPRESSED_ARM_SCOPES.join(", ")}) — an ungraded control arm is how a bundle comes to disagree with its own run`);
       } else if (arm.code === "exemption_unjustified") {
         v("evidence:redaction_suppressed_arm_exemption_unjustified", `case ${id}: the declaration claims \`suppressedArm.scope: "none"\` without naming its blocking finding ids in \`blockedBy\` and a \`reason\` — an exemption nobody can check is indistinguishable from the guard not looking`);
-      } else if (arm.scope === "in_run" && row.positiveControlPassed !== true) {
-        v("evidence:redaction_positive_control_missing", `case ${id}: the withheld-plant arm did not pass (positiveControlPassed=${JSON.stringify(row.positiveControlPassed ?? null)}) — its attempt did not reach a succeeded terminal, or it carried the scrubber's marker on a stream, so the seeded arm's marker is not shown to be this case's injection at work`);
+      } else if (arm.scope === "in_run") {
+        const suppressed = isPlainObject(row.suppressedArmEvidence) ? row.suppressedArmEvidence : null;
+        const suppressedObserved = isPlainObject(suppressed?.observedOnStream) ? suppressed.observedOnStream : null;
+        const suppressedMarkers = isPlainObject(suppressed?.scrubberMarkerObservedOnStream)
+          ? suppressed.scrubberMarkerObservedOnStream
+          : null;
+        if (suppressed?.attemptStatus !== "succeeded") {
+          v("evidence:redaction_suppressed_attempt_failed", `case ${id}: suppressedArmEvidence.attemptStatus=${JSON.stringify(suppressed?.attemptStatus ?? null)} — a withheld-plant control that did not succeed is broken setup`);
+        }
+        for (const stream of declaredStreams) {
+          if (suppressedObserved?.[stream] !== true) {
+            v("evidence:redaction_suppressed_stream_unobserved", `case ${id}: suppressedArmEvidence.observedOnStream.${stream}=${JSON.stringify(suppressedObserved?.[stream] ?? null)} — every withheld stream must carry its own nonce-scoped probe line`);
+          }
+          if (suppressedMarkers?.[stream] !== false) {
+            v("evidence:redaction_suppressed_marker_observed", `case ${id}: suppressedArmEvidence.scrubberMarkerObservedOnStream.${stream}=${JSON.stringify(suppressedMarkers?.[stream] ?? null)} — a marker on either withheld stream invalidates the control`);
+          }
+        }
+        if (row.positiveControlPassed !== true) {
+          v("evidence:redaction_positive_control_missing", `case ${id}: the withheld-plant arm did not pass (positiveControlPassed=${JSON.stringify(row.positiveControlPassed ?? null)}) — its attempt did not reach a succeeded terminal, or it carried the scrubber's marker on a stream, so the seeded arm's marker is not shown to be this case's injection at work`);
+        }
       } else if (arm.scope === "none" && row.positiveControlPassed !== undefined) {
         // ★ THE DUAL (`E.1b`), and the file already sets the precedent — `evidence:pending_case_reported`
         // refuses a `pending` case that DID produce evidence, on the reasoning that inheriting the pass

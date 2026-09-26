@@ -348,6 +348,17 @@ export function redactionProbeMatrixRow(graded, detail) {
     // which must ALSO have succeeded, or its "no marker" is a failed setup rather than a working
     // suppression, and the row would certify a control that never ran.
     positiveControlPassed: suppressedSucceeded && detail?.suppressedUnfired === true,
+    suppressedArmEvidence: {
+      attemptStatus: suppressedAttemptStatus,
+      observedOnStream: {
+        events: detail?.suppressedObservedOnEvents === true,
+        logs: detail?.suppressedObservedOnLogs === true,
+      },
+      scrubberMarkerObservedOnStream: {
+        events: detail?.suppressedMarkerOnEvents === true,
+        logs: detail?.suppressedMarkerOnLogs === true,
+      },
+    },
     detail: detail ?? {},
   };
 }

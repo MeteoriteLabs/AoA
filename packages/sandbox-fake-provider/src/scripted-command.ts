@@ -90,6 +90,8 @@ export interface ScriptedCommandPlan {
    * `undefined` (the default) means no echo and a byte-identical transcript.
    */
   readonly echoEnvName: string | undefined;
+  /** DEP-027 — attribution carried in the probe line itself. Required for every probe line. */
+  readonly probeNonce: string | undefined;
 }
 
 /**
@@ -107,6 +109,7 @@ export const DEFAULT_SCRIPTED_COMMAND_PLAN: ScriptedCommandPlan = Object.freeze(
   timedOut: false,
   delayMs: 0,
   echoEnvName: undefined,
+  probeNonce: undefined,
 });
 
 /**
@@ -144,6 +147,7 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
   let timedOut: boolean | undefined;
   let delayMs: number | undefined;
   let echoEnvName: string | undefined;
+  let probeNonce: string | undefined;
 
   for (const arg of args) {
     if (!arg.startsWith(SCRIPT_FLAG_PREFIX)) continue;
@@ -204,9 +208,24 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
         echoEnvName = value;
         break;
       }
+      case `${SCRIPT_FLAG_PREFIX}probe-nonce`: {
+        if (probeNonce !== undefined) throw new ScriptedCommandError(`${flag} appears more than once`);
+        const value = parseFlagValue(flag, rawValue);
+        if (!/^[A-Za-z0-9_-]{16,96}$/.test(value)) {
+          throw new ScriptedCommandError(
+            `${flag} must be a 16..96 character inert token using only letters, digits, underscore or hyphen, got ${JSON.stringify(value)}`,
+          );
+        }
+        probeNonce = value;
+        break;
+      }
       default:
         throw new ScriptedCommandError(`unrecognised scripting flag ${JSON.stringify(flag)}`);
     }
+  }
+
+  if (echoEnvName !== undefined && probeNonce === undefined) {
+    throw new ScriptedCommandError(`${SCRIPT_FLAG_PREFIX}echo-env requires ${SCRIPT_FLAG_PREFIX}probe-nonce`);
   }
 
   return {
@@ -215,6 +234,7 @@ export function parseScriptedCommand(args: readonly string[]): ScriptedCommandPl
     timedOut: timedOut ?? DEFAULT_SCRIPTED_COMMAND_PLAN.timedOut,
     delayMs: delayMs ?? DEFAULT_SCRIPTED_COMMAND_PLAN.delayMs,
     echoEnvName,
+    probeNonce,
   };
 }
 
@@ -416,6 +436,12 @@ function finishScriptedCommand(
   // provider would return a success for a plant that never happened — a silently vacuous control,
   // which is exactly what every other scripting flag on this module fails closed to prevent. Two
   // refusals, in the order a reader needs them:
+  if (plan.probeNonce !== undefined && onStdout === undefined) {
+    throw new ScriptedCommandError(
+      `${SCRIPT_FLAG_PREFIX}probe-nonce=${plan.probeNonce} needs the stdout stream channel; ` +
+        "this provider will not accept a probe request it has nowhere to deliver",
+    );
+  }
   if (plan.echoEnvName !== undefined) {
     // (a) NO CHANNEL, NO ECHO. The stdout channel is the echo's only delivery; asking for an echo
     // a caller cannot receive is a scripting error, not a no-op.
@@ -437,8 +463,10 @@ function finishScriptedCommand(
     }
     // FIRST, never last: `parseClaudeStreamJsonUsage` reads the FINAL non-empty line and nothing
     // else, so an echo written last would displace the result line and suppress the run's usage.
-    onStdout(`${RUN_OUTPUT_PROBE_TAG} ${plan.echoEnvName}=${value}
+    onStdout(`${RUN_OUTPUT_PROBE_TAG} arm=${plan.probeNonce} ${plan.echoEnvName}=${value}
 `);
+  } else if (plan.probeNonce !== undefined) {
+    onStdout?.(`${RUN_OUTPUT_PROBE_TAG} arm=${plan.probeNonce} control=unseeded\n`);
   }
   if (onStdout !== undefined) {
     for (const chunk of buildScriptedStdoutChunks(plan, options.usage)) onStdout(chunk);

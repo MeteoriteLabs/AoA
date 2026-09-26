@@ -353,6 +353,8 @@ export async function runRedactionProbeCases({
     // "exactly one", and "exactly one" is the shape that used to pass.
     suppressedMarkerOnEvents: suppressed.row.scrubberMarkerObservedOnStream?.events === true,
     suppressedMarkerOnLogs: suppressed.row.scrubberMarkerObservedOnStream?.logs === true,
+    suppressedObservedOnEvents: Number(suppressed.row.streamBytesObserved?.events ?? 0) > 0,
+    suppressedObservedOnLogs: Number(suppressed.row.streamBytesObserved?.logs ?? 0) > 0,
     suppressedUnfired: summary.suppressedUnfired,
     crossTenantEventCount: graded.facts.crossTenantEventCount,
     crossTenantCanaryAbsent: graded.facts.crossTenantCanaryAbsent,

@@ -308,7 +308,16 @@ function completeBundle(profile) {
             scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
             streamBytesObserved: Object.fromEntries(c.redactionCase.streams.map((k) => [k, 1024])),
             // DEP-026 — the withheld-plant arm's own row fact, for a case declaring an IN-RUN arm.
-            ...(c.redactionCase.suppressedArm?.scope === "in_run" ? { positiveControlPassed: true } : {}),
+            ...(c.redactionCase.suppressedArm?.scope === "in_run"
+              ? {
+                positiveControlPassed: true,
+                suppressedArmEvidence: {
+                  attemptStatus: "succeeded",
+                  observedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, true])),
+                  scrubberMarkerObservedOnStream: Object.fromEntries(c.redactionCase.streams.map((k) => [k, false])),
+                },
+              }
+              : {}),
           }
           : {}),
       })),
@@ -580,6 +589,44 @@ test("DEP-026 evidence: a redaction case declaring an IN-RUN suppressed arm reds
   }
 });
 
+test("DEP-027 evidence: an IN-RUN arm must retain succeeded per-stream observations", () => {
+  const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+  const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+  row.suppressedArmEvidence = {
+    attemptStatus: "succeeded",
+    observedOnStream: { events: true },
+    scrubberMarkerObservedOnStream: { events: false, logs: false },
+  };
+  const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+  assert.ok(
+    has(violations, "evidence:redaction_suppressed_stream_unobserved"),
+    `a missing logs observation must red: ${codes(violations)}`,
+  );
+});
+
+test("DEP-027 evidence: a failed setup or marker on EITHER withheld stream reds artifact-only grading", () => {
+  for (const mutation of [
+    (e) => { e.attemptStatus = "failed"; },
+    (e) => { e.scrubberMarkerObservedOnStream.events = true; },
+    (e) => { e.scrubberMarkerObservedOnStream.logs = true; },
+  ]) {
+    const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
+    const row = bundle.cases.find((r) => r.case.includes("redaction.canary"));
+    row.suppressedArmEvidence = {
+      attemptStatus: "succeeded",
+      observedOnStream: { events: true, logs: true },
+      scrubberMarkerObservedOnStream: { events: false, logs: false },
+    };
+    mutation(row.suppressedArmEvidence);
+    const { violations } = evaluateFaultMatrixEvidence(matrix, bundle);
+    assert.ok(
+      has(violations, "evidence:redaction_suppressed_attempt_failed") ||
+        has(violations, "evidence:redaction_suppressed_marker_observed"),
+      `mutation must red: ${codes(violations)}`,
+    );
+  }
+});
+
 test("DEP-026 evidence: a redaction case that declares NO suppressed arm is REFUSED, not skipped", () => {
   const { matrix, bundle } = completeBundle(GATE_PROFILES[0]);
   const decl = matrix.profiles
@@ -698,6 +745,12 @@ test("DEP-026 declaration: a PENDING redaction case need not declare it yet, but
 
 test("DEP-026: the committed exemption's blockers are OPEN registered findings (production function + loader)", () => {
   const matrix = JSON.parse(readFileSync(path.join(repoRoot, FAULT_MATRIX_PATH), "utf8"));
+  const redaction = matrix.profiles.flatMap((p) => p.cases).find((c) => c.family === "redaction");
+  redaction.redactionCase.suppressedArm = {
+    scope: "none",
+    blockedBy: ["E6-F032"],
+    reason: "fixture proving the exemption validator after DEP-027 retired the committed exemption",
+  };
   const sources = readFindingSources(repoRoot);
   // Non-vacuity FIRST, three times: an empty register, a heading scan that found nothing, or a matrix
   // with no exemption at all would each make this pass while checking nothing.
@@ -706,8 +759,6 @@ test("DEP-026: the committed exemption's blockers are OPEN registered findings (
     sources.declaredFindingIds.size > sources.openFindingIds.size,
     `${sources.declaredFindingIds.size} headings vs ${sources.openFindingIds.size} open keys — headings must SURVIVE closure, which is the whole reason they cannot be the openness source`,
   );
-  const exempt = matrix.profiles.flatMap((p) => p.cases.filter((c) => c.redactionCase?.suppressedArm?.scope === "none"));
-  assert.ok(exempt.length > 0, "no redaction exemption is declared, so these controls evaluated nothing");
   assert.deepEqual(evaluateRedactionExemptionBlockers(matrix, sources), [], "the committed exemption's blockers must all be open registered findings");
 });
 
@@ -716,11 +767,8 @@ test("DEP-026: a PHANTOM blocker, a RESOLVED blocker, and ABSENT sources each re
   const sources = readFindingSources(repoRoot);
   const withBlockers = (ids) => {
     const m = JSON.parse(JSON.stringify(matrix));
-    for (const p of m.profiles) {
-      for (const c of p.cases) {
-        if (c.redactionCase?.suppressedArm?.scope === "none") c.redactionCase.suppressedArm.blockedBy = ids;
-      }
-    }
+    const redaction = m.profiles.flatMap((p) => p.cases).find((c) => c.family === "redaction");
+    redaction.redactionCase.suppressedArm = { scope: "none", blockedBy: ids, reason: "validator fixture" };
     return m;
   };
   assert.ok(
@@ -748,7 +796,7 @@ test("DEP-026: a PHANTOM blocker, a RESOLVED blocker, and ABSENT sources each re
   ];
   for (const bad of unusable) {
     assert.ok(
-      has(evaluateRedactionExemptionBlockers(matrix, bad), "declaration:redaction_exemption_blockers_unverifiable"),
+      has(evaluateRedactionExemptionBlockers(withBlockers(["E6-F032"]), bad), "declaration:redaction_exemption_blockers_unverifiable"),
       `${JSON.stringify(bad ?? null)} must refuse rather than pass silently`,
     );
   }
